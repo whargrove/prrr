@@ -373,5 +373,70 @@ VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
   (should (eq 'served (prrr-state-partition (prrr-state-test--pr :draft-p t) 'requested)))
   (should (eq 'served (prrr-state-partition (prrr-state-test--pr :draft-p t) 'assigned))))
 
+;;;; Stacks
+
+(defun prrr-state-test--ids (stacks)
+  "Ids of STACKS, a list of lists of `prrr-pr'."
+  (mapcar (lambda (stack) (mapcar #'prrr-pr-id stack)) stacks))
+
+(ert-deftest prrr-state-test-stacks-chain-bottom-first ()
+  "A chain is one Stack, bottom first, whatever the input order."
+  (let ((bottom (prrr-state-test--pr :id "B" :base-ref "main" :head-ref "step-1"))
+        (middle (prrr-state-test--pr :id "M" :base-ref "step-1" :head-ref "step-2"))
+        (top (prrr-state-test--pr :id "T" :base-ref "step-2" :head-ref "step-3")))
+    (should (equal '(("B" "M" "T"))
+                   (prrr-state-test--ids (prrr-state-stacks (list top bottom middle) "main"))))
+    (should (equal '(("B" "M" "T"))
+                   (prrr-state-test--ids (prrr-state-stacks (list bottom middle top) "main"))))))
+
+(ert-deftest prrr-state-test-stacks-independent-prs-are-singletons ()
+  "PRs whose bases are neither the default branch nor another open head are singletons."
+  (let ((a (prrr-state-test--pr :id "A" :head-ref "a"))
+        (b (prrr-state-test--pr :id "B" :head-ref "b")))
+    (should (equal '(("A") ("B")) (prrr-state-test--ids (prrr-state-stacks (list a b) "main"))))))
+
+(ert-deftest prrr-state-test-stacks-parent-must-be-open ()
+  "A PR whose parent was merged (absent from PRS) is a bottom on its own."
+  (let ((orphan (prrr-state-test--pr :id "O" :base-ref "merged-branch" :head-ref "o")))
+    (should (equal '(("O")) (prrr-state-test--ids (prrr-state-stacks (list orphan) "main"))))))
+
+(ert-deftest prrr-state-test-stacks-cross-repo-parent-is-not-a-parent ()
+  "A fork PR's head is not a base for anyone."
+  (let ((fork (prrr-state-test--pr :id "F" :base-ref "main" :head-ref "feature" :cross-repo-p t))
+        (child (prrr-state-test--pr :id "C" :base-ref "feature" :head-ref "child")))
+    (should (equal '(("F") ("C")) (prrr-state-test--ids (prrr-state-stacks (list fork child) "main"))))))
+
+(ert-deftest prrr-state-test-stacks-deleted-branches ()
+  "Nil refs never match."
+  (let ((no-head (prrr-state-test--pr :id "H" :base-ref "main" :head-ref nil))
+        (no-base (prrr-state-test--pr :id "N" :base-ref nil :head-ref "n"))
+        (child (prrr-state-test--pr :id "C" :base-ref "n" :head-ref "c")))
+    (should (equal '(("H") ("N" "C"))
+                   (prrr-state-test--ids (prrr-state-stacks (list no-head no-base child) "main"))))))
+
+(ert-deftest prrr-state-test-stacks-cycle-terminates ()
+  "Two PRs based on each other form one Stack, once."
+  (let ((a (prrr-state-test--pr :id "A" :base-ref "b" :head-ref "a"))
+        (b (prrr-state-test--pr :id "B" :base-ref "a" :head-ref "b")))
+    (let ((stacks (prrr-state-stacks (list a b) "main")))
+      (should (= 1 (length stacks)))
+      (should (equal '("A" "B") (sort (mapcar #'prrr-pr-id (car stacks)) #'string<))))))
+
+(ert-deftest prrr-state-test-stacks-branching-stack-keeps-siblings-after-parent ()
+  "Two PRs on the same parent stay in the parent's Stack, depth first."
+  (let ((bottom (prrr-state-test--pr :id "B" :base-ref "main" :head-ref "base"))
+        (left (prrr-state-test--pr :id "L" :base-ref "base" :head-ref "left"))
+        (left-top (prrr-state-test--pr :id "LT" :base-ref "left" :head-ref "left-top"))
+        (right (prrr-state-test--pr :id "R" :base-ref "base" :head-ref "right")))
+    (should (equal '(("B" "L" "LT" "R"))
+                   (prrr-state-test--ids
+                    (prrr-state-stacks (list bottom left left-top right) "main"))))))
+
+(ert-deftest prrr-state-test-stacks-default-branch-is-never-a-parent ()
+  "A PR based on the default branch is a bottom even if some PR's head has that name."
+  (let ((odd (prrr-state-test--pr :id "O" :base-ref "develop" :head-ref "main"))
+        (normal (prrr-state-test--pr :id "N" :base-ref "main" :head-ref "n")))
+    (should (equal '(("O") ("N")) (prrr-state-test--ids (prrr-state-stacks (list odd normal) "main"))))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

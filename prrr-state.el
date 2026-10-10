@@ -170,5 +170,56 @@ earlier state).  Drafts are always Served."
       'awaiting
     'served))
 
+;;;; Stacks
+
+(defun prrr-state--parent (pr prs default-branch)
+  "Return the PR in PRS that PR is stacked on, or nil.
+The parent is the PR whose `head-ref' equals PR's `base-ref' and that
+is not from a fork.  A PR based on DEFAULT-BRANCH, or on a branch no
+open PR has as its head, has no parent."
+  (let ((base (prrr-pr-base-ref pr)))
+    (and base
+         (not (equal base default-branch))
+         (seq-find (lambda (candidate)
+                     (and (not (eq candidate pr))
+                          (not (prrr-pr-cross-repo-p candidate))
+                          (equal (prrr-pr-head-ref candidate) base)))
+                   prs))))
+
+(defun prrr-state--descend (pr parents seen)
+  "Return PR followed by its descendants in PARENTS, depth first.
+PARENTS is an alist (CHILD . PARENT); SEEN a hash table of visited PRs,
+which stops cycles."
+  (puthash pr t seen)
+  (cons pr
+        (cl-mapcan (lambda (child) (prrr-state--descend child parents seen))
+                   (cl-loop for (child . parent) in parents
+                            when (and (eq parent pr) (not (gethash child seen)))
+                            collect child))))
+
+(defun prrr-state-stacks (prs default-branch)
+  "Group PRS, the open PRs of one repository, into Stacks.
+Return a list of Stacks in the order their bottoms appear in PRS; each
+Stack is a list of `prrr-pr' from the bottom (based on DEFAULT-BRANCH
+or on no open PR) upwards, depth first when a PR has several children.
+Every PR appears exactly once; a cycle is broken at the PR met first."
+  (let ((parents (mapcar (lambda (pr) (cons pr (prrr-state--parent pr prs default-branch)))
+                         prs))
+        (seen (make-hash-table :test #'eq))
+        (stacks nil))
+    (dolist (pr prs)
+      (unless (gethash pr seen)
+        (let* ((bottom pr)
+               (walked (list pr))
+               (parent (alist-get bottom parents)))
+          (while (and parent
+                      (not (memq parent walked))
+                      (not (gethash parent seen)))
+            (push parent walked)
+            (setq bottom parent
+                  parent (alist-get bottom parents)))
+          (push (prrr-state--descend bottom parents seen) stacks))))
+    (nreverse stacks)))
+
 (provide 'prrr-state)
 ;;; prrr-state.el ends here
