@@ -438,5 +438,155 @@ VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
         (normal (prrr-state-test--pr :id "N" :base-ref "main" :head-ref "n")))
     (should (equal '(("O") ("N")) (prrr-state-test--ids (prrr-state-stacks (list odd normal) "main"))))))
 
+;;;; Queue assembly
+
+(defun prrr-state-test--queue (prs metas)
+  "Build the queue of PRS and METAS for the test viewer."
+  (prrr-state-queue prs metas prrr-state-test--me prrr-state-test--teams "main"))
+
+(defun prrr-state-test--rows (entries)
+  "Summarise ENTRIES as (ID STATE PARTITION DIMMED-P STACK-POS STACK-SIZE)."
+  (mapcar (lambda (e) (list (prrr-pr-id (prrr-queue-entry-pr e))
+                            (prrr-queue-entry-state e)
+                            (prrr-queue-entry-partition e)
+                            (prrr-queue-entry-dimmed-p e)
+                            (prrr-queue-entry-stack-pos e)
+                            (prrr-queue-entry-stack-size e)))
+          entries))
+
+(ert-deftest prrr-state-test-queue-awaiting-sorted-by-created-at ()
+  (let ((prs (list (prrr-state-test--pr :id "A" :head-ref "a" :created-at "2026-09-03T00:00:00Z")
+                   (prrr-state-test--pr :id "B" :head-ref "b" :created-at "2026-09-01T00:00:00Z")
+                   (prrr-state-test--pr :id "C" :head-ref "c" :created-at "2026-09-02T00:00:00Z")))
+        (metas (list (prrr-state-test--meta :pr-id "A" :review-requests '((user "example-me")))
+                     (prrr-state-test--meta :pr-id "B" :review-requests '((team "example-org/reviewers")))
+                     (prrr-state-test--meta :pr-id "C" :viewer-latest-review
+                                            (list "APPROVED" "2026-09-02T12:00:00Z" prrr-state-test--old)))))
+    (should (equal '(("B" team-requested awaiting nil 1 1)
+                     ("C" new-commits awaiting nil 1 1)
+                     ("A" requested awaiting nil 1 1))
+                   (prrr-state-test--rows (plist-get (prrr-state-test--queue prs metas) :for-me))))))
+
+(ert-deftest prrr-state-test-queue-served-after-awaiting-sorted-by-touch ()
+  "Served sorts by my last review time; teammate-reviewed falls back to updated-at."
+  (let ((prs (list (prrr-state-test--pr :id "S1" :head-ref "s1" :created-at "2026-09-01T00:00:00Z"
+                                        :updated-at "2026-09-09T00:00:00Z")
+                   (prrr-state-test--pr :id "S2" :head-ref "s2" :created-at "2026-09-02T00:00:00Z")
+                   (prrr-state-test--pr :id "S3" :head-ref "s3" :created-at "2026-09-03T00:00:00Z")
+                   (prrr-state-test--pr :id "W" :head-ref "w" :created-at "2026-09-08T00:00:00Z")))
+        (metas (list (prrr-state-test--meta
+                      :pr-id "S1"
+                      :latest-reviews (list (list "example-bob" "APPROVED" "2026-09-04T00:00:00Z"
+                                                  prrr-state-test--head '("example-org/reviewers"))))
+                     (prrr-state-test--meta
+                      :pr-id "S2"
+                      :viewer-latest-review (list "COMMENTED" "2026-09-07T00:00:00Z" prrr-state-test--head))
+                     (prrr-state-test--meta
+                      :pr-id "S3"
+                      :viewer-latest-review (list "APPROVED" "2026-09-06T00:00:00Z" prrr-state-test--head))
+                     (prrr-state-test--meta :pr-id "W" :review-requests '((user "example-me"))))))
+    (should (equal '(("W" requested awaiting nil 1 1)
+                     ("S3" approved served nil 1 1)
+                     ("S2" commented served nil 1 1)
+                     ("S1" teammate-reviewed served nil 1 1))
+                   (prrr-state-test--rows (plist-get (prrr-state-test--queue prs metas) :for-me))))))
+
+(ert-deftest prrr-state-test-queue-mine-sorted-by-rank-then-created-at ()
+  (let ((prs (list (prrr-state-test--pr :id "D" :author "example-me" :head-ref "d" :draft-p t
+                                        :created-at "2026-09-01T00:00:00Z")
+                   (prrr-state-test--pr :id "A2" :author "example-me" :head-ref "a2"
+                                        :created-at "2026-09-04T00:00:00Z")
+                   (prrr-state-test--pr :id "CR" :author "example-me" :head-ref "cr"
+                                        :created-at "2026-09-05T00:00:00Z")
+                   (prrr-state-test--pr :id "A1" :author "example-me" :head-ref "a1"
+                                        :created-at "2026-09-02T00:00:00Z")
+                   (prrr-state-test--pr :id "OK" :author "example-me" :head-ref "ok"
+                                        :created-at "2026-09-03T00:00:00Z")
+                   (prrr-state-test--pr :id "RV" :author "example-me" :head-ref "rv"
+                                        :created-at "2026-09-01T00:00:00Z")))
+        (metas (list (prrr-state-test--meta
+                      :pr-id "CR" :latest-reviews '(("example-carol" "CHANGES_REQUESTED" "t" "abc" nil)))
+                     (prrr-state-test--meta
+                      :pr-id "OK" :latest-reviews '(("example-carol" "APPROVED" "t" "abc" nil)))
+                     (prrr-state-test--meta
+                      :pr-id "RV" :latest-reviews '(("example-carol" "COMMENTED" "t" "abc" nil))))))
+    (should (equal '(("CR" changes-requested nil nil 1 1)
+                     ("A1" awaiting-review nil nil 1 1)
+                     ("A2" awaiting-review nil nil 1 1)
+                     ("OK" approved nil nil 1 1)
+                     ("RV" reviewed nil nil 1 1)
+                     ("D" draft nil nil 1 1))
+                   (prrr-state-test--rows (plist-get (prrr-state-test--queue prs metas) :mine))))))
+
+(ert-deftest prrr-state-test-queue-my-pr-never-in-for-me ()
+  (let ((prs (list (prrr-state-test--pr :id "M" :author "example-me" :assignees '("example-me"))))
+        (metas (list (prrr-state-test--meta :pr-id "M" :review-requests '((user "example-me"))))))
+    (let ((queue (prrr-state-test--queue prs metas)))
+      (should (null (plist-get queue :for-me)))
+      (should (equal '(("M" awaiting-review nil nil 1 1))
+                     (prrr-state-test--rows (plist-get queue :mine)))))))
+
+(ert-deftest prrr-state-test-queue-draft-requested-is-dimmed-and-served ()
+  (let ((prs (list (prrr-state-test--pr :id "D" :draft-p t)))
+        (metas (list (prrr-state-test--meta :pr-id "D" :review-requests '((user "example-me"))))))
+    (should (equal '(("D" requested served t 1 1))
+                   (prrr-state-test--rows (plist-get (prrr-state-test--queue prs metas) :for-me))))))
+
+(ert-deftest prrr-state-test-queue-unlisted-prs-are-absent ()
+  (let ((prs (list (prrr-state-test--pr :id "X")))
+        (metas (list (prrr-state-test--meta :pr-id "X"))))
+    (let ((queue (prrr-state-test--queue prs metas)))
+      (should (null (plist-get queue :for-me)))
+      (should (null (plist-get queue :mine))))))
+
+(ert-deftest prrr-state-test-queue-stack-stays-together-sorted-by-best-member ()
+  "A Stack sits where its best member would, whole, with others dimmed."
+  (let ((prs (list (prrr-state-test--pr :id "LONE" :head-ref "lone" :created-at "2026-09-02T00:00:00Z")
+                   (prrr-state-test--pr :id "BOTTOM" :head-ref "step-1" :created-at "2026-09-03T00:00:00Z")
+                   (prrr-state-test--pr :id "TOP" :base-ref "step-1" :head-ref "step-2"
+                                        :created-at "2026-09-01T00:00:00Z")))
+        (metas (list (prrr-state-test--meta :pr-id "LONE" :review-requests '((user "example-me")))
+                     (prrr-state-test--meta :pr-id "BOTTOM")
+                     (prrr-state-test--meta :pr-id "TOP" :review-requests '((user "example-me"))))))
+    (should (equal '(("BOTTOM" nil nil t 1 2)
+                     ("TOP" requested awaiting nil 2 2)
+                     ("LONE" requested awaiting nil 1 1))
+                   (prrr-state-test--rows (plist-get (prrr-state-test--queue prs metas) :for-me))))))
+
+(ert-deftest prrr-state-test-queue-stack-in-for-me-omits-my-own-member ()
+  (let ((prs (list (prrr-state-test--pr :id "MINE" :author "example-me" :head-ref "step-1")
+                   (prrr-state-test--pr :id "THEIRS" :base-ref "step-1" :head-ref "step-2")))
+        (metas (list (prrr-state-test--meta :pr-id "MINE")
+                     (prrr-state-test--meta :pr-id "THEIRS" :review-requests '((user "example-me"))))))
+    (let ((queue (prrr-state-test--queue prs metas)))
+      (should (equal '(("THEIRS" requested awaiting nil 2 2))
+                     (prrr-state-test--rows (plist-get queue :for-me))))
+      (should (equal '(("MINE" awaiting-review nil nil 1 2)
+                       ("THEIRS" nil nil t 2 2))
+                     (prrr-state-test--rows (plist-get queue :mine)))))))
+
+(ert-deftest prrr-state-test-queue-stack-with-awaiting-member-sorts-before-served ()
+  (let ((prs (list (prrr-state-test--pr :id "S" :head-ref "s" :created-at "2026-09-01T00:00:00Z")
+                   (prrr-state-test--pr :id "B" :head-ref "b1" :created-at "2026-09-05T00:00:00Z")
+                   (prrr-state-test--pr :id "T" :base-ref "b1" :head-ref "b2"
+                                        :created-at "2026-09-06T00:00:00Z")))
+        (metas (list (prrr-state-test--meta
+                      :pr-id "S"
+                      :viewer-latest-review (list "APPROVED" "2026-09-02T00:00:00Z" prrr-state-test--head))
+                     (prrr-state-test--meta
+                      :pr-id "B"
+                      :viewer-latest-review (list "APPROVED" "2026-09-07T00:00:00Z" prrr-state-test--head))
+                     (prrr-state-test--meta :pr-id "T" :review-requests '((user "example-me"))))))
+    (should (equal '("B" "T" "S")
+                   (mapcar #'car (prrr-state-test--rows
+                                  (plist-get (prrr-state-test--queue prs metas) :for-me)))))))
+
+(ert-deftest prrr-state-test-queue-missing-meta-and-timestamps-do-not-signal ()
+  "A PR without a meta row or timestamps still lists when assigned."
+  (let ((prs (list (prrr-state-test--pr :id "A" :assignees '("example-me") :created-at nil
+                                        :updated-at nil))))
+    (should (equal '(("A" assigned awaiting nil 1 1))
+                   (prrr-state-test--rows (plist-get (prrr-state-test--queue prs nil) :for-me))))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

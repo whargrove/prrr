@@ -221,5 +221,95 @@ Every PR appears exactly once; a cycle is broken at the PR met first."
           (push (prrr-state--descend bottom parents seen) stacks))))
     (nreverse stacks)))
 
+;;;; Queue assembly
+
+(defun prrr-state--touched-at (pr meta)
+  "Return when I last touched PR, given its META row or nil.
+That is the submittedAt of my latest review, else the PR's updated-at."
+  (or (nth 1 (prrr-state--viewer-review meta))
+      (prrr-pr-updated-at pr)
+      ""))
+
+(defun prrr-state--mine-rank (state)
+  "Return the position of Mine STATE in `prrr-state-mine-order'."
+  (or (cl-position state prrr-state-mine-order) (length prrr-state-mine-order)))
+
+(defun prrr-state--for-me-pair (pr meta me teams pos size)
+  "Return (KEY . ENTRY) for PR in the For Me group, or nil for my own PR.
+META is PR's meta row or nil, ME the viewer's login and TEAMS their
+Team slugs; POS and SIZE place PR in its Stack.  KEY
+is a sort string for a qualifying PR (Awaiting me sorts before Served,
+then by creation time or last touch) and nil for a dimmed context
+member of a Stack."
+  (unless (equal (prrr-pr-author pr) me)
+    (let* ((member-p (prrr-state-for-me-p pr meta me teams))
+           (state (and member-p (prrr-state-review-state pr meta me teams)))
+           (partition (and member-p (prrr-state-partition pr state))))
+      (cons (and member-p
+                 (if (eq partition 'awaiting)
+                     (format "0:%s" (or (prrr-pr-created-at pr) ""))
+                   (format "1:%s" (prrr-state--touched-at pr meta))))
+            (prrr-queue-entry-create
+             :pr pr :state state :group 'for-me :partition partition
+             :stack-pos pos :stack-size size
+             :dimmed-p (and (or (not member-p) (prrr-pr-draft-p pr)) t))))))
+
+(defun prrr-state--mine-pair (pr meta me pos size)
+  "Return (KEY . ENTRY) for PR in the Mine group.
+META is PR's meta row or nil, ME the viewer's login; POS and SIZE
+place PR in its Stack.  KEY
+sorts by Mine state rank then creation time; it is nil for a PR by
+someone else, which is a dimmed context member of a Stack."
+  (let* ((mine-p (equal (prrr-pr-author pr) me))
+         (state (and mine-p (prrr-state-mine-state pr meta me))))
+    (cons (and mine-p
+               (format "%d:%s" (prrr-state--mine-rank state)
+                       (or (prrr-pr-created-at pr) "")))
+          (prrr-queue-entry-create
+           :pr pr :state state :group 'mine :partition nil
+           :stack-pos pos :stack-size size
+           :dimmed-p (not mine-p)))))
+
+(defun prrr-state--group (stacks make)
+  "Assemble one Queue Group from STACKS.
+MAKE is called with a PR, its 1-based position and its Stack's size and
+returns (KEY . ENTRY) or nil to leave the PR out.  A Stack is listed
+when any member has a non-nil KEY; Stacks sort by their smallest KEY
+and keep their members together, bottom first."
+  (let ((listed nil))
+    (dolist (stack stacks)
+      (let* ((size (length stack))
+             (pairs (delq nil (cl-loop for pr in stack
+                                       for pos from 1
+                                       collect (funcall make pr pos size))))
+             (keys (delq nil (mapcar #'car pairs))))
+        (when keys
+          (push (cons (car (sort keys #'string<)) (mapcar #'cdr pairs)) listed))))
+    (apply #'append
+           (mapcar #'cdr (sort (nreverse listed)
+                               (lambda (a b) (string< (car a) (car b))))))))
+
+(defun prrr-state-queue (prs metas me teams default-branch)
+  "Return the ordered Review Queue as (:for-me ENTRIES :mine ENTRIES).
+PRS are the repository's open `prrr-pr's, METAS their `prrr-pr-meta'
+rows (missing rows are allowed), ME the viewer's login, TEAMS the
+viewer's Team slugs and DEFAULT-BRANCH the repository's default branch.
+ENTRIES are `prrr-queue-entry' lists ordered as SPEC section 5
+describes."
+  (let ((meta-table (make-hash-table :test #'equal))
+        (stacks (prrr-state-stacks prs default-branch)))
+    (dolist (meta metas)
+      (puthash (prrr-pr-meta-pr-id meta) meta meta-table))
+    (list :for-me (prrr-state--group
+                   stacks
+                   (lambda (pr pos size)
+                     (prrr-state--for-me-pair pr (gethash (prrr-pr-id pr) meta-table)
+                                              me teams pos size)))
+          :mine (prrr-state--group
+                 stacks
+                 (lambda (pr pos size)
+                   (prrr-state--mine-pair pr (gethash (prrr-pr-id pr) meta-table)
+                                          me pos size))))))
+
 (provide 'prrr-state)
 ;;; prrr-state.el ends here
