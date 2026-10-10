@@ -120,7 +120,9 @@ STATE is `viewed', `unviewed' or `dismissed'."
      ([(id :primary-key) pr-id kind payload created-at attempts last-error])))
   "Tables as (TABLE STRUCT SCHEMA).
 SCHEMA is the emacsql `:create-table' schema: the column vector followed
-by table constraints.  The struct's slots equal the columns in order.")
+by table constraints.  The struct's slots equal the columns in order.
+The `outbox' column layout is frozen until 1.0, because `prrr-db-reset'
+never recreates that table and its old rows must stay readable.")
 
 (defun prrr-db--table-entry (table)
   "Return the `prrr-db--tables' entry of TABLE, or signal an error."
@@ -153,10 +155,15 @@ by table constraints.  The struct's slots equal the columns in order.")
   (mapcar #'car (cdr (cl-struct-slot-info struct))))
 
 (defun prrr-db--row-to-struct (table row)
-  "Build TABLE's struct from ROW, a list of column values."
-  (let ((struct (prrr-db--struct table)))
+  "Build TABLE's struct from ROW, a list of column values.
+Signal an error when ROW does not have one value per slot."
+  (let* ((struct (prrr-db--struct table))
+         (slots (prrr-db--slot-names struct)))
+    (unless (= (length row) (length slots))
+      (error "Row for table %s has %d values, expected %d"
+             table (length row) (length slots)))
     (apply (intern (format "%s-create" struct))
-           (cl-loop for slot in (prrr-db--slot-names struct)
+           (cl-loop for slot in slots
                     for value in row
                     append (list (intern (format ":%s" slot)) value)))))
 

@@ -83,9 +83,17 @@
     (let ((db (prrr-db)))
       (emacsql db [:insert :into pr-bookmark :values $v1]
                (list (vector "PR_1" "abc" "2026-10-10T12:00:00Z")))
+      (emacsql db [:insert :into outbox :values $v1]
+               (list (vector 1 "PR_1" 'comment "payload"
+                             "2026-10-10T12:00:00Z" 0 nil)))
       (prrr-db-reset db)
       (should (null (emacsql db [:select * :from pr-bookmark])))
-      (should (null (emacsql db [:select * :from outbox]))))))
+      (should (= 1 (length (emacsql db [:select * :from outbox])))))))
+
+(ert-deftest prrr-db-test-row-to-struct-rejects-wrong-arity ()
+  "A row with fewer values than the table has columns is an error."
+  (should-error (prrr-db--row-to-struct 'outbox (list 1 "PR_1"))
+                :type 'error))
 
 (ert-deftest prrr-db-test-open-creates-directory ()
   "Review Focus 4: `prrr-db' creates the database's directory."
