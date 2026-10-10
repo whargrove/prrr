@@ -57,6 +57,8 @@ throwaway.
 
 <!-- one line per resolved ticket: [title](issues/NN-slug.md): gist -->
 
+- [Research: GitHub API for Pending Reviews, comment anchoring, replies, and Ranges](issues/02-review-comment-api.md): GraphQL for the whole Pending Review lifecycle (`addPullRequestReview` with no event, `addPullRequestReviewThread` with file line + side, `startLine` for ranges, `subjectType: FILE` for files, `submitPullRequestReview` with the Verdict). Threads anchor to the review's commit; a diff between two arbitrary PR commits cannot take comments, so non-default Ranges stay read-only. Immediate Publish of one Review Comment is REST-only. Limits and deprecations listed in the findings.
+
 ## Not yet specified
 
 - Testing strategy for the package: how to test rendering against recorded
