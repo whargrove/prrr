@@ -13,6 +13,16 @@ the package deals with. No implementation details live here.
 - **Queue Filter**: one criterion deciding whether a PR is in the Review Queue
   (for example: not a draft, review requested from me, review requested from
   one of my teams, assigned to me).
+- **Queue Group**: a named partition of the Review Queue. There are two:
+  **For Me** (PRs by others that match a Queue Filter) and **Mine** (PRs the
+  user authored). A PR stays in its group after the user reviews it; its
+  Review State changes instead.
+- **Review State**: the user's standing on a PR: awaiting my review, reviewed
+  by me (with the Verdict given), reviewed by a teammate in my place, or new
+  commits since my review. Shown next to every PR in the Review Queue.
+- **Stack**: a chain of PRs where each PR's base branch is the head branch of
+  the PR below it. The bottom PR targets the repository's default branch. A
+  reviewer moves up and down a Stack without leaving prrr.
 - **Team**: a GitHub organization team the user belongs to. Used only to
   evaluate the "review requested from my team" filter.
 - **Review Buffer**: the buffer in which one PR is reviewed: its diff, its
