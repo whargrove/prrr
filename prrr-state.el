@@ -53,9 +53,11 @@ PR is the `prrr-pr'.  STATE is the Review State (For Me) or Mine state,
 nil for a dimmed context row.  GROUP is `for-me' or `mine'.  PARTITION
 is `awaiting' or `served' in For Me, nil in Mine.  STACK-POS is the
 1-based position of PR in its Stack, bottom first, and STACK-SIZE the
-Stack's length (1 for a lone PR).  DIMMED-P marks a row shown only for
-context: a non-qualifying Stack member or a draft requested from me."
-  pr state group partition stack-pos stack-size dimmed-p)
+Stack's length (1 for a lone PR).  STACK-ID is the `id' of the Stack's
+bottom PR, shared by every row of one Stack.  DIMMED-P marks a row
+shown only for context: a non-qualifying Stack member or a draft
+requested from me."
+  pr state group partition stack-pos stack-size stack-id dimmed-p)
 
 ;;;; Helpers over meta rows
 
@@ -172,19 +174,34 @@ earlier state).  Drafts are always Served."
 
 ;;;; Stacks
 
+(defun prrr-state--older-p (a b)
+  "Non-nil when PR A was opened before PR B.
+Creation time decides, a PR without one counting as the newest; the
+lower PR number breaks a tie."
+  (let ((created-a (prrr-pr-created-at a))
+        (created-b (prrr-pr-created-at b)))
+    (cond ((and created-a created-b (not (equal created-a created-b)))
+           (string< created-a created-b))
+          ((and created-a (not created-b)) t)
+          ((and created-b (not created-a)) nil)
+          (t (< (or (prrr-pr-number a) 0) (or (prrr-pr-number b) 0))))))
+
 (defun prrr-state--parent (pr prs default-branch)
   "Return the PR in PRS that PR is stacked on, or nil.
-The parent is the PR whose `head-ref' equals PR's `base-ref' and that
-is not from a fork.  A PR based on DEFAULT-BRANCH, or on a branch no
-open PR has as its head, has no parent."
+The parent is a PR whose `head-ref' equals PR's `base-ref' and that is
+not from a fork.  When several open PRs have that head branch, the
+oldest one is the parent (see `prrr-state--older-p'), so the answer
+does not depend on the order of PRS.  A PR based on DEFAULT-BRANCH, or
+on a branch no open PR has as its head, has no parent."
   (let ((base (prrr-pr-base-ref pr)))
     (and base
          (not (equal base default-branch))
-         (seq-find (lambda (candidate)
-                     (and (not (eq candidate pr))
-                          (not (prrr-pr-cross-repo-p candidate))
-                          (equal (prrr-pr-head-ref candidate) base)))
-                   prs))))
+         (car (sort (seq-filter (lambda (candidate)
+                                  (and (not (eq candidate pr))
+                                       (not (prrr-pr-cross-repo-p candidate))
+                                       (equal (prrr-pr-head-ref candidate) base)))
+                                prs)
+                    #'prrr-state--older-p)))))
 
 (defun prrr-state--descend (pr parents seen)
   "Return PR followed by its descendants in PARENTS, depth first.
@@ -284,6 +301,9 @@ and keep their members together, bottom first."
              (pairs (delq nil (cl-loop for pr in stack
                                        for pos from 1
                                        collect (funcall make pr pos size))))
+             (_ (dolist (pair pairs)
+                    (setf (prrr-queue-entry-stack-id (cdr pair))
+                          (prrr-pr-id (car stack)))))
              (keys (delq nil (mapcar #'car pairs))))
         (when keys
           (push (cons (car (sort keys #'string<)) (mapcar #'cdr pairs)) listed))))
