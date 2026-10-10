@@ -52,23 +52,23 @@ transient 0.13 or later, compat 31. ghub is reached only through forge.
 One package, `prrr`, split into focused files. Each file has one purpose and
 depends only on the files above it.
 
-| File | Purpose | Depends on |
-|---|---|---|
-| `prrr.el` | Package entry: `defgroup`, user options, autoloads, `prrr-review` and `prrr-queue` commands. | everything below |
-| `prrr-db.el` | SQLite schema, connection, struct types, CRUD. | emacsql |
-| `prrr-github.el` | Every GitHub call: GraphQL queries and mutations, REST calls, pagination, rate-limit pauses, response decoding into structs. | forge-query, forge-rest, ghub, prrr-db |
-| `prrr-sync.el` | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning. | prrr-db, prrr-github, magit-git |
-| `prrr-state.el` | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges. | prrr-db structs only |
-| `prrr-queue.el` | The Review Queue section in magit-status and its keymap. | prrr-state, prrr-sync, forge objects |
-| `prrr-diff.el` | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh. | magit-diff, magit-section, prrr-state |
-| `prrr-thread.el` | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer. | prrr-diff |
-| `prrr-range.el` | Range kinds, switching, since-review and since-opened computation, force-push handling. | prrr-sync, prrr-diff |
-| `prrr-review.el` | Pending Review lifecycle: add, edit, delete, reply, Immediate Publish, Submit with Verdict, discard. | prrr-github, prrr-sync, prrr-thread |
-| `prrr-stack.el` | Stack chain computation and navigation. | prrr-state, prrr-diff |
-| `prrr-treesit.el` | Deferred per-file tree-sitter highlighting. | prrr-diff, treesit |
-| `prrr-api.el` | The public `prrr-api-*` functions, hooks, JSON export and import. | prrr-review, prrr-range |
-| `prrr-agent.el` | `prrr-send-to-agent`, the Markdown payload, the default invoke function. | prrr-api |
-| `prrr-transient.el` | All transient prefixes. | every command file |
+| File                | Purpose                                                                                                                      | Depends on                             |
+|---------------------|------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
+| `prrr.el`           | Package entry: `defgroup`, user options, autoloads, `prrr-review` and `prrr-queue` commands.                                 | everything below                       |
+| `prrr-db.el`        | SQLite schema, connection, struct types, CRUD.                                                                               | emacsql                                |
+| `prrr-github.el`    | Every GitHub call: GraphQL queries and mutations, REST calls, pagination, rate-limit pauses, response decoding into structs. | forge-query, forge-rest, ghub, prrr-db |
+| `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, magit-git        |
+| `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
+| `prrr-queue.el`     | The Review Queue section in magit-status and its keymap.                                                                     | prrr-state, prrr-sync, forge objects   |
+| `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state  |
+| `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | prrr-diff                              |
+| `prrr-range.el`     | Range kinds, switching, since-review and since-opened computation, force-push handling.                                      | prrr-sync, prrr-diff                   |
+| `prrr-review.el`    | Pending Review lifecycle: add, edit, delete, reply, Immediate Publish, Submit with Verdict, discard.                         | prrr-github, prrr-sync, prrr-thread    |
+| `prrr-stack.el`     | Stack chain computation and navigation.                                                                                      | prrr-state, prrr-diff                  |
+| `prrr-treesit.el`   | Deferred per-file tree-sitter highlighting.                                                                                  | prrr-diff, treesit                     |
+| `prrr-api.el`       | The public `prrr-api-*` functions, hooks, JSON export and import.                                                            | prrr-review, prrr-range                |
+| `prrr-agent.el`     | `prrr-send-to-agent`, the Markdown payload, the default invoke function.                                                     | prrr-api                               |
+| `prrr-transient.el` | All transient prefixes.                                                                                                      | every command file                     |
 
 Rules:
 
@@ -89,17 +89,17 @@ repository id and the PR number are secondary columns used only to join to
 forge objects (forge's own `id` is a composite, not the node id; its
 `their-id` slot is the node id).
 
-| Table | Columns (PK first) | Notes |
-|---|---|---|
-| `pullreq-meta` | pr-id, forge-repo-id, number, head-oid, review-requests, latest-reviews, viewer-latest-review, viewer-latest-review-request, created-at, fetched-at | `review-requests`: list of `(kind name)` with kind `user` or `team`. `latest-reviews`: list of `(login state commit-oid submitted-at on-behalf-of)`. `viewer-latest-review`: `(state commit-oid submitted-at)` or nil. Everything the Review Queue needs. |
-| `thread` | thread-id, pr-id, path, line, start-line, side, start-side, subject-type, outdated-p, resolved-p, original-line, original-commit, fetched-at | `subject-type` is `line` or `file`. |
-| `review-comment` | comment-id, thread-id, pr-id, author, body, created-at, updated-at, reply-to, review-id, state, local-state, agent-p | `state`: `pending` or `submitted` (GitHub's). `local-state`: `sent`, `unsent`, or `proposed`. |
-| `pending-review` | pr-id, review-id, commit-oid, body, created-at | At most one per PR for the viewer. |
-| `viewed` | (pr-id, path), state, fetched-at | `state`: `viewed`, `unviewed`, `dismissed`. Default Range only. |
-| `team` | combined-slug, org, slug, fetched-at | The viewer's Teams. |
-| `pr-bookmark` | pr-id, last-opened-head-oid, last-opened-at | Local "since I last looked". |
-| `outbox` | id, pr-id, kind, payload, created-at, attempts, last-error | Failed writes awaiting retry. |
-| `schema-version` | version | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first. |
+| Table            | Columns (PK first)                                                                                                                                  | Notes                                                                                                                                                                                                                                                     |
+|------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pullreq-meta`   | pr-id, forge-repo-id, number, head-oid, review-requests, latest-reviews, viewer-latest-review, viewer-latest-review-request, created-at, fetched-at | `review-requests`: list of `(kind name)` with kind `user` or `team`. `latest-reviews`: list of `(login state commit-oid submitted-at on-behalf-of)`. `viewer-latest-review`: `(state commit-oid submitted-at)` or nil. Everything the Review Queue needs. |
+| `thread`         | thread-id, pr-id, path, line, start-line, side, start-side, subject-type, outdated-p, resolved-p, original-line, original-commit, fetched-at        | `subject-type` is `line` or `file`.                                                                                                                                                                                                                       |
+| `review-comment` | comment-id, thread-id, pr-id, author, body, created-at, updated-at, reply-to, review-id, state, local-state, agent-p                                | `state`: `pending` or `submitted` (GitHub's). `local-state`: `sent`, `unsent`, or `proposed`.                                                                                                                                                             |
+| `pending-review` | pr-id, review-id, commit-oid, body, created-at                                                                                                      | At most one per PR for the viewer.                                                                                                                                                                                                                        |
+| `viewed`         | (pr-id, path), state, fetched-at                                                                                                                    | `state`: `viewed`, `unviewed`, `dismissed`. Default Range only.                                                                                                                                                                                           |
+| `team`           | combined-slug, org, slug, fetched-at                                                                                                                | The viewer's Teams.                                                                                                                                                                                                                                       |
+| `pr-bookmark`    | pr-id, last-opened-head-oid, last-opened-at                                                                                                         | Local "since I last looked".                                                                                                                                                                                                                              |
+| `outbox`         | id, pr-id, kind, payload, created-at, attempts, last-error                                                                                          | Failed writes awaiting retry.                                                                                                                                                                                                                             |
+| `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first.                                                                                                                                           |
 
 Rows are plain structs (`prrr-thread`, `prrr-comment`, and so on) and are
 the values the API returns.
@@ -143,19 +143,19 @@ comments page through `node(id:)`.
 
 **Mutations** (GraphQL unless noted):
 
-| Action | Call |
-|---|---|
-| Create Pending Review | `addPullRequestReview(pullRequestId)` with no event; first query for an existing PENDING review and reuse it |
-| Add Thread (line, range, file) | `addPullRequestReviewThread(pullRequestReviewId, path, body, line, side[, startLine, startSide][, subjectType: FILE])` |
-| Reply inside Pending Review | `addPullRequestReviewThreadReply(pullRequestReviewThreadId, pullRequestReviewId, body)` |
+| Action                                  | Call                                                                                                                                               |
+|-----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| Create Pending Review                   | `addPullRequestReview(pullRequestId)` with no event; first query for an existing PENDING review and reuse it                                       |
+| Add Thread (line, range, file)          | `addPullRequestReviewThread(pullRequestReviewId, path, body, line, side[, startLine, startSide][, subjectType: FILE])`                             |
+| Reply inside Pending Review             | `addPullRequestReviewThreadReply(pullRequestReviewThreadId, pullRequestReviewId, body)`                                                            |
 | Immediate Publish of one Review Comment | REST `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` = head, `path`, `line`, `side`, optional `start_line`, `start_side`, `subject_type` |
-| Immediate reply | REST `POST /repos/{o}/{r}/pulls/{n}/comments/{id}/replies` |
-| Discussion Comment | `addComment(subjectId: <PR node id>, body)` |
-| Edit / delete a comment | `updatePullRequestReviewComment` / `deletePullRequestReviewComment` |
-| Submit | `submitPullRequestReview(pullRequestReviewId, event: APPROVE \| REQUEST_CHANGES \| COMMENT, body)` |
-| Discard Pending Review | `deletePullRequestReview` |
-| Resolve / unresolve Thread | `resolveReviewThread` / `unresolveReviewThread` |
-| Viewed | `markFileAsViewed` / `unmarkFileAsViewed` (`pullRequestId, path`) |
+| Immediate reply                         | REST `POST /repos/{o}/{r}/pulls/{n}/comments/{id}/replies`                                                                                         |
+| Discussion Comment                      | `addComment(subjectId: <PR node id>, body)`                                                                                                        |
+| Edit / delete a comment                 | `updatePullRequestReviewComment` / `deletePullRequestReviewComment`                                                                                |
+| Submit                                  | `submitPullRequestReview(pullRequestReviewId, event: APPROVE \| REQUEST_CHANGES \| COMMENT, body)`                                                 |
+| Discard Pending Review                  | `deletePullRequestReview`                                                                                                                          |
+| Resolve / unresolve Thread              | `resolveReviewThread` / `unresolveReviewThread`                                                                                                    |
+| Viewed                                  | `markFileAsViewed` / `unmarkFileAsViewed` (`pullRequestId, path`)                                                                                  |
 
 Line numbers are file line numbers at the review's commit: `RIGHT` is the
 new-file number for added and context lines, `LEFT` the old-file number for
@@ -362,35 +362,35 @@ menu key inside the magit-status section, where `?` belongs to magit.
 
 **Review Buffer** (`prrr-diff-mode-map`, parent `magit-diff-mode-map`):
 
-| Key | Command | Note |
-|---|---|---|
-| `c` | `prrr-comment` | line or region; `C-u` publishes immediately |
-| `C` | `prrr-comment-file` | File Comment |
-| `r` | `prrr-reply` | Thread at point; `C-u` immediate |
-| `e` | `prrr-edit-comment` | own comment at point |
-| `k` | `prrr-delete-comment` | own comment at point |
-| `d` | `prrr-discussion-comment` | always immediate |
-| `R` | `prrr-toggle-resolved` | Thread at point |
-| `s` | `prrr-comment-suggest` | suggestion block from region |
-| `]` / `[` | `prrr-next-thread` / `prrr-previous-thread` | |
-| `}` / `{` | `prrr-next-unresolved` / `prrr-previous-unresolved` | |
-| `J` / `K` | `prrr-next-file` / `prrr-previous-file` | `M-n`/`M-p` stay magit's sibling motion |
-| `j` | `prrr-jump-to-file` | completing-read over files |
-| `v` | `prrr-toggle-viewed` | folds and marks ✓ |
-| `z` / `Z` | `prrr-collapse-all` / `prrr-expand-all` | |
-| `D` | `prrr-range` | Range transient |
-| `.` | `prrr-goto-default-range` | same file and line |
-| `m` | `prrr-mark-seen` | update Bookmark |
-| `>` / `<` | `prrr-stack-up` / `prrr-stack-down` | |
-| `o` | `prrr-open-topic` | forge topic buffer |
-| `b` | `prrr-browse` | on GitHub |
-| `B` | `prrr-checkout` | forge's checkout |
-| `g` / `G` | `magit-refresh` / `prrr-refetch` | refresh / invalidate-and-refetch |
-| `S` | `prrr-submit` | Verdict transient: `a` approve, `r` request changes, `c` comment, `k` discard pending |
-| `O` | `prrr-outbox` | transient: `r` retry, `k` discard |
-| `@` | `prrr-send-to-agent` | |
-| `L` | `prrr-toggle-highlight` | |
-| `?` / `C-o` | `prrr-menu` | main transient |
+| Key         | Command                                             | Note                                                                                  |
+|-------------|-----------------------------------------------------|---------------------------------------------------------------------------------------|
+| `c`         | `prrr-comment`                                      | line or region; `C-u` publishes immediately                                           |
+| `C`         | `prrr-comment-file`                                 | File Comment                                                                          |
+| `r`         | `prrr-reply`                                        | Thread at point; `C-u` immediate                                                      |
+| `e`         | `prrr-edit-comment`                                 | own comment at point                                                                  |
+| `k`         | `prrr-delete-comment`                               | own comment at point                                                                  |
+| `d`         | `prrr-discussion-comment`                           | always immediate                                                                      |
+| `R`         | `prrr-toggle-resolved`                              | Thread at point                                                                       |
+| `s`         | `prrr-comment-suggest`                              | suggestion block from region                                                          |
+| `]` / `[`   | `prrr-next-thread` / `prrr-previous-thread`         |                                                                                       |
+| `}` / `{`   | `prrr-next-unresolved` / `prrr-previous-unresolved` |                                                                                       |
+| `J` / `K`   | `prrr-next-file` / `prrr-previous-file`             | `M-n`/`M-p` stay magit's sibling motion                                               |
+| `j`         | `prrr-jump-to-file`                                 | completing-read over files                                                            |
+| `v`         | `prrr-toggle-viewed`                                | folds and marks ✓                                                                     |
+| `z` / `Z`   | `prrr-collapse-all` / `prrr-expand-all`             |                                                                                       |
+| `D`         | `prrr-range`                                        | Range transient                                                                       |
+| `.`         | `prrr-goto-default-range`                           | same file and line                                                                    |
+| `m`         | `prrr-mark-seen`                                    | update Bookmark                                                                       |
+| `>` / `<`   | `prrr-stack-up` / `prrr-stack-down`                 |                                                                                       |
+| `o`         | `prrr-open-topic`                                   | forge topic buffer                                                                    |
+| `b`         | `prrr-browse`                                       | on GitHub                                                                             |
+| `B`         | `prrr-checkout`                                     | forge's checkout                                                                      |
+| `g` / `G`   | `magit-refresh` / `prrr-refetch`                    | refresh / invalidate-and-refetch                                                      |
+| `S`         | `prrr-submit`                                       | Verdict transient: `a` approve, `r` request changes, `c` comment, `k` discard pending |
+| `O`         | `prrr-outbox`                                       | transient: `r` retry, `k` discard                                                     |
+| `@`         | `prrr-send-to-agent`                                |                                                                                       |
+| `L`         | `prrr-toggle-highlight`                             |                                                                                       |
+| `?` / `C-o` | `prrr-menu`                                         | main transient                                                                        |
 
 Preserved from magit: `TAB`, `S-TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`,
 `q`, `1`-`4`, `C-c C-e` ediff, `h`. Overridden magit keys (`c`, `d`, `e`,
@@ -405,15 +405,15 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 
 **Review Queue section** (`prrr-queue-section-map`, active on a queue row):
 
-| Key | Command |
-|---|---|
-| `RET` | `prrr-review` (open Review Buffer at default Range) |
-| `o` | `prrr-open-topic` |
-| `b` | `prrr-browse` |
-| `B` | `prrr-checkout` |
-| `>` / `<` | `prrr-stack-up` / `prrr-stack-down` |
-| `G` | `prrr-pull` |
-| `C-o` | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served) |
+| Key       | Command                                                             |
+|-----------|---------------------------------------------------------------------|
+| `RET`     | `prrr-review` (open Review Buffer at default Range)                 |
+| `o`       | `prrr-open-topic`                                                   |
+| `b`       | `prrr-browse`                                                       |
+| `B`       | `prrr-checkout`                                                     |
+| `>` / `<` | `prrr-stack-up` / `prrr-stack-down`                                 |
+| `G`       | `prrr-pull`                                                         |
+| `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served) |
 
 **Capture buffer** (`prrr-comment-mode-map`): `C-c C-c` confirm, `C-c C-k`
 abort, `C-c C-i` toggle immediate.
@@ -479,14 +479,14 @@ bodies; nothing else is added.
 Measured on Emacs 31.1 with the prototype; the implementation must stay
 within these on the test fixtures in CI:
 
-| Operation | Budget |
-|---|---|
-| Review Queue render (database only) | 20 ms for 200 PRs |
-| Review Buffer open, 417 files | 150 ms to first paint |
-| Review Buffer open, 2,516 files | 500 ms to first paint |
-| Expand one file (300 lines, highlighted) | 25 ms |
-| Refresh with 3 files expanded, 417 files | 250 ms |
-| Per-PR refetch | 1 GraphQL point, 1 request for up to 100 Threads |
+| Operation                                | Budget                                           |
+|------------------------------------------|--------------------------------------------------|
+| Review Queue render (database only)      | 20 ms for 200 PRs                                |
+| Review Buffer open, 417 files            | 150 ms to first paint                            |
+| Review Buffer open, 2,516 files          | 500 ms to first paint                            |
+| Expand one file (300 lines, highlighted) | 25 ms                                            |
+| Refresh with 3 files expanded, 417 files | 250 ms                                           |
+| Per-PR refetch                           | 1 GraphQL point, 1 request for up to 100 Threads |
 
 ## 13. Testing
 
