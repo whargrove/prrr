@@ -365,14 +365,14 @@ git commit -m "chore: package skeleton, Makefile and dependency installer"
     (let ((db (prrr-db))
           (prrr-db-preserved-outbox nil))
       (emacsql db [:insert :into team :values $v1]
-               (vector (vector "example-org/reviewers" "example-org"
+               (list (vector "example-org/reviewers" "example-org"
                                "reviewers" "2026-10-10T12:00:00Z")))
       (emacsql db [:insert :into outbox :values $v1]
-               (vector (vector 1 "PR_1" 'comment "payload"
+               (list (vector 1 "PR_1" 'comment "payload"
                                "2026-10-10T12:00:00Z" 0 nil)))
       (emacsql db [:delete :from schema-version])
       (emacsql db [:insert :into schema-version :values $v1]
-               (vector (vector 0)))
+               (list (vector 0)))
       (prrr-db--init db)
       (should (null (emacsql db [:select * :from team])))
       (should (= 1 (length (emacsql db [:select * :from outbox]))))
@@ -387,7 +387,7 @@ git commit -m "chore: package skeleton, Makefile and dependency installer"
   (prrr-db-with-test-db
     (let ((db (prrr-db)))
       (emacsql db [:insert :into team :values $v1]
-               (vector (vector "example-org/reviewers" "example-org"
+               (list (vector "example-org/reviewers" "example-org"
                                "reviewers" nil)))
       (prrr-db--init db)
       (should (= 1 (length (emacsql db [:select * :from team])))))))
@@ -396,7 +396,7 @@ git commit -m "chore: package skeleton, Makefile and dependency installer"
   (prrr-db-with-test-db
     (let ((db (prrr-db)))
       (emacsql db [:insert :into pr-bookmark :values $v1]
-               (vector (vector "PR_1" "abc" "2026-10-10T12:00:00Z")))
+               (list (vector "PR_1" "abc" "2026-10-10T12:00:00Z")))
       (prrr-db-reset db)
       (should (null (emacsql db [:select * :from pr-bookmark])))
       (should (null (emacsql db [:select * :from outbox]))))))
@@ -617,7 +617,7 @@ anything else; `prrr-db--init' sets it, nothing in this file reads it.")
     (emacsql db [:create-table schema-version ([version])]))
   (emacsql db [:delete :from schema-version])
   (emacsql db [:insert :into schema-version :values $v1]
-           (vector (vector prrr-db-schema-version))))
+           (list (vector prrr-db-schema-version))))
 
 (defun prrr-db--drop-table (db table)
   "Drop TABLE from DB if it exists."
