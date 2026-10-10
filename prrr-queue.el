@@ -252,5 +252,127 @@ empty.  Sets `prrr-queue--rows'."
       (insert "\n"))
     (setq prrr-queue--rows (nreverse prrr-queue--rows))))
 
+;;;; From forge
+
+(defun prrr-queue--assignees (pullreq)
+  "Return the logins assigned to forge's PULLREQ."
+  (mapcar #'cadr (prrr-queue--slot pullreq 'assignees)))
+
+(defun prrr-queue--slot (pullreq slot)
+  "Return SLOT of forge's PULLREQ, or nil when forge never set it."
+  (condition-case nil
+      (eieio-oref pullreq slot)
+    (unbound-slot nil)))
+
+(defun prrr-queue-pr (pullreq)
+  "Return the `prrr-pr' the Review Queue rules see for forge's PULLREQ.
+HEAD-OID is forge's head-rev; the Review State prefers the head stored
+with the PR's meta row (`prrr-state--head-oid'), so forge's matters only
+for a PR prrr has not pulled yet."
+  (prrr-pr-create :id (prrr-queue--slot pullreq 'their-id)
+                  :number (prrr-queue--slot pullreq 'number)
+                  :title (prrr-queue--slot pullreq 'title)
+                  :author (prrr-queue--slot pullreq 'author)
+                  :draft-p (and (prrr-queue--slot pullreq 'draft-p) t)
+                  :assignees (prrr-queue--assignees pullreq)
+                  :created-at (prrr-queue--slot pullreq 'created)
+                  :updated-at (prrr-queue--slot pullreq 'updated)
+                  :head-oid (prrr-queue--slot pullreq 'head-rev)
+                  :base-ref (prrr-queue--slot pullreq 'base-ref)
+                  :head-ref (prrr-queue--slot pullreq 'head-ref)
+                  :cross-repo-p (and (prrr-queue--slot pullreq 'cross-repo-p) t)))
+
+(defun prrr-queue--open-pullreqs (repo)
+  "Return forge's open pull requests of REPO."
+  (seq-filter (lambda (pullreq) (eq (oref pullreq state) 'open))
+              (oref repo pullreqs)))
+
+(defun prrr-queue--width ()
+  "Return the columns rows should fit: the buffer's window, else 80."
+  (if-let ((window (get-buffer-window (current-buffer))))
+      (window-body-width window)
+    80))
+
+(defun prrr-queue--inputs (repo)
+  "Gather the `prrr-queue-insert' INPUTS of REPO from forge and the database."
+  (let* ((id (oref repo id))
+         (pairs (mapcar (lambda (pullreq) (cons pullreq (prrr-queue-pr pullreq)))
+                        (prrr-queue--open-pullreqs repo))))
+    (list :pairs pairs
+          :metas (prrr-db-select 'pullreq-meta :forge-repo-id id)
+          :teams (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))
+          :me (prrr-github-viewer)
+          :default-branch (oref repo default-branch)
+          :unresolved (prrr-db-unresolved-thread-counts
+                       (mapcar (lambda (pair) (prrr-pr-id (cdr pair))) pairs))
+          :status (prrr-sync-status id)
+          :now (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t)
+          :width (prrr-queue--width))))
+
+;;;; The magit-status section
+
+(defun prrr-queue--announce-preserved-outbox ()
+  "Warn once about Outbox rows kept across a database schema reset."
+  (when-let ((rows (prrr-db-take-preserved-outbox)))
+    (display-warning
+     'prrr
+     (format "prrr's database was reset for a new layout; %d unsent write(s) are kept in the Outbox: %s"
+             (length rows)
+             (mapconcat (lambda (row) (format "%s on %s" (prrr-outbox-kind row) (prrr-outbox-pr-id row)))
+                        rows ", "))
+     :warning)))
+
+(defun prrr-queue--insert-error (err)
+  "Insert a Review Queue heading that reports ERR."
+  (magit-insert-section (prrr-queue)
+    (magit-insert-heading
+      (propertize "Review Queue" 'font-lock-face 'magit-section-heading)
+      (propertize (format " (error: %s)" (error-message-string err)) 'font-lock-face 'error))
+    (insert "\n")))
+
+(defun prrr-queue-insert-section ()
+  "Insert the Review Queue into a `magit-status' buffer.
+A `magit-status-sections-hook' function.  Inserts nothing outside a
+GitHub repository tracked by forge.  Starts a background pull when the
+stored inputs are stale (`prrr-sync-queue-due-p').  Any error becomes a
+one-line section, so the rest of the status buffer still renders."
+  (when-let* ((_ (forge-db t))
+              (repo (forge-get-repository :tracked?))
+              (_ (cl-typep repo 'forge-github-repository)))
+    (condition-case err
+        (let ((inputs (prrr-queue--inputs repo))
+              (id (oref repo id)))
+          (prrr-queue--announce-preserved-outbox)
+          (when (prrr-sync-queue-due-p id (plist-get inputs :metas))
+            (prrr-sync-pull repo (current-buffer)))
+          (prrr-queue-insert (plist-put inputs :status (prrr-sync-status id))))
+      (error
+       (message "Review Queue failed: %s" (error-message-string err))
+       (prrr-queue--insert-error err)))))
+
+;;;###autoload
+(define-minor-mode prrr-queue-mode
+  "Show the Review Queue in the `magit-status' buffer of GitHub repositories.
+The section goes right before forge's list of pull requests."
+  :global t
+  :group 'prrr
+  (if prrr-queue-mode
+      (magit-add-section-hook 'magit-status-sections-hook #'prrr-queue-insert-section
+                              #'forge-insert-pullreqs)
+    (remove-hook 'magit-status-sections-hook #'prrr-queue-insert-section)))
+
+;;;###autoload
+(defun prrr-queue ()
+  "Show the Review Queue of the current repository.
+Turns on `prrr-queue-mode' when it is off, opens the repository's
+`magit-status' buffer and moves point to the Review Queue."
+  (interactive)
+  (unless prrr-queue-mode
+    (prrr-queue-mode 1))
+  (magit-status-setup-buffer)
+  (if-let ((section (magit-get-section '((prrr-queue) (status)))))
+      (magit-section-goto section)
+    (user-error "No Review Queue here: prrr needs a GitHub repository tracked by forge")))
+
 (provide 'prrr-queue)
 ;;; prrr-queue.el ends here

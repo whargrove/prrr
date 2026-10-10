@@ -168,7 +168,7 @@ and waits at least one second between them. Content creation is limited to
 ## 5. Review Queue (prrr-t9q.6)
 
 A section inserted into `magit-status-sections-hook` before
-`forge-insert-pullreqs` with `magit-add-section-hook`. It renders only from
+`forge-insert-pullreqs` with `magit-add-section-hook`. The section is turned on by the global minor mode `prrr-queue-mode`. `prrr-queue` turns it on when needed. It renders only from
 `pullreq-meta`, `team`, and forge's PR objects, never from the network, and
 triggers `prrr-pull` in the background when the newest `fetched-at` is older
 than `prrr-queue-stale-after` (default 300 seconds). Expanded by default when
