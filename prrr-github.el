@@ -57,6 +57,17 @@
     "Review Queue inputs of one repository (SPEC section 4).
 Variables: $owner and $name.  Pages every open PR."))
 
+(eval-and-compile
+  (defconst prrr-github-teams-query
+    '(viewer login
+       (organizations [(:edges t)]
+         login
+         (teams [(:edges t) (userLogins $me \[String!\])] slug combinedSlug)))
+    "The viewer's Teams in every organization (SPEC section 4).
+Variable: $me, a one-element list holding the viewer's login.  The
+type is the symbol `[String!]' because ghub prints a vector type as
+`(String!)', which GraphQL rejects."))
+
 (defmacro prrr-github--query (host query-symbol variables &rest keys)
   "Send the query stored in QUERY-SYMBOL to HOST through `forge-query'.
 VARIABLES is a literal list of (NAME FORM) pairs, FORM being evaluated
@@ -118,6 +129,22 @@ record, nil when the caller stamps rows itself."
                  :fetched-at fetched-at)))
             .repository.pullRequests)))
 
+;;;; Decoding teams
+
+(defun prrr-github-decode-teams (data &optional fetched-at)
+  "Decode viewer teams DATA into a list of `prrr-team' stamped FETCHED-AT."
+  (let-alist data
+    (cl-mapcan (lambda (org)
+                 (let ((org-login (alist-get 'login org)))
+                   (mapcar (lambda (team)
+                             (let-alist team
+                               (prrr-team-create :combined-slug .combinedSlug
+                                                 :org org-login
+                                                 :slug .slug
+                                                 :fetched-at fetched-at)))
+                           (alist-get 'teams org))))
+               .viewer.organizations)))
+
 ;;;; Requests
 
 (defun prrr-github-fetch-queue (host owner name callback &optional forge-repo-id)
@@ -130,6 +157,15 @@ time and FORGE-REPO-ID."
                 (funcall callback
                          (prrr-github-decode-queue data forge-repo-id
                                                    (prrr-github--now))))))
+
+(defun prrr-github-fetch-teams (host me callback)
+  "Fetch the Teams of the viewer ME on HOST.
+CALLBACK receives a list of `prrr-team' stamped with the current time."
+  (prrr-github--query host prrr-github-teams-query
+    ((me (vector me)))
+    :callback (lambda (data &rest _)
+                (funcall callback
+                         (prrr-github-decode-teams data (prrr-github--now))))))
 
 (provide 'prrr-github)
 ;;; prrr-github.el ends here

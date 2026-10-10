@@ -101,5 +101,30 @@
     (should (string-match-p "__typename.*on User { login }.*on Team { combinedSlug }"
                             (format "%S" prs)))))
 
+(ert-deftest prrr-github-test-decode-teams ()
+  (let ((teams (prrr-github-decode-teams (prrr-test-fixture "teams")
+                                         "2026-10-10T12:00:00Z")))
+    (should (= 2 (length teams)))
+    (should (cl-every #'prrr-team-p teams))
+    (should (equal '("example-org/reviewers" "example-org/platform")
+                   (mapcar #'prrr-team-combined-slug teams)))
+    (should (equal '("reviewers" "platform") (mapcar #'prrr-team-slug teams)))
+    (should (equal '("example-org" "example-org") (mapcar #'prrr-team-org teams)))
+    (should (equal "2026-10-10T12:00:00Z" (prrr-team-fetched-at (car teams))))))
+
+(ert-deftest prrr-github-test-decode-teams-no-organizations ()
+  (should (null (prrr-github-decode-teams
+                 '(data (viewer (login . "example-me") (organizations)))))))
+
+(ert-deftest prrr-github-test-fetch-teams-sends-login-and-decodes ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "teams") captured
+    (let (result)
+      (prrr-github-fetch-teams "api.github.com" "example-me"
+                               (lambda (teams) (setq result teams)))
+      (should (equal `(query ,prrr-github-teams-query) (nth 0 captured)))
+      (should (equal (list (cons (quote me) ["example-me"])) (nth 1 captured)))
+      (should (= 2 (length result)))
+      (should (stringp (prrr-team-fetched-at (car result)))))))
+
 (provide 'prrr-github-test)
 ;;; prrr-github-test.el ends here
