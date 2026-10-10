@@ -38,15 +38,12 @@
 (require 'prrr-db)
 (require 'prrr-github)
 (require 'prrr-state)
+(require 'prrr-sync)
 
 (defgroup prrr nil
   "Review GitHub pull requests with magit and forge."
   :group 'tools
   :prefix "prrr-")
-
-(defcustom prrr-queue-stale-after 300
-  "Seconds after which the Review Queue inputs are pulled again."
-  :type 'natnum)
 
 (provide 'prrr)
 ;;; prrr.el ends here

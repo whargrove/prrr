@@ -1,7 +1,7 @@
 EMACS    ?= emacs
 DEPS_DIR := $(CURDIR)/.deps
-SRC      := prrr-db.el prrr-github.el prrr-state.el prrr.el
-TESTS    ?= test/prrr-db-test.el test/prrr-github-test.el test/prrr-state-test.el
+SRC      := prrr-db.el prrr-github.el prrr-state.el prrr-sync.el prrr.el
+TESTS    ?= test/prrr-db-test.el test/prrr-github-test.el test/prrr-state-test.el test/prrr-sync-test.el
 SELECTOR ?= t
 
 BATCH := $(EMACS) -Q --batch \

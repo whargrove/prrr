@@ -120,5 +120,25 @@ VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
                        :viewer-latest-review-request viewer-latest-review-request
                        :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
 
+(defvar prrr-test-requests nil
+  "Top-level fields of the requests seen by `prrr-test-with-ghub-dispatch'.")
+
+(defmacro prrr-test-with-ghub-dispatch (alist &rest body)
+  "Run BODY with `ghub-query' answering each request from ALIST.
+ALIST maps the query's top-level field (`repository' or `viewer') to
+the fixture datum to answer with.  Callbacks run synchronously.  The
+variable `prrr-test-requests' collects the top-level field of every
+request, oldest first."
+  (declare (indent 1) (debug (form body)))
+  `(let ((prrr-test-requests nil))
+     (cl-letf (((symbol-function 'ghub-query)
+                (lambda (query _variables &rest args)
+                  (let ((field (car (cadr query))))
+                    (setq prrr-test-requests (append prrr-test-requests (list field)))
+                    (funcall (plist-get args :callback)
+                             (or (alist-get field ,alist)
+                                 (ert-fail (list "unexpected request" field))))))))
+       ,@body)))
+
 (provide 'prrr-test-helper)
 ;;; prrr-test-helper.el ends here
