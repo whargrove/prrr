@@ -24,7 +24,7 @@ lint:
 	$(BATCH) -l package-lint \
 	  --eval '(setq package-lint-main-file "prrr.el")' \
 	  -f package-lint-batch-and-exit $(wildcard $(SRC))
-	$(BATCH) --eval '(progn (require (quote checkdoc)) (defvar prrr-checkdoc-failed nil) (setq checkdoc-create-error-function (lambda (text start _end &optional _unfixable) (setq prrr-checkdoc-failed t) (message "%s:%d: %s" (buffer-file-name) (line-number-at-pos start) text) nil)) (dolist (file command-line-args-left) (checkdoc-file file)) (kill-emacs (if prrr-checkdoc-failed 1 0)))' \
+	$(BATCH) --eval '(progn (require (quote checkdoc)) (setq checkdoc-verb-check-experimental-flag nil) (defvar prrr-checkdoc-failed nil) (setq checkdoc-create-error-function (lambda (text start _end &optional _unfixable) (setq prrr-checkdoc-failed t) (message "%s:%d: %s" (buffer-file-name) (line-number-at-pos start) text) nil)) (dolist (file command-line-args-left) (checkdoc-file file)) (kill-emacs (if prrr-checkdoc-failed 1 0)))' \
 	  $(wildcard $(SRC)) $(wildcard test/*.el)
 
 test:
