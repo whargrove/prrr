@@ -97,10 +97,6 @@
 
 ;;;; Keymaps
 
-(autoload 'prrr-stack-up "prrr-stack" nil t)
-(autoload 'prrr-stack-down "prrr-stack" nil t)
-(autoload 'prrr-queue-menu "prrr-transient" nil t)
-
 (defvar-keymap prrr-queue-heading-map
   :doc "Keys on the Review Queue heading and its group headings."
   "G" #'prrr-pull

@@ -42,6 +42,18 @@
   :group 'tools
   :prefix "prrr-")
 
+;; Explicit autoloads, so a plain clone on `load-path' works without a
+;; generated autoloads file.  Each costs nothing until its command runs.
+(autoload 'prrr-queue-mode "prrr-queue"
+  "Show the Review Queue in the `magit-status' buffer of GitHub repositories." t)
+(autoload 'prrr-queue "prrr-queue" "Show the Review Queue of the current repository." t)
+(autoload 'prrr-pull "prrr-sync"
+  "Pull the current repository's pull requests and Review Queue inputs." t)
+(autoload 'prrr-refresh-teams "prrr-sync" "Fetch the viewer's Teams again." t)
+(autoload 'prrr-stack-up "prrr-stack" "Move to the next PR up the current Stack." t)
+(autoload 'prrr-stack-down "prrr-stack" "Move to the next PR down the current Stack." t)
+(autoload 'prrr-queue-menu "prrr-transient" "Show the Review Queue commands." t)
+
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))
 (declare-function forge-browse-pullreq "forge-commands" (pull-request))

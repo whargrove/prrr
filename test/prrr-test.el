@@ -43,6 +43,26 @@
            (buffer-string))))
     (should (equal "(nil nil nil)" (string-trim output)))))
 
+(ert-deftest prrr-test-require-prrr-autoloads-every-command ()
+  "A plain clone on `load-path' has no generated autoloads file (I3).
+`(require \\='prrr)' alone must make every entry command callable."
+  (let ((output
+         (with-temp-buffer
+           (call-process (expand-file-name invocation-name invocation-directory)
+                         nil '(t nil) nil
+                         "-Q" "--batch"
+                         "--eval" (format "(progn (setq package-user-dir %S) (package-initialize))"
+                                          package-user-dir)
+                         "-L" prrr-test-root
+                         "--eval" (concat "(progn (require 'prrr) (let (missing)"
+                                         " (dolist (command '(prrr-queue-mode prrr-queue prrr-pull prrr-refresh-teams"
+                                         " prrr-stack-up prrr-stack-down prrr-queue-menu))"
+                                         " (unless (and (autoloadp (symbol-function command)) (commandp command))"
+                                         " (push command missing)))"
+                                         " (prin1 missing)))"))
+           (buffer-string))))
+    (should (equal "nil" (string-trim output)))))
+
 (ert-deftest prrr-test-current-pullreq-signals-without-one ()
   (cl-letf (((symbol-function 'forge-current-pullreq) #'ignore))
     (should-error (prrr-current-pullreq) :type 'user-error)))
