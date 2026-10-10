@@ -100,3 +100,5 @@ and forge. Read, in this order:
 - `lexical-binding: t`, GPL-3.0-or-later headers, `prrr-` prefix on every
   symbol, no personal paths or tokens anywhere in the repository.
 - Throwaway prototypes live on `prototype/*` branches, never on `main`.
+- `README.md` grows with every milestone: a milestone's last task adds its
+  user-visible commands, keys and options, and updates the Status note.

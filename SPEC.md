@@ -543,4 +543,4 @@ implementation plan.
 6. **Highlighting.** `prrr-treesit.el`.
 7. **Agent API.** `prrr-api.el`, hooks, JSON export and import,
    `prrr-agent.el` with the agent-shell default.
-8. **Release.** README, screenshots, CHANGELOG, MELPA recipe.
+8. **Release.** README polish (the README grows with each milestone), screenshots, CHANGELOG, MELPA recipe.
