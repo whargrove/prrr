@@ -110,5 +110,82 @@
       (prrr-db-close)
       (delete-directory dir t))))
 
+(ert-deftest prrr-db-test-insert-and-get-round-trip ()
+  "Lists, symbols, booleans and nil survive a round trip."
+  (prrr-db-with-test-db
+    (let ((meta (prrr-pr-meta-create
+                 :pr-id "PR_1" :forge-repo-id "example-repo-id" :number 7
+                 :head-oid "1111111111111111111111111111111111111111"
+                 :review-requests '((user "example-me")
+                                    (team "example-org/reviewers"))
+                 :latest-reviews '(("example-bob" "APPROVED"
+                                    "2026-09-02T10:00:00Z"
+                                    "1111111111111111111111111111111111111111"
+                                    ("example-org/reviewers")))
+                 :viewer-latest-review nil
+                 :viewer-latest-review-request "example-alice"
+                 :created-at "2026-09-01T09:00:00Z"
+                 :fetched-at "2026-10-10T12:00:00Z")))
+      (should (eq meta (prrr-db-insert meta)))
+      (should (equal meta (prrr-db-get 'pullreq-meta "PR_1")))
+      (should (null (prrr-db-get 'pullreq-meta "PR_404"))))))
+
+(ert-deftest prrr-db-test-insert-replaces-existing-row ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-bookmark-create :pr-id "PR_1" :last-opened-head-oid "a"
+                                          :last-opened-at "2026-10-01T00:00:00Z"))
+    (prrr-db-insert (prrr-bookmark-create :pr-id "PR_1" :last-opened-head-oid "b"
+                                          :last-opened-at "2026-10-02T00:00:00Z"))
+    (should (= 1 (length (prrr-db-select 'pr-bookmark))))
+    (should (equal "b" (prrr-bookmark-last-opened-head-oid
+                        (prrr-db-get 'pr-bookmark "PR_1"))))))
+
+(ert-deftest prrr-db-test-get-with-composite-key ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-viewed-create :pr-id "PR_1" :path "src/a.el"
+                                        :state 'viewed :fetched-at nil))
+    (prrr-db-insert (prrr-viewed-create :pr-id "PR_1" :path "src/b.el"
+                                        :state 'dismissed :fetched-at nil))
+    (should (eq 'dismissed
+                (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "src/b.el"))))
+    (should (null (prrr-db-get 'viewed "PR_2" "src/b.el")))
+    (should-error (prrr-db-get 'viewed "PR_1"))))
+
+(ert-deftest prrr-db-test-select-filters-by-columns ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-thread-create :thread-id "T_1" :pr-id "PR_1" :path "a"
+                                        :side 'right :subject-type 'line
+                                        :resolved-p t))
+    (prrr-db-insert (prrr-thread-create :thread-id "T_2" :pr-id "PR_1" :path "b"
+                                        :side 'right :subject-type 'line
+                                        :resolved-p nil))
+    (prrr-db-insert (prrr-thread-create :thread-id "T_3" :pr-id "PR_2" :path "a"
+                                        :side 'left :subject-type 'file
+                                        :resolved-p t))
+    (should (= 3 (length (prrr-db-select 'thread))))
+    (should (equal '("T_1" "T_2")
+                   (mapcar #'prrr-thread-thread-id
+                           (prrr-db-select 'thread :pr-id "PR_1"))))
+    (should (equal '("T_1")
+                   (mapcar #'prrr-thread-thread-id
+                           (prrr-db-select 'thread :pr-id "PR_1" :resolved-p t))))
+    (should (eq t (prrr-thread-resolved-p (prrr-db-get 'thread "T_1"))))
+    (should (eq 'file (prrr-thread-subject-type (prrr-db-get 'thread "T_3"))))))
+
+(ert-deftest prrr-db-test-delete-by-columns-and-all ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-team-create :combined-slug "example-org/a" :org "example-org" :slug "a"))
+    (prrr-db-insert (prrr-team-create :combined-slug "example-org/b" :org "example-org" :slug "b"))
+    (prrr-db-insert (prrr-team-create :combined-slug "other/c" :org "other" :slug "c"))
+    (prrr-db-delete 'team :org "example-org")
+    (should (equal '("other/c")
+                   (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))))
+    (prrr-db-delete 'team)
+    (should (null (prrr-db-select 'team)))))
+
+(ert-deftest prrr-db-test-insert-rejects-foreign-value ()
+  (prrr-db-with-test-db
+    (should-error (prrr-db-insert (list 'not 'a 'struct)))))
+
 (provide 'prrr-db-test)
 ;;; prrr-db-test.el ends here

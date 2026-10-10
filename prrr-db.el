@@ -248,5 +248,84 @@ The file's directory is created when missing."
     (emacsql-close prrr-db--connection))
   (setq prrr-db--connection nil))
 
+;;;; Generic CRUD
+
+(defun prrr-db--table-of (struct)
+  "Return the table whose rows are instances of STRUCT's type."
+  (let ((type (type-of struct)))
+    (or (and (recordp struct)
+             (car (seq-find (lambda (entry) (eq (nth 1 entry) type))
+                            prrr-db--tables)))
+        (error "prrr-db: %S is not a prrr row struct" struct))))
+
+(defun prrr-db--struct-to-row (struct)
+  "Return STRUCT's slot values as a vector in column order."
+  (let ((type (type-of struct)))
+    (apply #'vector
+           (mapcar (lambda (slot) (cl-struct-slot-value type slot struct))
+                   (prrr-db--slot-names type)))))
+
+(defun prrr-db--where (plist)
+  "Translate PLIST of :column value pairs into (WHERE-FORM . VALUES).
+WHERE-FORM is nil when PLIST is empty.  Column values are bound to
+$s1, $s2, ... in order.  A nil value never matches (SQL NULL)."
+  (let ((clauses nil) (values nil) (n 0))
+    (while plist
+      (let* ((column (intern (substring (symbol-name (pop plist)) 1)))
+             (value (pop plist)))
+        (setq n (1+ n))
+        (push (list '= column (intern (format "$s%d" n))) clauses)
+        (push value values)))
+    (setq clauses (nreverse clauses))
+    (cons (pcase clauses
+            ('nil nil)
+            (`(,one) one)
+            (_ (cons 'and clauses)))
+          (nreverse values))))
+
+(defun prrr-db-insert (struct)
+  "Insert STRUCT into its table, replacing a row with the same key.
+Return STRUCT."
+  (emacsql (prrr-db)
+           (vector :insert-or-replace :into (prrr-db--table-of struct)
+                   :values '$v1)
+           (list (prrr-db--struct-to-row struct)))
+  struct)
+
+(defun prrr-db-select (table &rest plist)
+  "Return the rows of TABLE matching PLIST as structs.
+PLIST is :column value pairs that must all match; with no pairs every
+row is returned.  Rows come back in insertion order."
+  (pcase-let ((`(,where . ,values) (prrr-db--where plist)))
+    (mapcar (lambda (row) (prrr-db--row-to-struct table row))
+            (apply #'emacsql (prrr-db)
+                   (if where
+                       (vector :select '* :from table :where where)
+                     (vector :select '* :from table))
+                   values))))
+
+(defun prrr-db-get (table &rest key)
+  "Return the row of TABLE whose primary key is KEY, or nil.
+KEY has one value per primary key column, so a composite key such as
+`viewed' takes two: (prrr-db-get \\='viewed PR-ID PATH)."
+  (let ((columns (prrr-db--primary-key table)))
+    (unless (= (length columns) (length key))
+      (error "prrr-db: %s needs %d key values, got %d"
+             table (length columns) (length key)))
+    (car (apply #'prrr-db-select table
+                (cl-loop for column in columns
+                         for value in key
+                         append (list (intern (format ":%s" column)) value))))))
+
+(defun prrr-db-delete (table &rest plist)
+  "Delete the rows of TABLE matching PLIST (:column value pairs).
+With no pairs every row of TABLE is deleted."
+  (pcase-let ((`(,where . ,values) (prrr-db--where plist)))
+    (apply #'emacsql (prrr-db)
+           (if where
+               (vector :delete :from table :where where)
+             (vector :delete :from table))
+           values)))
+
 (provide 'prrr-db)
 ;;; prrr-db.el ends here
