@@ -235,5 +235,143 @@ VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
                    changes-requested approved commented assigned)
                  prrr-state-for-me-order)))
 
+;;;; Mine state
+
+(defun prrr-state-test--mine (pr meta)
+  "Mine state of PR with META for the test viewer."
+  (prrr-state-mine-state pr meta prrr-state-test--me))
+
+(ert-deftest prrr-state-test-mine-state-draft ()
+  (should (eq 'draft (prrr-state-test--mine
+                      (prrr-state-test--pr :author "example-me" :draft-p t)
+                      (prrr-state-test--meta
+                       :latest-reviews '(("example-carol" "CHANGES_REQUESTED"
+                                          "2026-09-02T00:00:00Z" "abc" nil)))))))
+
+(ert-deftest prrr-state-test-mine-state-awaiting-review ()
+  (should (eq 'awaiting-review
+              (prrr-state-test--mine (prrr-state-test--pr :author "example-me")
+                                     (prrr-state-test--meta))))
+  (should (eq 'awaiting-review
+              (prrr-state-test--mine (prrr-state-test--pr :author "example-me") nil))))
+
+(ert-deftest prrr-state-test-mine-state-changes-requested-beats-approved ()
+  (should (eq 'changes-requested
+              (prrr-state-test--mine
+               (prrr-state-test--pr :author "example-me")
+               (prrr-state-test--meta
+                :latest-reviews '(("example-dave" "APPROVED" "2026-09-02T00:00:00Z" "abc" nil)
+                                  ("example-carol" "CHANGES_REQUESTED" "2026-09-03T00:00:00Z" "abc" nil)))))))
+
+(ert-deftest prrr-state-test-mine-state-approved-beats-commented ()
+  (should (eq 'approved
+              (prrr-state-test--mine
+               (prrr-state-test--pr :author "example-me")
+               (prrr-state-test--meta
+                :latest-reviews '(("example-dave" "COMMENTED" "2026-09-02T00:00:00Z" "abc" nil)
+                                  ("example-carol" "APPROVED" "2026-09-03T00:00:00Z" "abc" nil)))))))
+
+(ert-deftest prrr-state-test-mine-state-reviewed ()
+  "COMMENTED and DISMISSED reviews by others mean reviewed."
+  (should (eq 'reviewed
+              (prrr-state-test--mine
+               (prrr-state-test--pr :author "example-me")
+               (prrr-state-test--meta
+                :latest-reviews '(("example-dave" "COMMENTED" "2026-09-02T00:00:00Z" "abc" nil))))))
+  (should (eq 'reviewed
+              (prrr-state-test--mine
+               (prrr-state-test--pr :author "example-me")
+               (prrr-state-test--meta
+                :latest-reviews '(("example-dave" "DISMISSED" "2026-09-02T00:00:00Z" nil nil)))))))
+
+(ert-deftest prrr-state-test-mine-state-ignores-my-own-review ()
+  (should (eq 'awaiting-review
+              (prrr-state-test--mine
+               (prrr-state-test--pr :author "example-me")
+               (prrr-state-test--meta
+                :latest-reviews '(("example-me" "APPROVED" "2026-09-02T00:00:00Z" "abc" nil)))))))
+
+(ert-deftest prrr-state-test-mine-state-deleted-reviewer ()
+  "A review with a nil login counts as someone else's."
+  (should (eq 'changes-requested
+              (prrr-state-test--mine
+               (prrr-state-test--pr :author "example-me")
+               (prrr-state-test--meta
+                :latest-reviews '((nil "CHANGES_REQUESTED" "2026-09-02T00:00:00Z" nil nil)))))))
+
+(ert-deftest prrr-state-test-mine-order ()
+  (should (equal '(changes-requested awaiting-review approved reviewed draft)
+                 prrr-state-mine-order)))
+
+;;;; For Me membership
+
+(defun prrr-state-test--for-me-p (pr meta)
+  "Whether PR with META is in For Me for the test viewer."
+  (prrr-state-for-me-p pr meta prrr-state-test--me prrr-state-test--teams))
+
+(ert-deftest prrr-state-test-for-me-p-requested ()
+  (should (prrr-state-test--for-me-p (prrr-state-test--pr)
+                                     (prrr-state-test--meta :review-requests '((user "example-me"))))))
+
+(ert-deftest prrr-state-test-for-me-p-team-requested ()
+  (should (prrr-state-test--for-me-p (prrr-state-test--pr)
+                                     (prrr-state-test--meta :review-requests '((team "example-org/reviewers"))))))
+
+(ert-deftest prrr-state-test-for-me-p-teammate-reviewed ()
+  (should (prrr-state-test--for-me-p
+           (prrr-state-test--pr)
+           (prrr-state-test--meta
+            :latest-reviews (list (list "example-bob" "APPROVED" "2026-09-02T00:00:00Z"
+                                        prrr-state-test--head '("example-org/reviewers")))))))
+
+(ert-deftest prrr-state-test-for-me-p-assigned ()
+  (should (prrr-state-test--for-me-p (prrr-state-test--pr :assignees '("example-me")) nil)))
+
+(ert-deftest prrr-state-test-for-me-p-ever-reviewed-by-me ()
+  (should (prrr-state-test--for-me-p
+           (prrr-state-test--pr)
+           (prrr-state-test--meta
+            :viewer-latest-review (list "COMMENTED" "2026-09-02T00:00:00Z" prrr-state-test--head)))))
+
+(ert-deftest prrr-state-test-for-me-p-nothing ()
+  (should-not (prrr-state-test--for-me-p (prrr-state-test--pr) (prrr-state-test--meta)))
+  (should-not (prrr-state-test--for-me-p (prrr-state-test--pr) nil)))
+
+(ert-deftest prrr-state-test-for-me-p-never-my-own-pr ()
+  (should-not (prrr-state-test--for-me-p
+               (prrr-state-test--pr :author "example-me" :assignees '("example-me"))
+               (prrr-state-test--meta :review-requests '((user "example-me"))))))
+
+(ert-deftest prrr-state-test-for-me-p-draft-excluded-unless-direct ()
+  "Drafts are out even when team-requested or reviewed by me ..."
+  (should-not (prrr-state-test--for-me-p
+               (prrr-state-test--pr :draft-p t)
+               (prrr-state-test--meta :review-requests '((team "example-org/reviewers")))))
+  (should-not (prrr-state-test--for-me-p
+               (prrr-state-test--pr :draft-p t)
+               (prrr-state-test--meta
+                :viewer-latest-review (list "COMMENTED" "2026-09-02T00:00:00Z" prrr-state-test--head))))
+  ;; ... but in when requested directly from me or assigned to me.
+  (should (prrr-state-test--for-me-p
+           (prrr-state-test--pr :draft-p t)
+           (prrr-state-test--meta :review-requests '((user "example-me")))))
+  (should (prrr-state-test--for-me-p (prrr-state-test--pr :draft-p t :assignees '("example-me"))
+                                     nil)))
+
+;;;; Partition
+
+(ert-deftest prrr-state-test-partition-awaiting-states ()
+  (dolist (state '(new-commits requested team-requested assigned))
+    (should (eq 'awaiting (prrr-state-partition (prrr-state-test--pr) state)))))
+
+(ert-deftest prrr-state-test-partition-served-states ()
+  (dolist (state '(teammate-reviewed changes-requested approved commented))
+    (should (eq 'served (prrr-state-partition (prrr-state-test--pr) state)))))
+
+(ert-deftest prrr-state-test-partition-draft-is-always-served ()
+  "A draft requested from me stays out of Awaiting me until marked ready."
+  (should (eq 'served (prrr-state-partition (prrr-state-test--pr :draft-p t) 'requested)))
+  (should (eq 'served (prrr-state-partition (prrr-state-test--pr :draft-p t) 'assigned))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

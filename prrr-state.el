@@ -122,5 +122,53 @@ First match wins, in the order of `prrr-state-for-me-order'."
      ((member me (prrr-pr-assignees pr))
       'assigned))))
 
+;;;; Mine state
+
+(defconst prrr-state-mine-order
+  '(changes-requested awaiting-review approved reviewed draft)
+  "Mine states in display order: the first needs my action most.")
+
+(defun prrr-state-mine-state (pr meta me)
+  "Return the Mine state of PR authored by ME, given META (or nil).
+Other people's latest reviews decide it: CHANGES_REQUESTED beats
+APPROVED beats any other review; no review is `awaiting-review'; a
+draft is `draft' whatever the reviews say."
+  (if (prrr-pr-draft-p pr)
+      'draft
+    (let ((states (cl-loop for (login state) in (and meta (prrr-pr-meta-latest-reviews meta))
+                           unless (equal login me)
+                           collect state)))
+      (cond ((member "CHANGES_REQUESTED" states) 'changes-requested)
+            ((member "APPROVED" states) 'approved)
+            (states 'reviewed)
+            (t 'awaiting-review)))))
+
+;;;; Membership and partition
+
+(defun prrr-state--direct-p (pr meta me)
+  "Non-nil when PR, with META, is requested directly from ME or assigned to ME."
+  (or (prrr-state--requested-p meta me)
+      (and (member me (prrr-pr-assignees pr)) t)))
+
+(defun prrr-state-for-me-p (pr meta me teams)
+  "Non-nil when PR, with META, belongs in the For Me group for ME and TEAMS.
+PR must not be authored by ME and must have a Review State.  A draft
+is in only when requested directly from ME or assigned to ME."
+  (and (not (equal (prrr-pr-author pr) me))
+       (prrr-state-review-state pr meta me teams)
+       (or (not (prrr-pr-draft-p pr))
+           (prrr-state--direct-p pr meta me))
+       t))
+
+(defun prrr-state-partition (pr state)
+  "Return `awaiting' or `served' for PR in Review State STATE.
+Awaiting me holds new-commits, requested, team-requested and assigned
+\(assigned implies no review of mine, since any review matches an
+earlier state).  Drafts are always Served."
+  (if (and (memq state '(new-commits requested team-requested assigned))
+           (not (prrr-pr-draft-p pr)))
+      'awaiting
+    'served))
+
 (provide 'prrr-state)
 ;;; prrr-state.el ends here
