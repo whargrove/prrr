@@ -30,7 +30,9 @@
 ;; connection written as [(:edges t)] arrives as a plain list of node
 ;; alists.  JSON null and false both arrive as nil.
 ;;
-;; Mutations arrive in milestone 4; this file is read-only until then.
+;; Every request takes an ERRORBACK that receives a failure classified by
+;; `prrr-github-error'; ghub's own error shapes never leave this file.
+;; Mutations arrive in milestone 4.
 
 ;;; Code:
 
@@ -46,30 +48,36 @@ When nil, the `github.user' Git variable is used, as forge does."
                  (string :tag "Login"))
   :group 'prrr)
 
+(defun prrr-github-viewer ()
+  "Return the viewer's GitHub login, or nil when none is configured.
+`prrr-github-user' wins; otherwise the `github.user' Git variable of
+the current repository, which is where forge reads it."
+  (or prrr-github-user (magit-get "github.user")))
+
 ;;;; Queries
 
 (eval-and-compile
   (defconst prrr-github-queue-query
     '(repository [(owner $owner String!) (name $name String!)]
-       (pullRequests [(:edges t) (states . (OPEN))]
-         id number headRefOid createdAt isDraft
-         (author login)
-         (reviewRequests [(:edges t)]
-           (requestedReviewer "__typename ... on User { login } ... on Team { combinedSlug }\n"))
-         (latestReviews [(:edges t)]
-           (author login) state submittedAt (commit oid)
-           (onBehalfOf [(:edges t)] combinedSlug))
-         (viewerLatestReview state submittedAt (commit oid))
-         (viewerLatestReviewRequest login)))
+		 (pullRequests [(:edges t) (states . (OPEN))]
+			       id number headRefOid createdAt isDraft
+			       (author login)
+			       (reviewRequests [(:edges t)]
+					       (requestedReviewer "__typename ... on User { login } ... on Team { combinedSlug }\n"))
+			       (latestReviews [(:edges t)]
+					      (author login) state submittedAt (commit oid)
+					      (onBehalfOf [(:edges t)] combinedSlug))
+			       (viewerLatestReview state submittedAt (commit oid))
+			       (viewerLatestReviewRequest login)))
     "Review Queue inputs of one repository (SPEC section 4).
 Variables: $owner and $name.  Pages every open PR."))
 
 (eval-and-compile
   (defconst prrr-github-teams-query
     '(viewer login
-       (organizations [(:edges t)]
-         login
-         (teams [(:edges t) (userLogins $me \[String!\])] slug combinedSlug)))
+	     (organizations [(:edges t)]
+			    login
+			    (teams [(:edges t) (userLogins $me \[String!\])] slug combinedSlug)))
     "The viewer's Teams in every organization (SPEC section 4).
 Variable: $me, a one-element list holding the viewer's login.  The
 type is the symbol `[String!]' because ghub prints a vector type as
@@ -78,17 +86,17 @@ type is the symbol `[String!]' because ghub prints a vector type as
 (eval-and-compile
   (defconst prrr-github-review-data-query
     '(repository [(owner $owner String!) (name $name String!)]
-       (pullRequest [(number $number Int!)]
-         id headRefOid
-         (reviewThreads [(:edges t)]
-           id path line startLine diffSide startDiffSide originalLine
-           isOutdated isResolved subjectType viewerCanResolve viewerCanUnresolve
-           (comments [(:edges t)]
-             id (author login) body createdAt lastEditedAt (replyTo id) state
-             (pullRequestReview id) (originalCommit oid)))
-         (reviews [(:edges t) (states . (PENDING)) (author $me String!)]
-           id (commit oid) body createdAt)
-         (files [(:edges t)] path viewerViewedState)))
+		 (pullRequest [(number $number Int!)]
+			      id headRefOid
+			      (reviewThreads [(:edges t)]
+					     id path line startLine diffSide startDiffSide originalLine
+					     isOutdated isResolved subjectType viewerCanResolve viewerCanUnresolve
+					     (comments [(:edges t)]
+						       id (author login) body createdAt lastEditedAt (replyTo id) state
+						       (pullRequestReview id) (originalCommit oid)))
+			      (reviews [(:edges t) (states . (PENDING)) (author $me String!)]
+				       id (commit oid) body createdAt)
+			      (files [(:edges t)] path viewerViewedState)))
     "Threads, the viewer's Pending Review, Viewed flags and head of one PR.
 Variables: $owner, $name, $number and $me (the viewer's login).
 The pending review's own comments are not selected: pending comments
@@ -228,66 +236,152 @@ FETCHED-AT is stamped on the Thread."
 Keys: :threads (list of `prrr-thread'), :comments (list of
 `prrr-comment' in Thread order), :pending-review (`prrr-pending-review'
 or nil), :viewed (list of `prrr-viewed'), :head-oid.  FETCHED-AT is
-stamped on Threads and Viewed rows."
+stamped on Threads and Viewed rows.
+Return nil when DATA has no pull request (deleted, or a wrong number)."
   (let-alist (cdr (assq 'repository data))
-    (let ((decoded (mapcar (lambda (node) (prrr-github--thread node pr-id fetched-at))
-                           (alist-get 'reviewThreads .pullRequest)))
-          (pending (car (alist-get 'reviews .pullRequest))))
-      (list :threads (mapcar #'car decoded)
-            :comments (apply #'append (mapcar #'cdr decoded))
-            :pending-review
-            (and pending
-                 (let-alist pending
-                   (prrr-pending-review-create :pr-id pr-id
-                                               :review-id .id
-                                               :commit-oid .commit.oid
-                                               :body .body
-                                               :created-at .createdAt)))
-            :viewed
-            (mapcar (lambda (file)
-                      (let-alist file
-                        (prrr-viewed-create :pr-id pr-id
-                                            :path .path
-                                            :state (prrr-github--viewed-state .viewerViewedState)
-                                            :fetched-at fetched-at)))
-                    (alist-get 'files .pullRequest))
-            :head-oid (alist-get 'headRefOid .pullRequest)))))
+    (when .pullRequest
+      (let ((decoded (mapcar (lambda (node) (prrr-github--thread node pr-id fetched-at))
+                             (alist-get 'reviewThreads .pullRequest)))
+            (pending (car (alist-get 'reviews .pullRequest))))
+	(list :threads (mapcar #'car decoded)
+              :comments (apply #'append (mapcar #'cdr decoded))
+              :pending-review
+              (and pending
+                   (let-alist pending
+                     (prrr-pending-review-create :pr-id pr-id
+						 :review-id .id
+						 :commit-oid .commit.oid
+						 :body .body
+						 :created-at .createdAt)))
+              :viewed
+              (mapcar (lambda (file)
+			(let-alist file
+                          (prrr-viewed-create :pr-id pr-id
+                                              :path .path
+                                              :state (prrr-github--viewed-state .viewerViewedState)
+                                              :fetched-at fetched-at)))
+                      (alist-get 'files .pullRequest))
+              :head-oid (alist-get 'headRefOid .pullRequest))))))
+
+;;;; Errors
+
+(defun prrr-github--header (headers name)
+  "Return the value of response header NAME in HEADERS, ignoring case."
+  (cdr (assoc-string name headers t)))
+
+(defun prrr-github--reset-at (headers now)
+  "Return when the rate limit described by HEADERS ends, as a timestamp.
+Uses x-ratelimit-reset (epoch seconds) or retry-after (seconds after
+NOW, a Lisp time); without either, one minute after NOW."
+  (let ((reset (prrr-github--header headers "x-ratelimit-reset"))
+        (retry (prrr-github--header headers "retry-after")))
+    (format-time-string "%Y-%m-%dT%H:%M:%SZ"
+                        (cond (reset (string-to-number reset))
+                              (retry (time-add now (string-to-number retry)))
+                              (t (time-add now 60)))
+                        t)))
+
+(defun prrr-github-error (err &optional headers now)
+  "Classify ERR, a failed request, as (:kind KIND :message TEXT :reset-at TIME).
+ERR is what ghub hands an errorback: (errors ERROR...) for GraphQL
+errors, (error http CODE) for HTTP failures, (error SYMBOL ...) for
+transport failures.  HEADERS is the response header alist; NOW, a Lisp
+time defaulting to the current time, anchors a retry-after delay.
+KIND is one of:
+  `rate-limited'  a primary or secondary limit; RESET-AT says when it ends;
+  `auth'          the token was rejected;
+  `not-found'     the repository or pull request does not exist;
+  `offline'       no connection or a server error, worth retrying later;
+  `error'         anything else.
+RESET-AT is nil unless KIND is `rate-limited'."
+  (let ((now (or now (current-time))))
+    (pcase err
+      (`(errors . ,errors)
+       (let ((types (mapcar (lambda (error) (alist-get 'type error)) errors))
+             (text (or (alist-get 'message (car errors)) "GitHub GraphQL error")))
+         (cond ((member "RATE_LIMITED" types)
+                (list :kind 'rate-limited :message text
+                      :reset-at (prrr-github--reset-at headers now)))
+               ((member "NOT_FOUND" types)
+                (list :kind 'not-found :message text :reset-at nil))
+               (t (list :kind 'error :message text :reset-at nil)))))
+      (`(error http ,code . ,_)
+       (cond ((and (memq code '(403 429))
+                   (or (equal (prrr-github--header headers "x-ratelimit-remaining") "0")
+                       (prrr-github--header headers "retry-after")))
+              (list :kind 'rate-limited
+                    :message (format "GitHub rate limit (HTTP %d)" code)
+                    :reset-at (prrr-github--reset-at headers now)))
+             ((memq code '(401 403))
+              (list :kind 'auth
+                    :message (format "GitHub rejected the token (HTTP %d)" code)
+                    :reset-at nil))
+             ((eq code 404)
+              (list :kind 'not-found :message "GitHub returned HTTP 404" :reset-at nil))
+             (t (list :kind 'offline
+                      :message (format "GitHub returned HTTP %s" code)
+                      :reset-at nil))))
+      (`(error . ,data)
+       (list :kind 'offline
+             :message (format "Cannot reach GitHub: %s"
+                              (string-trim (mapconcat (lambda (part) (format "%s" part))
+                                                      data " ")))
+             :reset-at nil))
+      (_ (list :kind 'error :message (format "Unexpected GitHub failure: %S" err)
+               :reset-at nil)))))
+
+(defun prrr-github--errorback (errorback)
+  "Return a ghub errorback that hands ERRORBACK the classified error."
+  (lambda (err headers &rest _)
+    (funcall errorback (prrr-github-error err headers))))
 
 ;;;; Requests
-
-(defun prrr-github-fetch-queue (host owner name callback &optional forge-repo-id)
+(defun prrr-github-fetch-queue (host owner name callback errorback &optional forge-repo-id)
   "Fetch the Review Queue inputs of OWNER/NAME on HOST.
 CALLBACK receives a list of `prrr-pr-meta' stamped with the current
-time and FORGE-REPO-ID."
+time and FORGE-REPO-ID.  ERRORBACK receives a failure classified by
+`prrr-github-error'; exactly one of the two is called."
   (prrr-github--query host prrr-github-queue-query
     ((owner owner) (name name))
     :callback (lambda (data &rest _)
                 (funcall callback
                          (prrr-github-decode-queue data forge-repo-id
-                                                   (prrr-github--now))))))
+                                                   (prrr-github--now))))
+    :errorback (prrr-github--errorback errorback)))
 
-(defun prrr-github-fetch-teams (host me callback)
+(defun prrr-github-fetch-teams (host me callback errorback)
   "Fetch the Teams of the viewer ME on HOST.
-CALLBACK receives a list of `prrr-team' stamped with the current time."
+CALLBACK receives a list of `prrr-team' stamped with the current time.
+ERRORBACK receives a failure classified by `prrr-github-error'."
   (prrr-github--query host prrr-github-teams-query
     ((me (vector me)))
     :callback (lambda (data &rest _)
                 (funcall callback
-                         (prrr-github-decode-teams data (prrr-github--now))))))
+                         (prrr-github-decode-teams data (prrr-github--now))))
+    :errorback (prrr-github--errorback errorback)))
 
-(defun prrr-github-fetch-review-data (host owner name number me callback)
+(defun prrr-github-fetch-review-data (host owner name number me callback errorback)
   "Fetch Threads, Pending Review, Viewed flags and head of OWNER/NAME#NUMBER.
 HOST is the API host; ME the viewer's login, used to find the Pending
 Review.  CALLBACK receives the plist of `prrr-github-decode-review-data'
-with rows stamped with the current time."
+with rows stamped with the current time.  ERRORBACK receives a failure
+classified by `prrr-github-error'; a response without the pull request
+is a `not-found' failure and never reaches CALLBACK."
   (prrr-github--query host prrr-github-review-data-query
     ((owner owner) (name name) (number number) (me me))
     :callback (lambda (data &rest _)
-                (let ((pr-id (alist-get 'id (alist-get 'pullRequest
-                                                       (cdr (assq 'repository data))))))
-                  (funcall callback
-                           (prrr-github-decode-review-data data pr-id
-                                                           (prrr-github--now)))))))
+                (let* ((pr-id (alist-get 'id (alist-get 'pullRequest
+                                                        (cdr (assq 'repository data)))))
+                       (decoded (prrr-github-decode-review-data data pr-id
+                                                                (prrr-github--now))))
+                  (if decoded
+                      (funcall callback decoded)
+                    (funcall errorback
+                             (list :kind 'not-found
+                                   :message (format "Pull request %s/%s#%s not found"
+                                                    owner name number)
+                                   :reset-at nil)))))
+    :errorback (prrr-github--errorback errorback)))
 
 (provide 'prrr-github)
 ;;; prrr-github.el ends here

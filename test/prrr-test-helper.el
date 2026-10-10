@@ -23,8 +23,10 @@
 ;; `prrr-test-root' (the repository root), `prrr-test-fixture' (path to
 ;; a file under test/fixtures), `prrr-db-with-test-db' (run BODY against
 ;; a fresh temporary database) and `prrr-test-with-ghub-stub' (run BODY
-;; with ghub's GraphQL entry point stubbed).  The builders `prrr-test-pr'
-;; and `prrr-test-meta' and the constants `prrr-test-me',
+;; with ghub's GraphQL entry point stubbed) and
+;; `prrr-test-with-ghub-error-stub' (the same,
+;; failing every request).  The builders `prrr-test-pr' and
+;; `prrr-test-meta' and the constants `prrr-test-me',
 ;; `prrr-test-teams', `prrr-test-head' and `prrr-test-old' serve the
 ;; tests of the pure rules.
 
@@ -55,6 +57,20 @@ inspect what `forge-query' sent.  The callback runs synchronously."
                   (setq ,captured (list query variables))
                   (funcall (plist-get args :callback) ,fixture))))
        ,@body)))
+
+(defmacro prrr-test-with-ghub-error-stub (err headers &rest body)
+  "Run BODY with `ghub-query' failing every request with ERR and HEADERS.
+The errorback runs synchronously, as ghub calls it: with ERR, HEADERS,
+a nil status and a nil request.  A request without an errorback fails
+the test, because ghub would signal."
+  (declare (indent 2) (debug (form form body)))
+  `(cl-letf (((symbol-function 'ghub-query)
+              (lambda (_query _variables &rest args)
+                (let ((errorback (plist-get args :errorback)))
+                  (unless errorback
+                    (ert-fail "request sent without an errorback"))
+                  (funcall errorback ,err ,headers nil nil)))))
+     ,@body))
 
 (defconst prrr-test-root
   (file-name-directory
