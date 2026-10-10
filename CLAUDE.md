@@ -58,6 +58,13 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 <!-- END BEADS INTEGRATION -->
 
 
+## Git policy for agents (overrides the Beads block above)
+
+Agents may commit to this repository without asking: commit each completed
+task with a descriptive message once its tests pass. Do not push, force-push,
+rebase shared branches, or delete branches without an explicit request.
+Never commit with failing tests or byte-compile warnings.
+
 ## Build & Test
 
 ```bash
