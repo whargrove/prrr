@@ -835,7 +835,7 @@ Return STRUCT."
   (emacsql (prrr-db)
            (vector :insert-or-replace :into (prrr-db--table-of struct)
                    :values '$v1)
-           (vector (prrr-db--struct-to-row struct)))
+           (list (prrr-db--struct-to-row struct)))
   struct)
 
 (defun prrr-db-select (table &rest plist)
