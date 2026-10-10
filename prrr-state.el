@@ -21,8 +21,8 @@
 
 ;; Pure functions implementing SPEC.md section 5: the Review State of a
 ;; PR for the viewer, Queue Group membership, the Awaiting me / Served
-;; partitions and their FIFO ordering, Stack detection, and the final
-;; ordered Review Queue.  Inputs are `prrr-pr' (built by the caller from
+;; partitions and their FIFO ordering, Stack detection, the final ordered
+;; Review Queue, the display filters, and Stack neighbours.  Inputs are `prrr-pr' (built by the caller from
 ;; forge's object) and `prrr-pr-meta' rows; there is no buffer, network
 ;; or forge-object access, so every rule is unit-tested with constructed
 ;; structs.
@@ -343,6 +343,49 @@ describes."
                  (lambda (pr pos size)
                    (prrr-state--mine-pair pr (gethash (prrr-pr-id pr) meta-table)
                                           me pos size))))))
+
+;;;; Display
+
+(cl-defun prrr-state-filter-queue (entries &key (show-drafts t) (show-served t))
+  "Return ENTRIES without the rows the viewer chose to hide.
+ENTRIES is one Queue Group from `prrr-state-queue'.  Unless
+SHOW-DRAFTS, rows of draft PRs are dropped; unless SHOW-SERVED, rows in
+the Served partition are dropped.  A Stack left with only context rows
+\(rows without a state) is dropped entirely, so no row is shown without
+a reason.  Kept rows keep their order, STACK-POS and STACK-SIZE: a
+Stack's visible rows need not be contiguous positions."
+  (let* ((kept (seq-remove
+                (lambda (entry)
+                  (or (and (not show-drafts)
+                           (prrr-pr-draft-p (prrr-queue-entry-pr entry)))
+                      (and (not show-served)
+                           (eq (prrr-queue-entry-partition entry) 'served))))
+                entries))
+         (live (mapcar #'prrr-queue-entry-stack-id
+                       (seq-filter #'prrr-queue-entry-state kept))))
+    (seq-filter (lambda (entry) (member (prrr-queue-entry-stack-id entry) live))
+                kept)))
+
+(defun prrr-state-stack-neighbour (entries entry direction)
+  "Return the row of ENTRIES next to ENTRY in its Stack, or nil.
+DIRECTION `up' finds the nearest row above ENTRY (higher STACK-POS),
+`down' the nearest below.  ENTRIES are the rows of one displayed Queue
+Group, so rows the viewer hid are skipped."
+  (let* ((pos (prrr-queue-entry-stack-pos entry))
+         (up (eq direction 'up))
+         (candidates
+          (seq-filter (lambda (other)
+                        (and (equal (prrr-queue-entry-stack-id other)
+                                    (prrr-queue-entry-stack-id entry))
+                             (if up
+                                 (> (prrr-queue-entry-stack-pos other) pos)
+                               (< (prrr-queue-entry-stack-pos other) pos))))
+                      entries)))
+    (car (sort candidates
+               (lambda (a b)
+                 (funcall (if up #'< #'>)
+                          (prrr-queue-entry-stack-pos a)
+                          (prrr-queue-entry-stack-pos b)))))))
 
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

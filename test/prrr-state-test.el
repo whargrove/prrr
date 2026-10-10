@@ -616,5 +616,59 @@
     (should (equal '(("A" assigned awaiting nil 1 1))
                    (prrr-state-test--rows (plist-get (prrr-state-test--queue prs nil) :for-me))))))
 
+;;;; Display filters and Stack neighbours
+
+(defun prrr-state-test--entry (id &rest slots)
+  "Build a queue entry for a PR with ID; SLOTS are entry keyword arguments."
+  (apply #'prrr-queue-entry-create
+         :pr (prrr-test-pr :id id :draft-p (plist-get slots :draft))
+         (cl-loop for (key value) on slots by #'cddr
+                  unless (eq key :draft) append (list key value))))
+
+(ert-deftest prrr-state-test-filter-keeps-everything-by-default ()
+  (let ((entries (list (prrr-state-test--entry "A" :state 'requested :partition 'awaiting :stack-id "A")
+                       (prrr-state-test--entry "B" :state 'approved :partition 'served :stack-id "B"))))
+    (should (equal entries (prrr-state-filter-queue entries)))))
+
+(ert-deftest prrr-state-test-filter-hides-served ()
+  (let* ((a (prrr-state-test--entry "A" :state 'requested :partition 'awaiting :stack-id "A"))
+         (b (prrr-state-test--entry "B" :state 'approved :partition 'served :stack-id "B")))
+    (should (equal (list a) (prrr-state-filter-queue (list a b) :show-served nil)))))
+
+(ert-deftest prrr-state-test-filter-hides-drafts ()
+  (let* ((a (prrr-state-test--entry "A" :state 'requested :partition 'awaiting :stack-id "A"))
+         (d (prrr-state-test--entry "D" :draft t :state 'requested :partition 'served
+                                    :dimmed-p t :stack-id "D")))
+    (should (equal (list a) (prrr-state-filter-queue (list a d) :show-drafts nil)))))
+
+(ert-deftest prrr-state-test-filter-drops-stack-left-with-only-context-rows ()
+  "Hiding the only qualifying member leaves no reason to show its Stack."
+  (let* ((context (prrr-state-test--entry "BOTTOM" :stack-id "BOTTOM" :stack-pos 1 :stack-size 2
+                                          :dimmed-p t))
+         (served (prrr-state-test--entry "TOP" :state 'approved :partition 'served
+                                         :stack-id "BOTTOM" :stack-pos 2 :stack-size 2)))
+    (should (null (prrr-state-filter-queue (list context served) :show-served nil)))
+    (should (equal (list context served) (prrr-state-filter-queue (list context served))))))
+
+(ert-deftest prrr-state-test-stack-neighbour-up-and-down ()
+  (let* ((one (prrr-state-test--entry "ONE" :stack-id "ONE" :stack-pos 1 :stack-size 3))
+         (two (prrr-state-test--entry "TWO" :stack-id "ONE" :stack-pos 2 :stack-size 3))
+         (three (prrr-state-test--entry "THREE" :stack-id "ONE" :stack-pos 3 :stack-size 3))
+         (other (prrr-state-test--entry "OTHER" :stack-id "OTHER" :stack-pos 1 :stack-size 1))
+         (entries (list one two three other)))
+    (should (eq two (prrr-state-stack-neighbour entries one 'up)))
+    (should (eq three (prrr-state-stack-neighbour entries two 'up)))
+    (should (null (prrr-state-stack-neighbour entries three 'up)))
+    (should (eq two (prrr-state-stack-neighbour entries three 'down)))
+    (should (null (prrr-state-stack-neighbour entries one 'down)))
+    (should (null (prrr-state-stack-neighbour entries other 'up)))))
+
+(ert-deftest prrr-state-test-stack-neighbour-skips-hidden-rows ()
+  "Position 2 is not displayed, so up from 1 lands on 3."
+  (let* ((one (prrr-state-test--entry "ONE" :stack-id "ONE" :stack-pos 1 :stack-size 3))
+         (three (prrr-state-test--entry "THREE" :stack-id "ONE" :stack-pos 3 :stack-size 3)))
+    (should (eq three (prrr-state-stack-neighbour (list one three) one 'up)))
+    (should (eq one (prrr-state-stack-neighbour (list one three) three 'down)))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here
