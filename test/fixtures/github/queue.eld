@@ -1,0 +1,63 @@
+;; Queue inputs for example-org/example-repo as the forge-query callback
+;; receives them.  Re-record with scripts/record-fixtures.el, then
+;; replace every real name with an `example' name.
+(data
+ (repository
+  (pullRequests
+   ((id . "PR_kwDOexample0000001")
+    (number . 1)
+    (headRefOid . "1111111111111111111111111111111111111111")
+    (createdAt . "2026-09-01T09:00:00Z")
+    (isDraft)
+    (author (login . "example-alice"))
+    (reviewRequests
+     ((requestedReviewer (__typename . "User") (login . "example-me")))
+     ((requestedReviewer (__typename . "Team")
+                         (combinedSlug . "example-org/reviewers")))
+     ((requestedReviewer (__typename . "Bot"))))
+    (latestReviews
+     ((author (login . "example-bob"))
+      (state . "APPROVED")
+      (submittedAt . "2026-09-02T10:00:00Z")
+      (commit (oid . "1111111111111111111111111111111111111111"))
+      (onBehalfOf ((combinedSlug . "example-org/reviewers")))))
+    (viewerLatestReview)
+    (viewerLatestReviewRequest (login . "example-alice")))
+   ((id . "PR_kwDOexample0000002")
+    (number . 2)
+    (headRefOid . "2222222222222222222222222222222222222222")
+    (createdAt . "2026-09-03T08:00:00Z")
+    (isDraft . t)
+    (author (login . "example-bob"))
+    (reviewRequests)
+    (latestReviews
+     ((author (login . "example-me"))
+      (state . "COMMENTED")
+      (submittedAt . "2026-09-04T08:00:00Z")
+      (commit (oid . "2222222222222222222222222222222222222200"))
+      (onBehalfOf)))
+    (viewerLatestReview
+     (state . "COMMENTED")
+     (submittedAt . "2026-09-04T08:00:00Z")
+     (commit (oid . "2222222222222222222222222222222222222200")))
+    (viewerLatestReviewRequest))
+   ((id . "PR_kwDOexample0000003")
+    (number . 3)
+    (headRefOid . "3333333333333333333333333333333333333333")
+    (createdAt . "2026-09-05T07:00:00Z")
+    (isDraft)
+    (author (login . "example-me"))
+    (reviewRequests)
+    (latestReviews
+     ((author (login . "example-carol"))
+      (state . "CHANGES_REQUESTED")
+      (submittedAt . "2026-09-06T07:00:00Z")
+      (commit (oid . "3333333333333333333333333333333333333333"))
+      (onBehalfOf))
+     ((author)
+      (state . "DISMISSED")
+      (submittedAt . "2026-09-05T12:00:00Z")
+      (commit)
+      (onBehalfOf)))
+    (viewerLatestReview)
+    (viewerLatestReviewRequest)))))

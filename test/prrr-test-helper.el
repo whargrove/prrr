@@ -26,6 +26,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'prrr)
 (require 'prrr-db)
 
@@ -36,6 +37,18 @@
      (unwind-protect
          (progn (prrr-db--init prrr-db--connection) ,@body)
        (emacsql-close prrr-db--connection))))
+
+(defmacro prrr-test-with-ghub-stub (fixture captured &rest body)
+  "Run BODY with `ghub-query' answering every request with FIXTURE.
+CAPTURED is bound to (QUERY VARIABLES) of the last request, so BODY can
+inspect what `forge-query' sent.  The callback runs synchronously."
+  (declare (indent 2) (debug (form symbolp body)))
+  `(let ((,captured nil))
+     (cl-letf (((symbol-function 'ghub-query)
+                (lambda (query variables &rest args)
+                  (setq ,captured (list query variables))
+                  (funcall (plist-get args :callback) ,fixture))))
+       ,@body)))
 
 (defconst prrr-test-root
   (file-name-directory
