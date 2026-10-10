@@ -201,6 +201,32 @@
                    changes-requested approved commented assigned)
                  prrr-state-for-me-order)))
 
+(ert-deftest prrr-state-test-review-state-uses-meta-head-over-forge-head ()
+  "Forge's head moved but prrr's snapshot still shows my reviewed commit (prrr-knu.3)."
+  (should (eq 'approved
+              (prrr-state-test--state
+               (prrr-test-pr :head-oid prrr-test-head)
+               (prrr-test-meta :head-oid prrr-test-old
+                               :viewer-latest-review (list "APPROVED" "2026-09-02T00:00:00Z"
+                                                           prrr-test-old))))))
+
+(ert-deftest prrr-state-test-review-state-meta-head-moved-is-new-commits ()
+  "The prrr snapshot shows a push forge has not seen yet."
+  (should (eq 'new-commits
+              (prrr-state-test--state
+               (prrr-test-pr :head-oid prrr-test-old)
+               (prrr-test-meta :head-oid prrr-test-head
+                               :viewer-latest-review (list "APPROVED" "2026-09-02T00:00:00Z"
+                                                           prrr-test-old))))))
+
+(ert-deftest prrr-state-test-review-state-without-meta-head-falls-back-to-forge ()
+  (should (eq 'new-commits
+              (prrr-state-test--state
+               (prrr-test-pr :head-oid prrr-test-head)
+               (prrr-test-meta :head-oid nil
+                               :viewer-latest-review (list "APPROVED" "2026-09-02T00:00:00Z"
+                                                           prrr-test-old))))))
+
 ;;;; Mine state
 
 (defun prrr-state-test--mine (pr meta)

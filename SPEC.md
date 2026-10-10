@@ -175,7 +175,9 @@ than `prrr-queue-stale-after` (default 300 seconds). Expanded by default when
 non-empty; when both groups are empty it shows collapsed headers with counts.
 
 **Review State** (first match wins), For Me group: `new-commits` (the
-viewer's latest submitted review commit differs from head), `requested`
+viewer's latest submitted review commit differs from the head oid stored
+with it in `pullreq-meta`; forge's head is used only for a PR prrr has
+not pulled yet, prrr-knu.3), `requested`
 (a review request to me is in the current `reviewRequests`, or
 `viewerLatestReviewRequest` is set and I have no submitted review yet;
 GitHub keeps the latter after I review), `team-requested` (a Team in

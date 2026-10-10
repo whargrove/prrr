@@ -42,7 +42,9 @@
 ID is the GitHub node id (forge's `their-id'), which joins to
 `prrr-pr-meta-pr-id'.  ASSIGNEES is a list of logins.  BASE-REF and
 HEAD-REF are branch names, nil when the branch is gone.  CROSS-REPO-P
-is non-nil for a PR from a fork."
+is non-nil for a PR from a fork.  HEAD-OID is forge's head-rev; the
+Review State prefers the head stored in the PR's `prrr-pr-meta' (see
+`prrr-state--head-oid')."
   id number title author draft-p assignees created-at updated-at
   head-oid base-ref head-ref cross-repo-p)
 
@@ -99,6 +101,15 @@ or someone requested ME and ME has not reviewed yet."
     changes-requested approved commented assigned)
   "Review States of the For Me group in the order they are tried.")
 
+(defun prrr-state--head-oid (pr meta)
+  "Return the head commit PR's Review State is judged against.
+That is META's head-oid when META has one: it was fetched by the same
+query as the viewer's latest review, so the two are one snapshot and
+forge's separate fetch cadence cannot fake `new-commits'.  Without it,
+PR's head-oid from forge."
+  (or (and meta (prrr-pr-meta-head-oid meta))
+      (prrr-pr-head-oid pr)))
+
 (defun prrr-state-review-state (pr meta me teams)
   "Return the Review State of PR for the viewer ME, or nil.
 META is PR's `prrr-pr-meta' or nil; TEAMS the viewer's Team slugs.
@@ -106,7 +117,7 @@ First match wins, in the order of `prrr-state-for-me-order'."
   (let ((review (prrr-state--viewer-review meta)))
     (cond
      ((and review (nth 2 review)
-           (not (equal (nth 2 review) (prrr-pr-head-oid pr))))
+           (not (equal (nth 2 review) (prrr-state--head-oid pr meta))))
       'new-commits)
      ((prrr-state--requested-p meta me)
       'requested)
