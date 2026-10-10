@@ -70,10 +70,12 @@
                                    prrr-sync-test--now))))
 
 (ert-deftest prrr-sync-test-due-p-not-while-pulling ()
+  "Within `prrr-sync-timeout' a pull is running; the attempt rule alone would allow one."
   (prrr-sync-test--with-clean-status
-    (puthash "example-repo-id" '(:state pulling :attempted-at "2026-10-10T11:00:00Z")
-             prrr-sync--status)
-    (should-not (prrr-sync-queue-due-p "example-repo-id" nil prrr-sync-test--now))))
+    (let ((prrr-sync-timeout 7200))
+      (puthash "example-repo-id" '(:state pulling :attempted-at "2026-10-10T11:00:00Z")
+               prrr-sync--status)
+      (should-not (prrr-sync-queue-due-p "example-repo-id" nil prrr-sync-test--now)))))
 
 (ert-deftest prrr-sync-test-due-p-recent-failed-attempt-waits ()
   "A failure refreshes the buffer; that refresh must not pull again (Review Focus 1)."
@@ -171,9 +173,10 @@
 (ert-deftest prrr-sync-test-pull-ignored-while-pulling ()
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (puthash "example-repo-id" '(:state pulling) prrr-sync--status)
+      (puthash "example-repo-id" (list :state 'pulling :attempted-at (prrr-sync--timestamp))
+               prrr-sync--status)
       (prrr-test-with-ghub-dispatch nil
-        (prrr-sync-pull (prrr-sync-test--repo))
+        (should-not (prrr-sync-pull (prrr-sync-test--repo)))
         (should (null prrr-test-requests))))))
 
 (ert-deftest prrr-sync-test-pull-refreshes-buffer-later-not-now ()
@@ -185,13 +188,161 @@
         (with-temp-buffer
           (cl-letf (((symbol-function 'magit-refresh-buffer) (lambda (&rest _) (setq refreshed t)))
                     ((symbol-function 'run-at-time)
-                     (lambda (_time _repeat fn &rest args) (push (cons fn args) scheduled))))
+                     (lambda (time _repeat fn &rest args)
+                       (when (equal time 0) (push (cons fn args) scheduled)))))
             (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "queue")))
               (prrr-sync-pull (prrr-sync-test--repo) (current-buffer)))
             (should-not refreshed)
             (should (= 1 (length scheduled)))
             (apply (caar scheduled) (cdar scheduled))
             (should refreshed)))))))
+
+
+;;;; No answer (C1)
+
+(defmacro prrr-sync-test--with-silent-ghub (callbacks timers &rest body)
+  "Run BODY with `ghub-query' never answering and timers captured.
+CALLBACKS is bound to the callbacks of the requests sent, newest
+first; TIMERS to the (SECONDS FUNCTION . ARGS) of every `run-at-time'
+call, newest first.  Nothing is scheduled for real."
+  (declare (indent 2))
+  `(let ((,callbacks nil) (,timers nil))
+     (cl-letf (((symbol-function 'ghub-query)
+                (lambda (_query _variables &rest args)
+                  (push (plist-get args :callback) ,callbacks)))
+               ((symbol-function 'run-at-time)
+                (lambda (time _repeat fn &rest args)
+                  (push (cons time (cons fn args)) ,timers))))
+       ,@body)))
+
+(defun prrr-sync-test--fire-watchdog (timers)
+  "Run the watchdog among the captured TIMERS."
+  (let ((watchdog (seq-find (lambda (timer) (equal (car timer) prrr-sync-timeout)) timers)))
+    (should watchdog)
+    (apply (cadr watchdog) (cddr watchdog))))
+
+(ert-deftest prrr-sync-test-pull-without-answer-goes-offline-after-timeout ()
+  "A pull ghub never answers, as when the connection fails, ends as offline."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (prrr-sync-test--with-silent-ghub callbacks timers
+        (ignore callbacks)
+        (should (prrr-sync-pull (prrr-sync-test--repo)))
+        (should (eq 'pulling (plist-get (prrr-sync-status "example-repo-id") :state)))
+        (prrr-sync-test--fire-watchdog timers)
+        (let ((status (prrr-sync-status "example-repo-id")))
+          (should (eq 'offline (plist-get status :state)))
+          (should (equal "No answer from GitHub" (plist-get status :message))))
+        (should (prrr-sync-queue-due-p "example-repo-id" nil
+                                       (time-add (current-time) (1+ prrr-queue-stale-after))))))))
+
+(ert-deftest prrr-sync-test-late-answer-after-timeout-is-ignored ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (prrr-sync-test--with-silent-ghub callbacks timers
+        (prrr-sync-pull (prrr-sync-test--repo))
+        (prrr-sync-test--fire-watchdog timers)
+        (funcall (car callbacks) (prrr-test-fixture "queue"))
+        (should (eq 'offline (plist-get (prrr-sync-status "example-repo-id") :state)))
+        (should-not (prrr-db-select 'pullreq-meta :forge-repo-id "example-repo-id"))))))
+
+(ert-deftest prrr-sync-test-answer-before-timeout-makes-watchdog-a-no-op ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (prrr-sync-test--with-silent-ghub callbacks timers
+        (prrr-sync-pull (prrr-sync-test--repo))
+        (funcall (car callbacks) (prrr-test-fixture "queue"))
+        (prrr-sync-test--fire-watchdog timers)
+        (should (eq 'ok (plist-get (prrr-sync-status "example-repo-id") :state)))))))
+
+(ert-deftest prrr-sync-test-due-p-pulling-older-than-timeout-is-not-pulling ()
+  (prrr-sync-test--with-clean-status
+    (puthash "example-repo-id" '(:state pulling :attempted-at "2026-10-10T11:00:00Z")
+             prrr-sync--status)
+    (should (prrr-sync-queue-due-p "example-repo-id" nil prrr-sync-test--now))))
+
+(ert-deftest prrr-sync-test-pull-restarts-a-pull-older-than-timeout ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (puthash "example-repo-id" '(:state pulling :attempted-at "2020-01-01T00:00:00Z")
+               prrr-sync--status)
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "queue")))
+        (should (prrr-sync-pull (prrr-sync-test--repo)))
+        (should (equal '(repository) prrr-test-requests))))))
+
+
+;;;; Commands
+
+(ert-deftest prrr-sync-test-current-repository-needs-a-tracked-github-repository ()
+  (cl-letf (((symbol-function 'forge-get-repository) #'ignore))
+    (should-error (prrr-sync-current-repository) :type 'user-error))
+  (cl-letf (((symbol-function 'forge-get-repository)
+             (lambda (&rest _) (forge-gitlab-repository :id "example-gitlab-id"))))
+    (should-error (prrr-sync-current-repository) :type 'user-error))
+  (let ((repo (prrr-sync-test--repo)))
+    (cl-letf (((symbol-function 'forge-get-repository) (lambda (&rest _) repo)))
+      (should (eq repo (prrr-sync-current-repository))))))
+
+(defmacro prrr-sync-test--with-pull-command (started calls messages &rest body)
+  "Run BODY with `prrr-pull's collaborators stubbed.
+`prrr-sync-pull' returns STARTED.  CALLS collects (FUNCTION ARGS...)
+of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
+  (declare (indent 3))
+  `(let ((,calls nil) (,messages nil) (repo (prrr-sync-test--repo)))
+     (with-temp-buffer
+       (let ((status-buffer (current-buffer)))
+         (cl-letf (((symbol-function 'forge-get-repository) (lambda (&rest _) repo))
+                   ((symbol-function 'magit-get-mode-buffer) (lambda (&rest _) status-buffer))
+                   ((symbol-function 'forge-pull)
+                    (lambda () (interactive) (push (list 'forge-pull) ,calls)))
+                   ((symbol-function 'prrr-sync-pull)
+                    (lambda (repo buffer) (push (list 'prrr-sync-pull repo buffer) ,calls)
+                      ,started))
+                   ((symbol-function 'message)
+                    (lambda (format &rest args) (push (apply #'format format args) ,messages))))
+           ,@body)))))
+
+(ert-deftest prrr-sync-test-pull-command-pulls-forge-and-the-queue ()
+  (prrr-sync-test--with-pull-command t calls messages
+    (prrr-pull)
+    (should (equal (list (list 'prrr-sync-pull repo status-buffer) (list 'forge-pull)) calls))
+    (should (string-match-p "Pulling the Review Queue of example-org/example-repo"
+                            (car messages)))))
+
+(ert-deftest prrr-sync-test-pull-command-says-when-a-pull-is-running ()
+  "Nothing was started, so the command must not claim it is pulling (C1)."
+  (prrr-sync-test--with-pull-command nil calls messages
+    (ignore calls)
+    (prrr-pull)
+    (should (string-match-p "already running" (car messages)))
+    (should-not (string-match-p "Pulling" (car messages)))))
+
+(ert-deftest prrr-sync-test-refresh-teams-stores-and-refreshes-status-buffer ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (let ((repo (prrr-sync-test--repo)) (scheduled nil))
+        (with-temp-buffer
+          (let ((status-buffer (current-buffer)))
+            (cl-letf (((symbol-function 'forge-get-repository) (lambda (&rest _) repo))
+                      ((symbol-function 'magit-get-mode-buffer) (lambda (&rest _) status-buffer))
+                      ((symbol-function 'run-at-time)
+                       (lambda (_time _repeat fn &rest args) (push (cons fn args) scheduled)))
+                      ((symbol-function 'message) #'ignore))
+              (prrr-test-with-ghub-dispatch `((viewer . ,(prrr-test-fixture "teams")))
+                (prrr-refresh-teams))
+              (should (= 2 (length (prrr-db-select 'team))))
+              (should (member (list #'prrr-sync--refresh status-buffer) scheduled)))))))))
+
+(ert-deftest prrr-sync-test-refresh-teams-needs-a-login ()
+  (prrr-sync-test--with-clean-status
+    (let ((prrr-github-user nil) (repo (prrr-sync-test--repo)))
+      (cl-letf (((symbol-function 'magit-get) #'ignore)
+                ((symbol-function 'forge-get-repository) (lambda (&rest _) repo)))
+        (should-error (prrr-refresh-teams) :type 'user-error)))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

@@ -335,29 +335,55 @@ RESET-AT is nil unless KIND is `rate-limited'."
   (lambda (err headers &rest _)
     (funcall errorback (prrr-github-error err headers))))
 
+(define-error 'prrr-github-failure "GitHub request failed")
+
+(defun prrr-github--callback (decode callback errorback)
+  "Return a ghub callback that decodes the answer and hands it to CALLBACK.
+DECODE turns the answer's data into what CALLBACK receives.  When it
+signals `prrr-github-failure', whose data is a classified failure, or
+any other error, ERRORBACK receives the failure instead, so exactly one
+of CALLBACK and ERRORBACK runs.  Errors in CALLBACK itself propagate."
+  (lambda (data &rest _)
+    (let ((decoded
+           (condition-case err
+               (list (funcall decode data))
+             (prrr-github-failure (funcall errorback (cdr err)) nil)
+             (error (funcall errorback
+                             (list :kind 'error
+                                   :message (format "Cannot decode GitHub's answer: %s"
+                                                    (error-message-string err))
+                                   :reset-at nil))
+                    nil))))
+      (when decoded
+        (funcall callback (car decoded))))))
+
 ;;;; Requests
+
 (defun prrr-github-fetch-queue (host owner name callback errorback &optional forge-repo-id)
   "Fetch the Review Queue inputs of OWNER/NAME on HOST.
 CALLBACK receives a list of `prrr-pr-meta' stamped with the current
 time and FORGE-REPO-ID.  ERRORBACK receives a failure classified by
-`prrr-github-error'; exactly one of the two is called."
+`prrr-github-error', or an `error' failure when the answer cannot be
+decoded; exactly one of the two is called."
   (prrr-github--query host prrr-github-queue-query
     ((owner owner) (name name))
-    :callback (lambda (data &rest _)
-                (funcall callback
-                         (prrr-github-decode-queue data forge-repo-id
-                                                   (prrr-github--now))))
+    :callback (prrr-github--callback
+               (lambda (data)
+                 (prrr-github-decode-queue data forge-repo-id (prrr-github--now)))
+               callback errorback)
     :errorback (prrr-github--errorback errorback)))
 
 (defun prrr-github-fetch-teams (host me callback errorback)
   "Fetch the Teams of the viewer ME on HOST.
 CALLBACK receives a list of `prrr-team' stamped with the current time.
-ERRORBACK receives a failure classified by `prrr-github-error'."
+ERRORBACK receives a failure classified by `prrr-github-error', or an
+`error' failure when the answer cannot be decoded; exactly one of the
+two is called."
   (prrr-github--query host prrr-github-teams-query
     ((me (vector me)))
-    :callback (lambda (data &rest _)
-                (funcall callback
-                         (prrr-github-decode-teams data (prrr-github--now))))
+    :callback (prrr-github--callback
+               (lambda (data) (prrr-github-decode-teams data (prrr-github--now)))
+               callback errorback)
     :errorback (prrr-github--errorback errorback)))
 
 (defun prrr-github-fetch-review-data (host owner name number me callback errorback)
@@ -366,21 +392,22 @@ HOST is the API host; ME the viewer's login, used to find the Pending
 Review.  CALLBACK receives the plist of `prrr-github-decode-review-data'
 with rows stamped with the current time.  ERRORBACK receives a failure
 classified by `prrr-github-error'; a response without the pull request
-is a `not-found' failure and never reaches CALLBACK."
+is a `not-found' failure and never reaches CALLBACK.  Exactly one of
+the two is called."
   (prrr-github--query host prrr-github-review-data-query
     ((owner owner) (name name) (number number) (me me))
-    :callback (lambda (data &rest _)
-                (let* ((pr-id (alist-get 'id (alist-get 'pullRequest
-                                                        (cdr (assq 'repository data)))))
-                       (decoded (prrr-github-decode-review-data data pr-id
-                                                                (prrr-github--now))))
-                  (if decoded
-                      (funcall callback decoded)
-                    (funcall errorback
-                             (list :kind 'not-found
-                                   :message (format "Pull request %s/%s#%s not found"
-                                                    owner name number)
-                                   :reset-at nil)))))
+    :callback
+    (prrr-github--callback
+     (lambda (data)
+       (let ((pr-id (alist-get 'id (alist-get 'pullRequest
+                                              (cdr (assq 'repository data))))))
+         (or (prrr-github-decode-review-data data pr-id (prrr-github--now))
+             (signal 'prrr-github-failure
+                     (list :kind 'not-found
+                           :message (format "Pull request %s/%s#%s not found"
+                                            owner name number)
+                           :reset-at nil)))))
+     callback errorback)
     :errorback (prrr-github--errorback errorback)))
 
 (provide 'prrr-github)

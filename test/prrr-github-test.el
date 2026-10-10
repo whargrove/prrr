@@ -319,6 +319,34 @@
                                (lambda (err) (setq failure err)))
       (should (eq 'auth (plist-get failure :kind))))))
 
+(ert-deftest prrr-github-test-fetch-queue-decode-error-reaches-errorback ()
+  "An answer of an unexpected shape fails the request instead of signalling (C1)."
+  (prrr-test-with-ghub-stub '(data (repository (pullRequests . 5))) captured
+    (ignore captured)
+    (let (failure)
+      (prrr-github-fetch-queue "api.github.com" "example-org" "example-repo"
+                               (lambda (_) (ert-fail "callback on a decode error"))
+                               (lambda (err) (setq failure err)))
+      (should (eq 'error (plist-get failure :kind)))
+      (should (string-match-p "decode" (plist-get failure :message))))))
+
+(ert-deftest prrr-github-test-fetch-teams-decode-error-reaches-errorback ()
+  (prrr-test-with-ghub-stub '(data (viewer (organizations . 5))) captured
+    (ignore captured)
+    (let (failure)
+      (prrr-github-fetch-teams "api.github.com" "example-me"
+                               (lambda (_) (ert-fail "callback on a decode error"))
+                               (lambda (err) (setq failure err)))
+      (should (eq 'error (plist-get failure :kind))))))
+
+(ert-deftest prrr-github-test-fetch-callback-error-is-not-an-errorback ()
+  "Only decoding is guarded: an error in CALLBACK itself is the caller's."
+  (prrr-test-with-ghub-stub (prrr-test-fixture "teams") captured
+    (ignore captured)
+    (should-error (prrr-github-fetch-teams "api.github.com" "example-me"
+                                           (lambda (_) (error "Caller bug"))
+                                           (lambda (_) (ert-fail "errorback on a caller error"))))))
+
 (ert-deftest prrr-github-test-decode-review-data-null-pull-request ()
   (should (null (prrr-github-decode-review-data '(data (repository (pullRequest))) nil))))
 

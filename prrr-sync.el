@@ -45,6 +45,14 @@ This also spaces retries after a failed pull."
   :type 'natnum
   :group 'prrr)
 
+(defcustom prrr-sync-timeout 60
+  "Seconds a pull may wait for GitHub before it ends as offline.
+Some failures, such as a refused connection, never reach prrr; the
+pull then ends this many seconds after it started, and any answer
+that arrives later is ignored."
+  :type 'natnum
+  :group 'prrr)
+
 (defconst prrr-sync-teams-max-age (* 24 60 60)
   "Seconds after which the viewer's Teams are fetched again (SPEC section 4).")
 
@@ -55,6 +63,9 @@ This also spaces retries after a failed pull."
   "When the viewer's Teams were last fetched this session, or nil.
 Remembers a fetch that found no Team, which leaves no row behind.")
 
+(defvar prrr-sync--last-token 0
+  "The token of the most recently started pull; tokens count up.")
+
 (defun prrr-sync--timestamp (&optional time)
   "Return TIME (default now) as a GitHub-style UTC timestamp."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
@@ -64,18 +75,31 @@ Remembers a fetch that found no Team, which leaves no row behind.")
 A plist: :state is `pulling', `ok' or a failure kind of
 `prrr-github-error' (`rate-limited', `auth', `not-found', `offline',
 `error'); :message describes a failure; :reset-at is when a rate
-limit ends; :attempted-at is when the last pull started.  nil means
-no pull was attempted this session."
+limit ends; :attempted-at is when the last pull started; :token
+identifies that pull.  nil means no pull was attempted this session."
   (gethash repo-id prrr-sync--status))
+
+(defun prrr-sync--running-p (status &optional now)
+  "Non-nil when STATUS describes a pull that may still get an answer.
+A `pulling' status started more than `prrr-sync-timeout' seconds
+before NOW (default the current time) is not running: its watchdog
+should have ended it, so it must never block a new pull."
+  (and (eq (plist-get status :state) 'pulling)
+       (let ((attempted-at (plist-get status :attempted-at)))
+         (and attempted-at
+              (string< (prrr-sync--timestamp
+                        (time-subtract (or now (current-time)) prrr-sync-timeout))
+                       attempted-at)))))
 
 (defun prrr-sync-queue-due-p (repo-id metas &optional now)
   "Non-nil when the Review Queue inputs of REPO-ID should be pulled.
 METAS are the repository's stored `prrr-pr-meta' rows and NOW a Lisp
 time, the current time by default.  Due when there are no rows or the
 newest is older than `prrr-queue-stale-after', unless a pull is
-running, a rate limit has not reset, or the last attempt is more
-recent than `prrr-queue-stale-after'.  The last rule makes a failing
-pull retry at that pace instead of on every refresh."
+running (`prrr-sync--running-p'), a rate limit has not reset, or the
+last attempt is more recent than `prrr-queue-stale-after'.  The last
+rule makes a failing pull retry at that pace instead of on every
+refresh."
   (let* ((now-stamp (prrr-sync--timestamp now))
          (threshold (prrr-sync--timestamp
                      (time-subtract (or now (current-time)) prrr-queue-stale-after)))
@@ -84,7 +108,7 @@ pull retry at that pace instead of on every refresh."
          (attempted-at (plist-get status :attempted-at))
          (newest (car (sort (delq nil (mapcar #'prrr-pr-meta-fetched-at metas))
                             (lambda (a b) (string< b a))))))
-    (and (not (eq (plist-get status :state) 'pulling))
+    (and (not (prrr-sync--running-p status now))
          (not (and reset-at (string< now-stamp reset-at)))
          (not (and attempted-at (string< threshold attempted-at)))
          (or (null newest) (string< newest threshold)))))
@@ -109,19 +133,33 @@ and the stored rows are missing or older than that."
     (with-current-buffer buffer
       (magit-refresh-buffer))))
 
-(defun prrr-sync--finish (repo-id failure buffer)
-  "Record the end of REPO-ID's pull and schedule BUFFER's refresh.
-FAILURE is a `prrr-github-error' plist, or nil on success.  The refresh
-runs from a timer, so an answer that arrives synchronously never
-refreshes a buffer that is still being drawn."
-  (puthash repo-id
-           (list :state (if failure (plist-get failure :kind) 'ok)
-                 :message (plist-get failure :message)
-                 :reset-at (plist-get failure :reset-at)
-                 :attempted-at (plist-get (prrr-sync-status repo-id) :attempted-at))
-           prrr-sync--status)
+(defun prrr-sync--schedule-refresh (buffer)
+  "Refresh BUFFER, when non-nil, from a timer.
+A timer, so an answer that arrives synchronously never refreshes a
+buffer that is still being drawn."
   (when buffer
     (run-at-time 0 nil #'prrr-sync--refresh buffer)))
+
+(defun prrr-sync--current-p (repo-id token)
+  "Non-nil when the pull of REPO-ID identified by TOKEN has not ended."
+  (let ((status (prrr-sync-status repo-id)))
+    (and (eq (plist-get status :state) 'pulling)
+         (eql (plist-get status :token) token))))
+
+(defun prrr-sync--finish (repo-id token outcome buffer)
+  "End the pull of REPO-ID identified by TOKEN and refresh BUFFER.
+OUTCOME is a `prrr-github-error' plist, or (:kind ok) on success.  An
+answer for a pull that already ended, by its watchdog or because a
+newer pull replaced it, changes nothing."
+  (when (prrr-sync--current-p repo-id token)
+    (puthash repo-id
+             (list :state (plist-get outcome :kind)
+                   :message (plist-get outcome :message)
+                   :reset-at (plist-get outcome :reset-at)
+                   :attempted-at (plist-get (prrr-sync-status repo-id) :attempted-at)
+                   :token token)
+             prrr-sync--status)
+    (prrr-sync--schedule-refresh buffer)))
 
 (defmacro prrr-sync--guarded (fail &rest body)
   "Run BODY; turn any error into a call of FAIL with an `error' failure."
@@ -148,32 +186,42 @@ Call FAIL with the classified failure instead when the fetch fails."
 REPO is a `forge-github-repository'.  Fetches the viewer's Teams first
 when they are due, then the queue query, and stores both.  Records the
 outcome in `prrr-sync-status' and refreshes BUFFER, when live, after
-the pull ends either way.  Does nothing while a pull of REPO runs.
+the pull ends either way.  A pull without an answer ends as `offline'
+after `prrr-sync-timeout' seconds.  Return non-nil when a pull
+started; do nothing and return nil while a pull of REPO runs.
 Never signals: every failure becomes the status."
   (let ((id (oref repo id)))
-    (unless (eq (plist-get (prrr-sync-status id) :state) 'pulling)
-      (puthash id (list :state 'pulling :attempted-at (prrr-sync--timestamp))
-               prrr-sync--status)
-      (let* ((host (oref repo apihost))
-             (fail (lambda (failure) (prrr-sync--finish id failure buffer)))
+    (unless (prrr-sync--running-p (prrr-sync-status id))
+      (let* ((token (cl-incf prrr-sync--last-token))
+             (host (oref repo apihost))
+             (fail (lambda (failure) (prrr-sync--finish id token failure buffer)))
              (fetch-queue
               (lambda ()
-                (prrr-github-fetch-queue
-                 host (oref repo owner) (oref repo name)
-                 (lambda (metas)
-                   (prrr-sync--guarded fail
-                     (prrr-db-replace-pr-metas id metas)
-                     (prrr-sync--finish id nil buffer)))
-                 fail id))))
+                (when (prrr-sync--current-p id token)
+                  (prrr-github-fetch-queue
+                   host (oref repo owner) (oref repo name)
+                   (lambda (metas)
+                     (when (prrr-sync--current-p id token)
+                       (prrr-sync--guarded fail
+                         (prrr-db-replace-pr-metas id metas)
+                         (prrr-sync--finish id token '(:kind ok) buffer))))
+                   fail id)))))
+        (puthash id (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
+                 prrr-sync--status)
+        (run-at-time prrr-sync-timeout nil #'prrr-sync--finish id token
+                     '(:kind offline :message "No answer from GitHub" :reset-at nil)
+                     buffer)
         (prrr-sync--guarded fail
           (let ((me (prrr-github-viewer)))
             (cond ((null me)
-                   (funcall fail (list :kind 'error
-                                       :message "no GitHub login: set github.user or `prrr-github-user'"
-                                       :reset-at nil)))
+                   (funcall fail
+                            (list :kind 'error
+                                  :message "no GitHub login: set github.user or `prrr-github-user'"
+                                  :reset-at nil)))
                   ((prrr-sync--teams-due-p)
                    (prrr-sync--fetch-teams host me fetch-queue fail))
-                  (t (funcall fetch-queue)))))))))
+                  (t (funcall fetch-queue)))))
+        t))))
 
 ;;;; Commands
 
@@ -191,23 +239,30 @@ Signal a `user-error' when there is none."
 (defun prrr-pull ()
   "Pull the current repository's pull requests and Review Queue inputs.
 Runs `forge-pull', so new pull requests reach forge, and pulls prrr's
-own queue inputs.  The `magit-status' buffer refreshes when each ends."
+own queue inputs unless a pull of them is already running.  The
+`magit-status' buffer refreshes when each ends."
   (interactive)
   (let ((repo (prrr-sync-current-repository)))
     (call-interactively #'forge-pull)
-    (prrr-sync-pull repo (magit-get-mode-buffer 'magit-status-mode))
-    (message "Pulling the Review Queue of %s/%s..." (oref repo owner) (oref repo name))))
+    (if (prrr-sync-pull repo (magit-get-mode-buffer 'magit-status-mode))
+        (message "Pulling the Review Queue of %s/%s..." (oref repo owner) (oref repo name))
+      (message "A pull of the Review Queue of %s/%s is already running"
+               (oref repo owner) (oref repo name)))))
 
 ;;;###autoload
 (defun prrr-refresh-teams ()
-  "Fetch the viewer's Teams again, even if they are fresh."
+  "Fetch the viewer's Teams again, even if they are fresh.
+The `magit-status' buffer refreshes once they are stored."
   (interactive)
   (let ((repo (prrr-sync-current-repository))
         (me (or (prrr-github-viewer)
-                (user-error "No GitHub login: set github.user or `prrr-github-user'"))))
+                (user-error "No GitHub login: set github.user or `prrr-github-user'")))
+        (buffer (magit-get-mode-buffer 'magit-status-mode)))
     (prrr-sync--fetch-teams
      (oref repo apihost) me
-     (lambda () (message "Fetched %d Teams" (length (prrr-db-select 'team))))
+     (lambda ()
+       (message "Fetched %d Teams" (length (prrr-db-select 'team)))
+       (prrr-sync--schedule-refresh buffer))
      (lambda (failure) (message "Fetching Teams failed: %s" (plist-get failure :message))))))
 
 (provide 'prrr-sync)
