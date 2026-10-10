@@ -54,12 +54,12 @@ depends only on the files above it.
 
 | File                | Purpose                                                                                                                      | Depends on                             |
 |---------------------|------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
-| `prrr.el`           | Package entry: `defgroup`, package-level options, autoloads, `prrr-review` and `prrr-queue` commands. Options that belong to one file are defined in that file.| everything below                       |
+| `prrr.el`           | Package entry: `defgroup`, the commands shared by the Review Queue and Review Buffer (`prrr-open-topic`, `prrr-browse`, `prrr-checkout`; `prrr-review` arrives with the Review Buffer). Loads nothing else; every command is autoloaded. Options that belong to one file are defined in that file. | nothing at load time |
 | `prrr-db.el`        | SQLite schema, connection, struct types, CRUD.                                                                               | emacsql                                |
 | `prrr-github.el`    | Every GitHub call: GraphQL queries and mutations, REST calls, pagination, rate-limit pauses, response decoding into structs. | forge-query, forge-rest, ghub, prrr-db |
 | `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, magit-git        |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
-| `prrr-queue.el`     | The Review Queue section in magit-status and its keymap.                                                                     | prrr-state, prrr-sync, forge objects   |
+| `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
 | `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state  |
 | `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | prrr-diff                              |
 | `prrr-range.el`     | Range kinds, switching, since-review and since-opened computation, force-push handling.                                      | prrr-sync, prrr-diff                   |
@@ -411,7 +411,7 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 
 | Key       | Command                                                             |
 |-----------|---------------------------------------------------------------------|
-| `RET`     | `prrr-review` (open Review Buffer at default Range)                 |
+| `RET`     | `prrr-review` (open Review Buffer at default Range; until milestone 3, `prrr-open-topic`)                 |
 | `o`       | `prrr-open-topic`                                                   |
 | `b`       | `prrr-browse`                                                       |
 | `B`       | `prrr-checkout`                                                     |

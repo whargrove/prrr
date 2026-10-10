@@ -340,5 +340,62 @@ Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
           (should-not (memq #'prrr-queue-insert-section magit-status-sections-hook)))
       (prrr-queue-mode -1))))
 
+;;;; Keys, Stack moves and the menu
+
+(require 'prrr-stack)
+(require 'prrr-transient)
+
+(defun prrr-queue-test--stack-inputs ()
+  "Inputs with a three-PR Stack in For Me and a lone PR."
+  (prrr-queue-test--inputs
+   (list (prrr-queue-test--pair :id "ONE" :number 1 :head-ref "s1")
+         (prrr-queue-test--pair :id "TWO" :number 2 :base-ref "s1" :head-ref "s2")
+         (prrr-queue-test--pair :id "THREE" :number 3 :base-ref "s2" :head-ref "s3")
+         (prrr-queue-test--pair :id "LONE" :number 4 :head-ref "lone"))
+   (mapcar (lambda (id) (prrr-test-meta :pr-id id :review-requests '((user "example-me"))))
+           '("ONE" "TWO" "THREE" "LONE"))))
+
+(ert-deftest prrr-queue-test-stack-up-and-down-move-between-rows ()
+  (prrr-queue-test--with-render (prrr-queue-test--stack-inputs)
+    (prrr-queue-test--line-of 1)
+    (prrr-stack-up)
+    (should (looking-at "#2 "))
+    (prrr-stack-up)
+    (should (looking-at "#3 "))
+    (should-error (prrr-stack-up) :type 'user-error)
+    (prrr-stack-down)
+    (should (looking-at "#2 "))))
+
+(ert-deftest prrr-queue-test-stack-move-outside-a-row-signals ()
+  (prrr-queue-test--with-render (prrr-queue-test--stack-inputs)
+    (should-error (prrr-stack-up) :type 'user-error)))
+
+(ert-deftest prrr-queue-test-lone-pr-has-no-stack-neighbour ()
+  (prrr-queue-test--with-render (prrr-queue-test--stack-inputs)
+    (prrr-queue-test--line-of 4)
+    (should-error (prrr-stack-down) :type 'user-error)))
+
+(defun prrr-queue-test--menu-command (key)
+  "Return the command bound to KEY in `prrr-queue-menu'."
+  (let ((suffix (transient-get-suffix 'prrr-queue-menu key)))
+    (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix)) :command)))
+
+(ert-deftest prrr-queue-test-menu-mirrors-row-keys ()
+  "SPEC section 9: every row key has the same key and command in the menu."
+  (dolist (key '("RET" "o" "b" "B" ">" "<" "G"))
+    (should (eq (keymap-lookup prrr-queue-section-map key)
+                (prrr-queue-test--menu-command key))))
+  (should (eq 'prrr-queue-menu (keymap-lookup prrr-queue-section-map "C-o")))
+  (should (eq 'prrr-queue-menu (keymap-lookup prrr-queue-heading-map "C-o")))
+  (should (eq 'prrr-pull (keymap-lookup prrr-queue-heading-map "G"))))
+
+(ert-deftest prrr-queue-test-menu-toggles ()
+  (should (eq 'prrr-queue-toggle-drafts (prrr-queue-test--menu-command "-d")))
+  (should (eq 'prrr-queue-toggle-served (prrr-queue-test--menu-command "-s")))
+  (let ((prrr-queue-show-served t))
+    (cl-letf (((symbol-function 'magit-refresh) #'ignore))
+      (call-interactively #'prrr-queue-toggle-served))
+    (should-not prrr-queue-show-served)))
+
 (provide 'prrr-queue-test)
 ;;; prrr-queue-test.el ends here

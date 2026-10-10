@@ -42,6 +42,7 @@
 (require 'prrr-github)
 (require 'prrr-state)
 (require 'prrr-sync)
+(require 'prrr)
 
 ;;;; Options
 
@@ -96,12 +97,25 @@
 
 ;;;; Keymaps
 
+(autoload 'prrr-stack-up "prrr-stack" nil t)
+(autoload 'prrr-stack-down "prrr-stack" nil t)
+(autoload 'prrr-queue-menu "prrr-transient" nil t)
+
 (defvar-keymap prrr-queue-heading-map
-  :doc "Keys on the Review Queue heading and its group headings.")
+  :doc "Keys on the Review Queue heading and its group headings."
+  "G" #'prrr-pull
+  "C-o" #'prrr-queue-menu)
 
 (defvar-keymap prrr-queue-section-map
-  :doc "Keys on a Review Queue row (SPEC section 9)."
-  :parent prrr-queue-heading-map)
+  :doc "Keys on a Review Queue row (SPEC section 9).
+RET opens forge's topic buffer until the Review Buffer arrives."
+  :parent prrr-queue-heading-map
+  "RET" #'prrr-open-topic
+  "o" #'prrr-open-topic
+  "b" #'prrr-browse
+  "B" #'prrr-checkout
+  ">" #'prrr-stack-up
+  "<" #'prrr-stack-down)
 
 ;;;; Formatting
 
@@ -373,6 +387,28 @@ Turns on `prrr-queue-mode' when it is off, opens the repository's
   (if-let ((section (magit-get-section '((prrr-queue) (status)))))
       (magit-section-goto section)
     (user-error "No Review Queue here: prrr needs a GitHub repository tracked by forge")))
+
+;;;; Rows
+
+(defun prrr-queue-entry-at-point ()
+  "Return the `prrr-queue-entry' of the Review Queue row at point, or nil."
+  (cdr (assq (magit-current-section) prrr-queue--rows)))
+
+(defun prrr-queue-move-in-stack (direction)
+  "Move point to the next row of the current row's Stack in DIRECTION.
+DIRECTION is `up' or `down'.  Only the displayed rows of the current
+Queue Group are considered.  Return non-nil when point moved; signal a
+`user-error' when point is not on a Review Queue row."
+  (let* ((entry (or (prrr-queue-entry-at-point)
+                    (user-error "Not on a Review Queue row")))
+         (group (prrr-queue-entry-group entry))
+         (target (prrr-state-stack-neighbour
+                  (mapcar #'cdr (seq-filter (lambda (row) (eq (prrr-queue-entry-group (cdr row)) group))
+                                            prrr-queue--rows))
+                  entry direction)))
+    (when target
+      (magit-section-goto (car (rassq target prrr-queue--rows)))
+      t)))
 
 (provide 'prrr-queue)
 ;;; prrr-queue.el ends here
