@@ -29,7 +29,8 @@ prrr is not on MELPA yet. Install from source with `package-vc`:
 ```
 
 Or clone the repository, add it to `load-path`, and `(require 'prrr)`.
-Loading prrr loads nothing else; its commands are autoloaded.
+Loading prrr loads nothing else; its commands are autoloaded, with or
+without package.el.
 
 ## Setup
 
@@ -71,7 +72,19 @@ bottom first, with `⟰ k/n` marking each PR's place in it.
 The queue renders from a local database. It pulls in the background when
 its data is older than `prrr-queue-stale-after` seconds (default 300). The
 heading shows `pulling…`, `offline`, `rate limited until 14:05`, or the
-error.
+error. A pull that gets no answer within `prrr-sync-timeout` seconds
+(default 60), as when the network is down, ends as `offline` and is retried
+later; `G` pulls again at once.
+
+A PR joins the queue once prrr has pulled it, so a PR opened since the last
+pull can appear in forge's list a few minutes before it appears here. Press
+`G` to pull both now.
+
+Teams only refine the `team-requested` and `teammate-reviewed` states. If
+prrr cannot list your teams, for example because the token lacks `read:org`
+or an organization requires SAML SSO, the queue still fills, prrr uses the
+teams it already knows, and the heading says `Teams unavailable: …`. It
+tries the teams again the next day, or when you run `prrr-refresh-teams`.
 
 ### Keys on a queue row
 
@@ -86,6 +99,8 @@ error.
 | `G`   | `prrr-pull`       | Pull PRs (`forge-pull`) and the queue's data now    |
 | `C-o` | `prrr-queue-menu` | Menu with the same keys, plus `-d` drafts, `-s` Served |
 
+forge's own pull request keys, such as `C-c C-c`, also work on a row.
+
 ### Commands
 
 - `prrr-queue`: show the Review Queue of the current repository.
@@ -98,6 +113,7 @@ error.
 |--------------------------|---------|-------------------------------------------------|
 | `prrr-github-user`       | `nil`   | Your login; `nil` reads `github.user`           |
 | `prrr-queue-stale-after` | `300`   | Seconds before the queue's data is pulled again |
+| `prrr-sync-timeout`      | `60`    | Seconds a pull waits for GitHub before `offline` |
 | `prrr-queue-show-drafts` | `t`     | Show draft PRs                                  |
 | `prrr-queue-show-served` | `t`     | Show the Served partition                       |
 | `prrr-database-file`     | `prrr-database.sqlite` in `user-emacs-directory` | prrr's own database |
