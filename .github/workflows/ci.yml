@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Emacs ${{ matrix.emacs }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs: ["29.4", "30.1", "31.1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs }}
+      - name: Install dependencies from MELPA and GNU ELPA
+        run: make deps
+      - name: Byte-compile with warnings as errors
+        run: make compile
+      - name: package-lint and checkdoc
+        run: make lint
+      - name: ERT suite (no network)
+        run: make test
