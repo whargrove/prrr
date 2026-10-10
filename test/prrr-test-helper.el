@@ -27,6 +27,15 @@
 
 (require 'ert)
 (require 'prrr)
+(require 'prrr-db)
+
+(defmacro prrr-db-with-test-db (&rest body)
+  "Run BODY with `prrr-db' returning a fresh in-memory database."
+  (declare (indent 0) (debug t))
+  `(let ((prrr-db--connection (emacsql-sqlite-open nil)))
+     (unwind-protect
+         (progn (prrr-db--init prrr-db--connection) ,@body)
+       (emacsql-close prrr-db--connection))))
 
 (defconst prrr-test-root
   (file-name-directory

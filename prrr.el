@@ -35,6 +35,8 @@
 
 ;;; Code:
 
+(require 'prrr-db)
+
 (defgroup prrr nil
   "Review GitHub pull requests with magit and forge."
   :group 'tools
