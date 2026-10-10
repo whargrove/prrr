@@ -19,7 +19,7 @@ machine. Plans and implementers may rely on these without re-checking.
 - `(emacsql-sqlite-open FILE &optional DEBUG SETUP)`: FILE nil gives an
   in-memory database (use this in tests). Foreign keys are enabled.
 - Queries: `(emacsql db [:create-table thread ([(thread-id :primary-key) pr-id path line ...])])`,
-  `(emacsql db [:insert-or-replace :into thread :values $v1] (vector row1 row2))`,
+  `(emacsql db [:insert-or-replace :into thread :values $v1] (list row1 row2))` (a LIST of row vectors; a single bare row vector also works),
   `(emacsql db [:select * :from thread :where (= pr-id $s1)] id)`,
   `(emacsql db [:delete :from thread :where (= thread-id $s1)] id)`.
   Composite key: `[:create-table viewed ([pr-id path state fetched-at] (:primary-key [pr-id path]))]`.

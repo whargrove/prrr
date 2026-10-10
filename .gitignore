@@ -6,3 +6,8 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# prrr build artefacts
+.deps/
+*.elc
+test/fixtures/github/recorded/

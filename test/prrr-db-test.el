@@ -1,0 +1,191 @@
+;;; prrr-db-test.el --- Tests for prrr-db  -*- lexical-binding: t -*-
+
+;; Copyright (C) 2026  Wesley Hargrove
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+;;
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;; Schema, structs, connection lifecycle and CRUD of `prrr-db', run
+;; against an in-memory SQLite database.
+
+;;; Code:
+
+(require 'ert)
+(require 'prrr-test-helper)
+(require 'prrr-db)
+
+(ert-deftest prrr-db-test-struct-slots-match-columns ()
+  "Every table's struct has exactly the table's columns, in order."
+  (dolist (entry prrr-db--tables)
+    (should (equal (prrr-db--slot-names (nth 1 entry))
+                   (prrr-db--columns (nth 0 entry))))))
+
+(ert-deftest prrr-db-test-fresh-database-stores-version ()
+  (prrr-db-with-test-db
+    (should (equal (emacsql (prrr-db) [:select version :from schema-version])
+                   (list (list prrr-db-schema-version))))))
+
+(ert-deftest prrr-db-test-fresh-database-has-every-table ()
+  (prrr-db-with-test-db
+    (dolist (entry prrr-db--tables)
+      (should (null (emacsql (prrr-db)
+                             (vector :select '* :from (nth 0 entry))))))))
+
+(ert-deftest prrr-db-test-version-mismatch-resets-but-keeps-outbox ()
+  "Review Focus 4: a schema change drops data tables, keeps the Outbox."
+  (prrr-db-with-test-db
+    (let ((db (prrr-db))
+          (prrr-db-preserved-outbox nil))
+      (emacsql db [:insert :into team :values $v1]
+               (list (vector "example-org/reviewers" "example-org"
+                               "reviewers" "2026-10-10T12:00:00Z")))
+      (emacsql db [:insert :into outbox :values $v1]
+               (list (vector 1 "PR_1" 'comment "payload"
+                               "2026-10-10T12:00:00Z" 0 nil)))
+      (emacsql db [:delete :from schema-version])
+      (emacsql db [:insert :into schema-version :values $v1]
+               (list (vector 0)))
+      (prrr-db--init db)
+      (should (null (emacsql db [:select * :from team])))
+      (should (= 1 (length (emacsql db [:select * :from outbox]))))
+      (should (equal (emacsql db [:select version :from schema-version])
+                     (list (list prrr-db-schema-version))))
+      (should (= 1 (length prrr-db-preserved-outbox)))
+      (should (prrr-outbox-p (car prrr-db-preserved-outbox)))
+      (should (equal (prrr-outbox-pr-id (car prrr-db-preserved-outbox))
+                     "PR_1")))))
+
+(ert-deftest prrr-db-test-matching-version-keeps-data ()
+  (prrr-db-with-test-db
+    (let ((db (prrr-db)))
+      (emacsql db [:insert :into team :values $v1]
+               (list (vector "example-org/reviewers" "example-org"
+                               "reviewers" nil)))
+      (prrr-db--init db)
+      (should (= 1 (length (emacsql db [:select * :from team])))))))
+
+(ert-deftest prrr-db-test-reset-recreates-tables ()
+  (prrr-db-with-test-db
+    (let ((db (prrr-db)))
+      (emacsql db [:insert :into pr-bookmark :values $v1]
+               (list (vector "PR_1" "abc" "2026-10-10T12:00:00Z")))
+      (emacsql db [:insert :into outbox :values $v1]
+               (list (vector 1 "PR_1" 'comment "payload"
+                             "2026-10-10T12:00:00Z" 0 nil)))
+      (prrr-db-reset db)
+      (should (null (emacsql db [:select * :from pr-bookmark])))
+      (should (= 1 (length (emacsql db [:select * :from outbox])))))))
+
+(ert-deftest prrr-db-test-row-to-struct-rejects-wrong-arity ()
+  "A row with fewer values than the table has columns is an error."
+  (should-error (prrr-db--row-to-struct 'outbox (list 1 "PR_1"))
+                :type 'error))
+
+(ert-deftest prrr-db-test-open-creates-directory ()
+  "Review Focus 4: `prrr-db' creates the database's directory."
+  (let* ((dir (make-temp-file "prrr-db-test-" t))
+         (prrr-database-file (expand-file-name "nested/dir/prrr.sqlite" dir))
+         (prrr-db--connection nil))
+    (unwind-protect
+        (progn
+          (should (emacsql-live-p (prrr-db)))
+          (should (file-exists-p prrr-database-file))
+          (should (eq (prrr-db) prrr-db--connection))
+          (prrr-db-close)
+          (should (null prrr-db--connection)))
+      (prrr-db-close)
+      (delete-directory dir t))))
+
+(ert-deftest prrr-db-test-insert-and-get-round-trip ()
+  "Lists, symbols, booleans and nil survive a round trip."
+  (prrr-db-with-test-db
+    (let ((meta (prrr-pr-meta-create
+                 :pr-id "PR_1" :forge-repo-id "example-repo-id" :number 7
+                 :head-oid "1111111111111111111111111111111111111111"
+                 :review-requests '((user "example-me")
+                                    (team "example-org/reviewers"))
+                 :latest-reviews '(("example-bob" "APPROVED"
+                                    "2026-09-02T10:00:00Z"
+                                    "1111111111111111111111111111111111111111"
+                                    ("example-org/reviewers")))
+                 :viewer-latest-review nil
+                 :viewer-latest-review-request "example-alice"
+                 :created-at "2026-09-01T09:00:00Z"
+                 :fetched-at "2026-10-10T12:00:00Z")))
+      (should (eq meta (prrr-db-insert meta)))
+      (should (equal meta (prrr-db-get 'pullreq-meta "PR_1")))
+      (should (null (prrr-db-get 'pullreq-meta "PR_404"))))))
+
+(ert-deftest prrr-db-test-insert-replaces-existing-row ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-bookmark-create :pr-id "PR_1" :last-opened-head-oid "a"
+                                          :last-opened-at "2026-10-01T00:00:00Z"))
+    (prrr-db-insert (prrr-bookmark-create :pr-id "PR_1" :last-opened-head-oid "b"
+                                          :last-opened-at "2026-10-02T00:00:00Z"))
+    (should (= 1 (length (prrr-db-select 'pr-bookmark))))
+    (should (equal "b" (prrr-bookmark-last-opened-head-oid
+                        (prrr-db-get 'pr-bookmark "PR_1"))))))
+
+(ert-deftest prrr-db-test-get-with-composite-key ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-viewed-create :pr-id "PR_1" :path "src/a.el"
+                                        :state 'viewed :fetched-at nil))
+    (prrr-db-insert (prrr-viewed-create :pr-id "PR_1" :path "src/b.el"
+                                        :state 'dismissed :fetched-at nil))
+    (should (eq 'dismissed
+                (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "src/b.el"))))
+    (should (null (prrr-db-get 'viewed "PR_2" "src/b.el")))
+    (should-error (prrr-db-get 'viewed "PR_1"))))
+
+(ert-deftest prrr-db-test-select-filters-by-columns ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-thread-create :thread-id "T_1" :pr-id "PR_1" :path "a"
+                                        :side 'right :subject-type 'line
+                                        :resolved-p t))
+    (prrr-db-insert (prrr-thread-create :thread-id "T_2" :pr-id "PR_1" :path "b"
+                                        :side 'right :subject-type 'line
+                                        :resolved-p nil))
+    (prrr-db-insert (prrr-thread-create :thread-id "T_3" :pr-id "PR_2" :path "a"
+                                        :side 'left :subject-type 'file
+                                        :resolved-p t))
+    (should (= 3 (length (prrr-db-select 'thread))))
+    (should (equal '("T_1" "T_2")
+                   (mapcar #'prrr-thread-thread-id
+                           (prrr-db-select 'thread :pr-id "PR_1"))))
+    (should (equal '("T_1")
+                   (mapcar #'prrr-thread-thread-id
+                           (prrr-db-select 'thread :pr-id "PR_1" :resolved-p t))))
+    (should (eq t (prrr-thread-resolved-p (prrr-db-get 'thread "T_1"))))
+    (should (eq 'file (prrr-thread-subject-type (prrr-db-get 'thread "T_3"))))))
+
+(ert-deftest prrr-db-test-delete-by-columns-and-all ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-team-create :combined-slug "example-org/a" :org "example-org" :slug "a"))
+    (prrr-db-insert (prrr-team-create :combined-slug "example-org/b" :org "example-org" :slug "b"))
+    (prrr-db-insert (prrr-team-create :combined-slug "other/c" :org "other" :slug "c"))
+    (prrr-db-delete 'team :org "example-org")
+    (should (equal '("other/c")
+                   (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))))
+    (prrr-db-delete 'team)
+    (should (null (prrr-db-select 'team)))))
+
+(ert-deftest prrr-db-test-insert-rejects-foreign-value ()
+  (prrr-db-with-test-db
+    (should-error (prrr-db-insert (list 'not 'a 'struct)))))
+
+(provide 'prrr-db-test)
+;;; prrr-db-test.el ends here
