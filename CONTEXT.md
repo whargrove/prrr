@@ -35,7 +35,9 @@ the package deals with. No implementation details live here.
 - **Review Buffer**: the buffer in which one PR is reviewed: its diff, its
   threads, and the controls to comment and submit.
 - **Range**: the pair of commits whose diff the Review Buffer is showing. The
-  default Range is the PR's merge base to its head.
+  default Range is the PR's merge base to its head; other kinds are since my
+  last review, since I last opened the PR, one commit, or between two
+  commits. Only lines that exist at the PR's head can take comments.
 - **Thread**: a GitHub review conversation anchored to a file, a line, or a
   range of lines in the PR's diff. A Thread is either open or resolved. A
   Thread whose anchor no longer exists in the current diff is **outdated**.
