@@ -68,6 +68,26 @@ Variable: $me, a one-element list holding the viewer's login.  The
 type is the symbol `[String!]' because ghub prints a vector type as
 `(String!)', which GraphQL rejects."))
 
+(eval-and-compile
+  (defconst prrr-github-review-data-query
+    '(repository [(owner $owner String!) (name $name String!)]
+       (pullRequest [(number $number Int!)]
+         id headRefOid
+         (reviewThreads [(:edges t)]
+           id path line startLine diffSide startDiffSide originalLine
+           isOutdated isResolved subjectType viewerCanResolve viewerCanUnresolve
+           (comments [(:edges t)]
+             id (author login) body createdAt lastEditedAt (replyTo id) state
+             (pullRequestReview id) (originalCommit oid)))
+         (reviews [(:edges t) (states . (PENDING)) (author $me String!)]
+           id (commit oid) body createdAt)
+         (files [(:edges t)] path viewerViewedState)))
+    "Threads, the viewer's Pending Review, Viewed flags and head of one PR.
+Variables: $owner, $name, $number and $me (the viewer's login).
+The pending review's own comments are not selected: pending comments
+appear in reviewThreads with state PENDING, which is where their side
+comes from (research 03, section 2)."))
+
 (defmacro prrr-github--query (host query-symbol variables &rest keys)
   "Send the query stored in QUERY-SYMBOL to HOST through `forge-query'.
 VARIABLES is a literal list of (NAME FORM) pairs, FORM being evaluated
@@ -145,6 +165,87 @@ record, nil when the caller stamps rows itself."
                            (alist-get 'teams org))))
                .viewer.organizations)))
 
+;;;; Decoding per-PR review data
+
+(defun prrr-github--side (side)
+  "Translate a DiffSide string SIDE into `left', `right' or nil."
+  (pcase side ("LEFT" 'left) ("RIGHT" 'right)))
+
+(defun prrr-github--comment (node thread-id pr-id)
+  "Decode a review comment NODE of THREAD-ID on PR-ID into a `prrr-comment'."
+  (let-alist node
+    (prrr-comment-create
+     :comment-id .id
+     :thread-id thread-id
+     :pr-id pr-id
+     :author .author.login
+     :body .body
+     :created-at .createdAt
+     :updated-at .lastEditedAt
+     :reply-to .replyTo.id
+     :review-id .pullRequestReview.id
+     :state (if (equal .state "PENDING") 'pending 'submitted)
+     :local-state 'sent
+     :agent-p nil)))
+
+(defun prrr-github--thread (node pr-id fetched-at)
+  "Decode a reviewThreads NODE of PR-ID into (THREAD . COMMENTS).
+FETCHED-AT is stamped on the Thread."
+  (let-alist node
+    (cons (prrr-thread-create
+           :thread-id .id
+           :pr-id pr-id
+           :path .path
+           :line .line
+           :start-line .startLine
+           :side (prrr-github--side .diffSide)
+           :start-side (prrr-github--side .startDiffSide)
+           :subject-type (if (equal .subjectType "FILE") 'file 'line)
+           :outdated-p (and .isOutdated t)
+           :resolved-p (and .isResolved t)
+           :original-line .originalLine
+           :original-commit (let-alist (car .comments) .originalCommit.oid)
+           :fetched-at fetched-at)
+          (mapcar (lambda (comment) (prrr-github--comment comment .id pr-id))
+                  .comments))))
+
+(defun prrr-github--viewed-state (state)
+  "Translate a FileViewedState string STATE into a `prrr-viewed' state."
+  (pcase state
+    ("VIEWED" 'viewed)
+    ("DISMISSED" 'dismissed)
+    (_ 'unviewed)))
+
+(defun prrr-github-decode-review-data (data pr-id &optional fetched-at)
+  "Decode per-PR review DATA of PR-ID into a plist.
+Keys: :threads (list of `prrr-thread'), :comments (list of
+`prrr-comment' in Thread order), :pending-review (`prrr-pending-review'
+or nil), :viewed (list of `prrr-viewed'), :head-oid.  FETCHED-AT is
+stamped on Threads and Viewed rows."
+  (let-alist (cdr (assq 'repository data))
+    (let ((decoded (mapcar (lambda (node) (prrr-github--thread node pr-id fetched-at))
+                           (alist-get 'reviewThreads .pullRequest)))
+          (pending (car (alist-get 'reviews .pullRequest))))
+      (list :threads (mapcar #'car decoded)
+            :comments (apply #'append (mapcar #'cdr decoded))
+            :pending-review
+            (and pending
+                 (let-alist pending
+                   (prrr-pending-review-create :pr-id pr-id
+                                               :review-id .id
+                                               :commit-oid .commit.oid
+                                               :body .body
+                                               :created-at .createdAt)))
+            :viewed
+            (mapcar (lambda (file)
+                      (let-alist file
+                        (prrr-viewed-create :pr-id pr-id
+                                            :path .path
+                                            :state (prrr-github--viewed-state .viewerViewedState)
+                                            :fetched-at fetched-at)))
+                    (alist-get 'files .pullRequest))
+            :head-oid (alist-get 'headRefOid .pullRequest)))))
+
 ;;;; Requests
 
 (defun prrr-github-fetch-queue (host owner name callback &optional forge-repo-id)
@@ -166,6 +267,20 @@ CALLBACK receives a list of `prrr-team' stamped with the current time."
     :callback (lambda (data &rest _)
                 (funcall callback
                          (prrr-github-decode-teams data (prrr-github--now))))))
+
+(defun prrr-github-fetch-review-data (host owner name number me callback)
+  "Fetch Threads, Pending Review, Viewed flags and head of OWNER/NAME#NUMBER.
+HOST is the API host; ME the viewer's login, used to find the Pending
+Review.  CALLBACK receives the plist of `prrr-github-decode-review-data'
+with rows stamped with the current time."
+  (prrr-github--query host prrr-github-review-data-query
+    ((owner owner) (name name) (number number) (me me))
+    :callback (lambda (data &rest _)
+                (let ((pr-id (alist-get 'id (alist-get 'pullRequest
+                                                       (cdr (assq 'repository data))))))
+                  (funcall callback
+                           (prrr-github-decode-review-data data pr-id
+                                                           (prrr-github--now)))))))
 
 (provide 'prrr-github)
 ;;; prrr-github.el ends here
