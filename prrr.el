@@ -37,6 +37,7 @@
 
 (require 'prrr-db)
 (require 'prrr-github)
+(require 'prrr-state)
 
 (defgroup prrr nil
   "Review GitHub pull requests with magit and forge."

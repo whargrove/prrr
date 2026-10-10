@@ -1,0 +1,126 @@
+;;; prrr-state.el --- Pure Review Queue rules for prrr  -*- lexical-binding: t -*-
+
+;; Copyright (C) 2026  Wesley Hargrove
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+;;
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;; Pure functions implementing SPEC.md section 5: the Review State of a
+;; PR for the viewer, Queue Group membership, the Awaiting me / Served
+;; partitions and their FIFO ordering, Stack detection, and the final
+;; ordered Review Queue.  Inputs are `prrr-pr' (built by the caller from
+;; forge's object) and `prrr-pr-meta' rows; there is no buffer, network
+;; or forge-object access, so every rule is unit-tested with constructed
+;; structs.
+;;
+;; Line mapping across Ranges is milestone 5 and is not here yet.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'seq)
+(require 'prrr-db)
+
+;;;; Structs
+
+(cl-defstruct (prrr-pr (:constructor prrr-pr-create) (:copier nil))
+  "A Pull Request as the Review Queue sees it.
+ID is the GitHub node id (forge's `their-id'), which joins to
+`prrr-pr-meta-pr-id'.  ASSIGNEES is a list of logins.  BASE-REF and
+HEAD-REF are branch names, nil when the branch is gone.  CROSS-REPO-P
+is non-nil for a PR from a fork."
+  id number title author draft-p assignees created-at updated-at
+  head-oid base-ref head-ref cross-repo-p)
+
+(cl-defstruct (prrr-queue-entry (:constructor prrr-queue-entry-create)
+                                (:copier nil))
+  "One row of the Review Queue.
+PR is the `prrr-pr'.  STATE is the Review State (For Me) or Mine state,
+nil for a dimmed context row.  GROUP is `for-me' or `mine'.  PARTITION
+is `awaiting' or `served' in For Me, nil in Mine.  STACK-POS is the
+1-based position of PR in its Stack, bottom first, and STACK-SIZE the
+Stack's length (1 for a lone PR).  DIMMED-P marks a row shown only for
+context: a non-qualifying Stack member or a draft requested from me."
+  pr state group partition stack-pos stack-size dimmed-p)
+
+;;;; Helpers over meta rows
+
+(defun prrr-state--viewer-review (meta)
+  "Return META's viewer-latest-review unless it is nil or still pending.
+A Pending Review is not a touch, so it is ignored everywhere."
+  (let ((review (and meta (prrr-pr-meta-viewer-latest-review meta))))
+    (and review (not (equal (nth 0 review) "PENDING")) review)))
+
+(defun prrr-state--requested-p (meta me)
+  "Non-nil when META shows a current review request for ME.
+Either ME is in the current review requests (GitHub removes a request
+once it is answered, so this means an unanswered or renewed request),
+or someone requested ME and ME has not reviewed yet."
+  (and meta
+       (or (member (list 'user me) (prrr-pr-meta-review-requests meta))
+           (and (prrr-pr-meta-viewer-latest-review-request meta)
+                (null (prrr-state--viewer-review meta))))
+       t))
+
+(defun prrr-state--team-requests (meta teams)
+  "Return the combined slugs of TEAMS that are requested on META."
+  (cl-loop for (kind name) in (and meta (prrr-pr-meta-review-requests meta))
+           when (and (eq kind 'team) (member name teams))
+           collect name))
+
+(defun prrr-state--teammate-reviews (meta me teams)
+  "Return META's latest reviews by others than ME on behalf of one of TEAMS."
+  (cl-loop for review in (and meta (prrr-pr-meta-latest-reviews meta))
+           for (login _state _submitted-at _commit-oid slugs) = review
+           when (and (not (equal login me))
+                     (cl-intersection slugs teams :test #'equal))
+           collect review))
+
+;;;; Review State
+
+(defconst prrr-state-for-me-order
+  '(new-commits requested team-requested teammate-reviewed
+    changes-requested approved commented assigned)
+  "Review States of the For Me group in the order they are tried.")
+
+(defun prrr-state-review-state (pr meta me teams)
+  "Return the Review State of PR for the viewer ME, or nil.
+META is PR's `prrr-pr-meta' or nil; TEAMS the viewer's Team slugs.
+First match wins, in the order of `prrr-state-for-me-order'."
+  (let ((review (prrr-state--viewer-review meta)))
+    (cond
+     ((and review (nth 2 review)
+           (not (equal (nth 2 review) (prrr-pr-head-oid pr))))
+      'new-commits)
+     ((prrr-state--requested-p meta me)
+      'requested)
+     ((and (prrr-state--team-requests meta teams)
+           (null (prrr-state--teammate-reviews meta me teams)))
+      'team-requested)
+     ((prrr-state--teammate-reviews meta me teams)
+      'teammate-reviewed)
+     ((and review (equal (nth 0 review) "CHANGES_REQUESTED"))
+      'changes-requested)
+     ((and review (equal (nth 0 review) "APPROVED"))
+      'approved)
+     (review                            ; COMMENTED or DISMISSED
+      'commented)
+     ((member me (prrr-pr-assignees pr))
+      'assigned))))
+
+(provide 'prrr-state)
+;;; prrr-state.el ends here
