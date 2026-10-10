@@ -5,7 +5,7 @@
 ;; Author: Wesley Hargrove <wesleyhargrove@gmail.com>
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1") (magit "4.7") (forge "0.5") (emacsql "4.4") (transient "0.13") (compat "31"))
-;; URL: https://github.com/wesleyhargrove/prrr
+;; URL: https://github.com/whargrove/prrr
 ;; Keywords: vc, tools
 
 ;; This file is not part of GNU Emacs.
