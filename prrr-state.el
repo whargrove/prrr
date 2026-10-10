@@ -66,7 +66,7 @@ A Pending Review is not a touch, so it is ignored everywhere."
     (and review (not (equal (nth 0 review) "PENDING")) review)))
 
 (defun prrr-state--requested-p (meta me)
-  "Non-nil when META shows a current review request for ME.
+  "Return non-nil when META holds a current review request for ME.
 Either ME is in the current review requests (GitHub removes a request
 once it is answered, so this means an unanswered or renewed request),
 or someone requested ME and ME has not reviewed yet."
