@@ -38,7 +38,12 @@
 (require 'emacsql)
 (require 'emacsql-sqlite)
 
-(defvar prrr-database-file)             ; defined in prrr.el
+(defcustom prrr-database-file
+  (expand-file-name "prrr-database.sqlite" user-emacs-directory)
+  "File holding prrr's SQLite database.
+One database serves every repository.  Created on first use."
+  :type 'file
+  :group 'prrr)
 
 (defconst prrr-db-schema-version 1
   "Version of the table layout in `prrr-db--tables'.
@@ -190,14 +195,15 @@ anything else; `prrr-db--init' sets it, nothing in this file reads it.")
 
 (defun prrr-db--create-tables (db)
   "Create every missing table in DB and record `prrr-db-schema-version'."
-  (dolist (entry prrr-db--tables)
-    (unless (prrr-db--table-exists-p db (nth 0 entry))
-      (emacsql db (vector :create-table (nth 0 entry) (nth 2 entry)))))
-  (unless (prrr-db--table-exists-p db 'schema-version)
-    (emacsql db [:create-table schema-version ([version])]))
-  (emacsql db [:delete :from schema-version])
-  (emacsql db [:insert :into schema-version :values $v1]
-           (list (vector prrr-db-schema-version))))
+  (emacsql-with-transaction db
+    (dolist (entry prrr-db--tables)
+      (unless (prrr-db--table-exists-p db (nth 0 entry))
+        (emacsql db (vector :create-table (nth 0 entry) (nth 2 entry)))))
+    (unless (prrr-db--table-exists-p db 'schema-version)
+      (emacsql db [:create-table schema-version ([version])]))
+    (emacsql db [:delete :from schema-version])
+    (emacsql db [:insert :into schema-version :values $v1]
+             (list (vector prrr-db-schema-version)))))
 
 (defun prrr-db--drop-table (db table)
   "Drop TABLE from DB if it exists."
@@ -209,10 +215,11 @@ anything else; `prrr-db--init' sets it, nothing in this file reads it.")
 DB defaults to the open connection.  The stored schema version becomes
 `prrr-db-schema-version'.  Return DB."
   (let ((db (or db (prrr-db))))
-    (dolist (entry prrr-db--tables)
-      (unless (eq (nth 0 entry) 'outbox)
-        (prrr-db--drop-table db (nth 0 entry))))
-    (prrr-db--create-tables db)
+    (emacsql-with-transaction db
+      (dolist (entry prrr-db--tables)
+        (unless (eq (nth 0 entry) 'outbox)
+          (prrr-db--drop-table db (nth 0 entry))))
+      (prrr-db--create-tables db))
     db))
 
 (defun prrr-db--init (db)
@@ -235,7 +242,6 @@ On a mismatch the `outbox' rows are collected into
   "Return the open connection to `prrr-database-file', opening it if needed.
 The file's directory is created when missing."
   (unless (and prrr-db--connection (emacsql-live-p prrr-db--connection))
-    (require 'prrr)                     ; defines `prrr-database-file'
     (let ((file (expand-file-name prrr-database-file)))
       (make-directory (file-name-directory file) t)
       (setq prrr-db--connection (emacsql-sqlite-open file))
@@ -295,7 +301,8 @@ Return STRUCT."
 (defun prrr-db-select (table &rest plist)
   "Return the rows of TABLE matching PLIST as structs.
 PLIST is :column value pairs that must all match; with no pairs every
-row is returned.  Rows come back in insertion order."
+row is returned.  Rows come back in rowid order; a row replaced by
+`prrr-db-insert' moves to the end."
   (pcase-let ((`(,where . ,values) (prrr-db--where plist)))
     (mapcar (lambda (row) (prrr-db--row-to-struct table row))
             (apply #'emacsql (prrr-db)

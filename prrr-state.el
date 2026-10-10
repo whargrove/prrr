@@ -202,7 +202,9 @@ which stops cycles."
 Return a list of Stacks in the order their bottoms appear in PRS; each
 Stack is a list of `prrr-pr' from the bottom (based on DEFAULT-BRANCH
 or on no open PR) upwards, depth first when a PR has several children.
-Every PR appears exactly once; a cycle is broken at the PR met first."
+In a cycle, the walk upward stops at the first PR already visited, and
+the PR reached last becomes the bottom; every PR is still listed exactly
+once."
   (let ((parents (mapcar (lambda (pr) (cons pr (prrr-state--parent pr prs default-branch)))
                          prs))
         (seen (make-hash-table :test #'eq))

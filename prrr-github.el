@@ -39,6 +39,13 @@
 (require 'forge)
 (require 'prrr-db)
 
+(defcustom prrr-github-user nil
+  "GitHub login of the viewer.
+When nil, the `github.user' Git variable is used, as forge does."
+  :type '(choice (const :tag "Use the github.user Git variable" nil)
+                 (string :tag "Login"))
+  :group 'prrr)
+
 ;;;; Queries
 
 (eval-and-compile

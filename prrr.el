@@ -44,18 +44,6 @@
   :group 'tools
   :prefix "prrr-")
 
-(defcustom prrr-database-file
-  (expand-file-name "prrr-database.sqlite" user-emacs-directory)
-  "File holding prrr's SQLite database.
-One database serves every repository.  Created on first use."
-  :type 'file)
-
-(defcustom prrr-github-user nil
-  "GitHub login of the viewer.
-When nil, the `github.user' Git variable is used, as forge does."
-  :type '(choice (const :tag "Use the github.user Git variable" nil)
-                 (string :tag "Login")))
-
 (defcustom prrr-queue-stale-after 300
   "Seconds after which the Review Queue inputs are pulled again."
   :type 'natnum)
