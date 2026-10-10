@@ -1042,8 +1042,8 @@ git commit -m "feat(db): generic insert, get, select and delete over row structs
       (prrr-github-fetch-queue "api.github.com" "example-org" "example-repo"
                                (lambda (metas) (setq result metas))
                                "example-repo-id")
-      (should (equal prrr-github-queue-query (nth 0 captured)))
-      (should (equal '((owner "example-org") (name "example-repo")) (nth 1 captured)))
+      (should (equal `(query ,prrr-github-queue-query) (nth 0 captured)))
+      (should (equal '((owner . "example-org") (name . "example-repo")) (nth 1 captured)))
       (should (= 3 (length result)))
       (should (equal "example-repo-id" (prrr-pr-meta-forge-repo-id (car result))))
       (should (stringp (prrr-pr-meta-fetched-at (car result)))))))
@@ -1208,7 +1208,7 @@ record, nil when the caller stamps rows itself."
 CALLBACK receives a list of `prrr-pr-meta' stamped with the current
 time and FORGE-REPO-ID."
   (prrr-github--query host prrr-github-queue-query
-    `((owner ,owner) (name ,name))
+    ((owner owner) (name name))
     :callback (lambda (data &rest _)
                 (funcall callback
                          (prrr-github-decode-queue data forge-repo-id
@@ -1370,7 +1370,7 @@ Add after `prrr-github-fetch-queue`:
   "Fetch the Teams of the viewer ME on HOST.
 CALLBACK receives a list of `prrr-team' stamped with the current time."
   (prrr-github--query host prrr-github-teams-query
-    `((me (,me)))
+    ((me (vector me)))
     :callback (lambda (data &rest _)
                 (funcall callback
                          (prrr-github-decode-teams data (prrr-github--now))))))
@@ -1659,8 +1659,8 @@ Insert before `(provide 'prrr-github-test)`:
     (let (result)
       (prrr-github-fetch-review-data "api.github.com" "example-org" "example-repo" 1
                                      "example-me" (lambda (data) (setq result data)))
-      (should (equal prrr-github-review-data-query (nth 0 captured)))
-      (should (equal '((owner "example-org") (name "example-repo") (number 1) (me "example-me"))
+      (should (equal `(query ,prrr-github-review-data-query) (nth 0 captured)))
+      (should (equal '((owner . "example-org") (name . "example-repo") (number . 1) (me . "example-me"))
                      (nth 1 captured)))
       (should (= 5 (length (plist-get result :threads))))
       (should (equal "PR_kwDOexample0000001"
@@ -1793,7 +1793,7 @@ HOST is the API host; ME the viewer's login, used to find the Pending
 Review.  CALLBACK receives the plist of `prrr-github-decode-review-data'
 with rows stamped with the current time."
   (prrr-github--query host prrr-github-review-data-query
-    `((owner ,owner) (name ,name) (number ,number) (me ,me))
+    ((owner owner) (name name) (number number) (me me))
     :callback (lambda (data &rest _)
                 (let ((pr-id (alist-get 'id (alist-get 'pullRequest
                                                        (cdr (assq 'repository data))))))
@@ -1895,13 +1895,13 @@ git commit -m "feat(github): per-PR review data query, decoder and fetch"
     (kill-emacs 2))
   (pcase-let ((`(,owner ,name) (split-string repo "/")))
     (prrr-github--query "api.github.com" prrr-github-queue-query
-      `((owner ,owner) (name ,name))
+      ((owner owner) (name name))
       :callback (lambda (data &rest _) (record-fixtures--save "queue" data)))
     (prrr-github--query "api.github.com" prrr-github-teams-query
-      `((me (,me)))
+      ((me (vector me)))
       :callback (lambda (data &rest _) (record-fixtures--save "teams" data)))
     (prrr-github--query "api.github.com" prrr-github-review-data-query
-      `((owner ,owner) (name ,name) (number ,(string-to-number number)) (me ,me))
+      ((owner owner) (name name) (number (string-to-number number)) (me me))
       :callback (lambda (data &rest _) (record-fixtures--save "review-data" data)))
     (while t
       (accept-process-output nil 0.2))))
