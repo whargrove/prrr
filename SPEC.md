@@ -176,7 +176,9 @@ non-empty; when both groups are empty it shows collapsed headers with counts.
 
 **Review State** (first match wins), For Me group: `new-commits` (the
 viewer's latest submitted review commit differs from head), `requested`
-(`viewerLatestReviewRequest` non-nil), `team-requested` (a Team in
+(a review request to me is in the current `reviewRequests`, or
+`viewerLatestReviewRequest` is set and I have no submitted review yet;
+GitHub keeps the latter after I review), `team-requested` (a Team in
 `review-requests` is one of mine and no member has reviewed),
 `teammate-reviewed` (a review by someone else whose `on-behalf-of` contains
 one of my Teams, or a Team request to one of my Teams that disappeared after
