@@ -59,9 +59,11 @@ that arrives later is ignored."
 (defvar prrr-sync--status (make-hash-table :test #'equal)
   "Sync status of each repository this session, keyed by forge repository id.")
 
-(defvar prrr-sync--teams-fetched-at nil
-  "When the viewer's Teams were last fetched this session, or nil.
-Remembers a fetch that found no Team, which leaves no row behind.")
+(defvar prrr-sync--teams-tried-at nil
+  "When the viewer's Teams were last fetched or tried this session, or nil.
+Remembers a fetch that found no Team, which leaves no row behind, and
+a fetch that failed, so neither is repeated before
+`prrr-sync-teams-max-age'.")
 
 (defvar prrr-sync--last-token 0
   "The token of the most recently started pull; tokens count up.")
@@ -113,14 +115,15 @@ refresh."
          (not (and attempted-at (string< threshold attempted-at)))
          (or (null newest) (string< newest threshold)))))
 
-(defun prrr-sync--teams-due-p ()
+(defun prrr-sync--teams-due-p (&optional now)
   "Non-nil when the viewer's Teams should be fetched before the queue.
-Due when no fetch happened this session within `prrr-sync-teams-max-age'
-and the stored rows are missing or older than that."
+Due when no fetch was tried this session within
+`prrr-sync-teams-max-age' before NOW (a Lisp time, default the current
+time) and the stored rows are missing or older than that."
   (let ((threshold (prrr-sync--timestamp
-                    (time-subtract (current-time) prrr-sync-teams-max-age))))
-    (and (not (and prrr-sync--teams-fetched-at
-                   (string< threshold prrr-sync--teams-fetched-at)))
+                    (time-subtract (or now (current-time)) prrr-sync-teams-max-age))))
+    (and (not (and prrr-sync--teams-tried-at
+                   (string< threshold prrr-sync--teams-tried-at)))
          (let ((teams (prrr-db-select 'team)))
            (or (null teams)
                (seq-some (lambda (team)
@@ -162,29 +165,37 @@ newer pull replaced it, changes nothing."
     (prrr-sync--schedule-refresh buffer)))
 
 (defmacro prrr-sync--guarded (fail &rest body)
-  "Run BODY; turn any error into a call of FAIL with an `error' failure."
+  "Run BODY; turn any error into a call of FAIL with an `error' failure.
+Return BODY's value, or nil after calling FAIL."
   (declare (indent 1))
   `(condition-case err
        (progn ,@body)
      (error (funcall ,fail (list :kind 'error :message (error-message-string err)
-                                 :reset-at nil)))))
+                                 :reset-at nil))
+            nil)))
 
 (defun prrr-sync--fetch-teams (host me then fail)
   "Fetch and store the viewer ME's Teams on HOST, then call THEN.
-Call FAIL with the classified failure instead when the fetch fails."
+Call FAIL with the classified failure instead when the fetch or the
+store fails.  THEN runs outside that guard, so exactly one of THEN and
+FAIL runs; THEN must not signal."
   (prrr-github-fetch-teams
    host me
    (lambda (teams)
-     (prrr-sync--guarded fail
-       (prrr-db-replace-teams teams)
-       (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+     (when (prrr-sync--guarded fail
+             (prrr-db-replace-teams teams)
+             (setq prrr-sync--teams-tried-at (prrr-sync--timestamp)))
        (funcall then)))
    fail))
 
 (defun prrr-sync-pull (repo &optional buffer)
   "Pull the Review Queue inputs of REPO in the background.
 REPO is a `forge-github-repository'.  Fetches the viewer's Teams first
-when they are due, then the queue query, and stores both.  Records the
+when they are due, then the queue query, and stores both.  Teams only
+refine the Review State, so a failed Teams fetch keeps the stored
+Teams, is not tried again before `prrr-sync-teams-max-age', and the
+pull goes on; the status is then `ok' with a :message that starts
+\"Teams unavailable\".  Records the
 outcome in `prrr-sync-status' and refreshes BUFFER, when live, after
 the pull ends either way.  A pull without an answer ends as `offline'
 after `prrr-sync-timeout' seconds.  Return non-nil when a pull
@@ -196,16 +207,24 @@ Never signals: every failure becomes the status."
              (host (oref repo apihost))
              (fail (lambda (failure) (prrr-sync--finish id token failure buffer)))
              (fetch-queue
-              (lambda ()
+              ;; NOTE, when non-nil, is the message of an `ok' outcome.
+              (lambda (&optional note)
                 (when (prrr-sync--current-p id token)
-                  (prrr-github-fetch-queue
-                   host (oref repo owner) (oref repo name)
-                   (lambda (metas)
-                     (when (prrr-sync--current-p id token)
-                       (prrr-sync--guarded fail
-                         (prrr-db-replace-pr-metas id metas)
-                         (prrr-sync--finish id token '(:kind ok) buffer))))
-                   fail id)))))
+                  (prrr-sync--guarded fail
+                    (prrr-github-fetch-queue
+                     host (oref repo owner) (oref repo name)
+                     (lambda (metas)
+                       (when (prrr-sync--current-p id token)
+                         (prrr-sync--guarded fail
+                           (prrr-db-replace-pr-metas id metas)
+                           (prrr-sync--finish id token (list :kind 'ok :message note)
+                                              buffer))))
+                     fail id)))))
+             (teams-failed
+              (lambda (failure)
+                (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
+                (funcall fetch-queue
+                         (format "Teams unavailable: %s" (plist-get failure :message))))))
         (puthash id (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
                  prrr-sync--status)
         (run-at-time prrr-sync-timeout nil #'prrr-sync--finish id token
@@ -219,7 +238,7 @@ Never signals: every failure becomes the status."
                                   :message "no GitHub login: set github.user or `prrr-github-user'"
                                   :reset-at nil)))
                   ((prrr-sync--teams-due-p)
-                   (prrr-sync--fetch-teams host me fetch-queue fail))
+                   (prrr-sync--fetch-teams host me fetch-queue teams-failed))
                   (t (funcall fetch-queue)))))
         t))))
 

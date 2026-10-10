@@ -154,7 +154,7 @@ there is nothing to say."
               (format "rate limited until %s"
                       (format-time-string "%H:%M" (parse-iso8601-time-string
                                                    (plist-get status :reset-at)))))
-             ((or 'auth 'not-found 'error) (plist-get status :message))))))
+             ((or 'ok 'auth 'not-found 'error) (plist-get status :message))))))
     (if text
         (propertize (format " (%s)" text) 'font-lock-face 'magit-dimmed)
       "")))

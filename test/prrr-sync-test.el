@@ -43,7 +43,7 @@
   "Run BODY with an empty sync status table and the test viewer."
   (declare (indent 0))
   `(let ((prrr-sync--status (make-hash-table :test #'equal))
-         (prrr-sync--teams-fetched-at nil)
+         (prrr-sync--teams-tried-at nil)
          (prrr-github-user "example-me"))
      ,@body))
 
@@ -126,7 +126,7 @@
   "A viewer in no Team has no rows; one fetch per day is enough."
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "queue")))
         (prrr-sync-pull (prrr-sync-test--repo))
         (should (equal '(repository) prrr-test-requests))))))
@@ -135,18 +135,64 @@
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
       (prrr-db-insert (prrr-sync-test--meta "2026-10-01T00:00:00Z"))
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (prrr-test-with-ghub-error-stub '(error http 502) nil
         (prrr-sync-pull (prrr-sync-test--repo)))
       (should (eq 'offline (plist-get (prrr-sync-status "example-repo-id") :state)))
       (should (prrr-db-get 'pullreq-meta "PR_1")))))
 
-(ert-deftest prrr-sync-test-pull-failure-of-teams-stops-the-pull ()
+(ert-deftest prrr-sync-test-pull-teams-failure-still-pulls-the-queue ()
+  "A token without read:org cannot list Teams; the queue still fills (I1).
+The stored Teams stay, the failure is not retried before
+`prrr-sync-teams-max-age', and the status is ok with a message."
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (prrr-test-with-ghub-error-stub '(error http 401) nil
-        (prrr-sync-pull (prrr-sync-test--repo)))
-      (should (eq 'auth (plist-get (prrr-sync-status "example-repo-id") :state))))))
+      (prrr-db-replace-teams (list (prrr-team-create :combined-slug "example-org/reviewers"
+                                                     :fetched-at "2026-01-01T00:00:00Z")))
+      (let ((requests nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (query _variables &rest args)
+                     (let ((field (car (cadr query))))
+                       (push field requests)
+                       (if (eq field 'viewer)
+                           (funcall (plist-get args :errorback) '(error http 403) nil nil nil)
+                         (funcall (plist-get args :callback) (prrr-test-fixture "queue")))))))
+          (prrr-sync-pull (prrr-sync-test--repo)))
+        (should (equal '(repository viewer) requests)))
+      (let ((status (prrr-sync-status "example-repo-id")))
+        (should (eq 'ok (plist-get status :state)))
+        (should (equal "Teams unavailable: GitHub rejected the token (HTTP 403)"
+                       (plist-get status :message))))
+      (should (prrr-db-select 'pullreq-meta :forge-repo-id "example-repo-id"))
+      (should (equal '("example-org/reviewers")
+                     (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))))
+      (should-not (prrr-sync--teams-due-p)))))
+
+(ert-deftest prrr-sync-test-pull-queue-signal-after-teams-sends-each-query-once ()
+  "A signal while sending the queue query fails the pull; Teams are not blamed."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (let ((requests nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (query _variables &rest args)
+                     (let ((field (car (cadr query))))
+                       (push field requests)
+                       (if (eq field 'viewer)
+                           (funcall (plist-get args :callback) (prrr-test-fixture "teams"))
+                         (error "Required GitHub token does not exist"))))))
+          (prrr-sync-pull (prrr-sync-test--repo)))
+        (should (equal '(repository viewer) requests)))
+      (let ((status (prrr-sync-status "example-repo-id")))
+        (should (eq 'error (plist-get status :state)))
+        (should (string-match-p "token" (plist-get status :message)))))))
+
+(ert-deftest prrr-sync-test-teams-due-p-at-now ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-db-replace-teams (list (prrr-team-create :combined-slug "example-org/reviewers"
+                                                     :fetched-at "2026-10-10T00:00:00Z")))
+      (should-not (prrr-sync--teams-due-p prrr-sync-test--now))
+      (should (prrr-sync--teams-due-p (encode-time '(0 0 1 11 10 2026 nil nil t)))))))
 
 (ert-deftest prrr-sync-test-pull-without-login-records-error-and-sends-nothing ()
   (prrr-db-with-test-db
@@ -164,7 +210,7 @@
   "Forge signals at once when no token is configured."
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (cl-letf (((symbol-function 'ghub-query)
                  (lambda (&rest _) (error "Required GitHub token does not exist"))))
         (prrr-sync-pull (prrr-sync-test--repo)))
@@ -183,7 +229,7 @@
   "The refresh is deferred so a synchronous answer cannot re-enter a refresh."
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (let ((refreshed nil) (scheduled nil))
         (with-temp-buffer
           (cl-letf (((symbol-function 'magit-refresh-buffer) (lambda (&rest _) (setq refreshed t)))
@@ -225,7 +271,7 @@ call, newest first.  Nothing is scheduled for real."
   "A pull ghub never answers, as when the connection fails, ends as offline."
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (prrr-sync-test--with-silent-ghub callbacks timers
         (ignore callbacks)
         (should (prrr-sync-pull (prrr-sync-test--repo)))
@@ -240,7 +286,7 @@ call, newest first.  Nothing is scheduled for real."
 (ert-deftest prrr-sync-test-late-answer-after-timeout-is-ignored ()
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (prrr-sync-test--with-silent-ghub callbacks timers
         (prrr-sync-pull (prrr-sync-test--repo))
         (prrr-sync-test--fire-watchdog timers)
@@ -251,7 +297,7 @@ call, newest first.  Nothing is scheduled for real."
 (ert-deftest prrr-sync-test-answer-before-timeout-makes-watchdog-a-no-op ()
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (prrr-sync-test--with-silent-ghub callbacks timers
         (prrr-sync-pull (prrr-sync-test--repo))
         (funcall (car callbacks) (prrr-test-fixture "queue"))
@@ -267,7 +313,7 @@ call, newest first.  Nothing is scheduled for real."
 (ert-deftest prrr-sync-test-pull-restarts-a-pull-older-than-timeout ()
   (prrr-db-with-test-db
     (prrr-sync-test--with-clean-status
-      (setq prrr-sync--teams-fetched-at (prrr-sync--timestamp))
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
       (puthash "example-repo-id" '(:state pulling :attempted-at "2020-01-01T00:00:00Z")
                prrr-sync--status)
       (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "queue")))

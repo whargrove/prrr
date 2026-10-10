@@ -206,6 +206,9 @@ Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
 (ert-deftest prrr-queue-test-status-text ()
   (should (equal "" (prrr-queue--status-text nil "example-me")))
   (should (equal "" (prrr-queue--status-text '(:state ok) "example-me")))
+  (should (string-match-p "(Teams unavailable: HTTP 403)"
+                          (prrr-queue--status-text '(:state ok :message "Teams unavailable: HTTP 403")
+                                                   "example-me")))
   (should (string-match-p "pulling" (prrr-queue--status-text '(:state pulling) "example-me")))
   (should (string-match-p "offline" (prrr-queue--status-text '(:state offline) "example-me")))
   (should (string-match-p "rate limited until [0-9][0-9]:[0-9][0-9]"
