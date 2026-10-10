@@ -196,9 +196,9 @@ PRs I authored, drafts included. A PR I authored never appears in For Me.
 requested, team-requested, assigned-without-my-review) sorts by PR creation
 time, oldest first; a push re-enters a PR at its age position. Served (I
 touched it and nothing was pushed since, or teammate-reviewed) sorts by my
-last touch, oldest first. Mine sorts by creation time, oldest first, with
-changes-requested before awaiting-review before approved before reviewed
-before draft.
+last touch, oldest first. Mine sorts by state rank first (changes-requested, then
+awaiting-review, approved, reviewed, draft), and by creation time, oldest
+first, within a rank, so the PRs needing the author's own action come first.
 
 **Stacks.** Rule: same repository, both open, A's `base-ref` equals B's
 `head-ref`, B not `cross-repo-p`; the bottom PR's base is the default branch.
