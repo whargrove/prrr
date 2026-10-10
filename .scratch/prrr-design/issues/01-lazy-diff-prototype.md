@@ -1,7 +1,7 @@
 # Prototype: lazy per-file washing with thread sections in a magit-diff-mode buffer
 
 Type: prototype
-Status: open
+Status: claimed
 Part of: ../map.md
 
 ## Question
