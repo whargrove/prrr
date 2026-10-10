@@ -17,6 +17,13 @@ the package deals with. No implementation details live here.
   **For Me** (PRs by others that match a Queue Filter) and **Mine** (PRs the
   user authored). A PR stays in its group after the user reviews it; its
   Review State changes instead.
+- **Awaiting me** / **Served**: the two partitions of the For Me group. A PR
+  is Awaiting me while it needs the user's review (requested, team-requested,
+  new commits since the user's review, or assigned and never reviewed); it is
+  Served once the user has touched it and nothing was pushed since, or a
+  teammate reviewed in the user's place.
+- **Touch**: any comment, review, or Immediate Publish by the user on a PR.
+  A touch moves the PR from Awaiting me to Served.
 - **Review State**: the user's standing on a PR: awaiting my review, reviewed
   by me (with the Verdict given), reviewed by a teammate in my place, or new
   commits since my review. Shown next to every PR in the Review Queue.
