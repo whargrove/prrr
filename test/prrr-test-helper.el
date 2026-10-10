@@ -19,9 +19,11 @@
 
 ;;; Commentary:
 
-;; Loaded by `make test' before every test file.  Fixture access only
-;; in this task; Task 2 adds `prrr-db-with-test-db' and Task 4 adds
-;; `prrr-test-with-ghub-stub'.
+;; Loaded by `make test' before every test file.  Provides
+;; `prrr-test-root' (the repository root), `prrr-test-fixture' (path to
+;; a file under test/fixtures), `prrr-db-with-test-db' (run BODY against
+;; a fresh temporary database) and `prrr-test-with-ghub-stub' (run BODY
+;; with ghub's GraphQL entry point stubbed).
 
 ;;; Code:
 

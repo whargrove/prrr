@@ -17,8 +17,8 @@ deps:
 
 compile:
 	$(BATCH) --eval '(setq byte-compile-error-on-warn t)' \
-	  -f batch-byte-compile $(wildcard $(SRC)) $(wildcard test/*.el)
-	rm -f *.elc test/*.elc
+	  -f batch-byte-compile $(wildcard $(SRC)) $(wildcard test/*.el); \
+	  status=$$?; rm -f *.elc test/*.elc; exit $$status
 
 lint:
 	$(BATCH) -l package-lint \
