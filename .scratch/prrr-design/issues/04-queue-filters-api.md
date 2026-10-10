@@ -1,7 +1,7 @@
 # Research: GitHub API for queue filters, team membership, and Stack detection
 
 Type: research
-Status: open
+Status: resolved
 Part of: ../map.md
 
 ## Question
@@ -28,3 +28,36 @@ sources in `~/.emacs.d/var/elpa/forge-*/`, public symbols only), establish:
    (`refs/pull/*/head` refspec) so the spec can state the local-ref assumption.
 
 Deliver as a findings file so the spec can cite the queries and accessors.
+
+## Answer
+
+Findings: [docs/research/queue-filters-api.md](../../../docs/research/queue-filters-api.md)
+(forge 20260926.1226, GitHub GraphQL schema fetched 2026-10-10; every claim
+cites file:line or URL).
+
+1. forge stores `draft-p`, `author`, `assignees`, `review-requests`,
+   `base-ref`/`base-rev`/`base-repo`, `head-ref`/`head-rev`/`head-repo`/
+   `head-user`, `cross-repo-p`, `state`, `their-id` on `forge-pullreq`; read
+   with `oref`. `assignees`/`review-requests` are lists of
+   `(ID LOGIN NAME FORGE-ID)`. forge's query selects only `... on User { id }`
+   for `requestedReviewer`, so Team requests are dropped; the slot mirrors
+   GitHub's current `reviewRequests` at pull time, so satisfied requests are
+   gone. The `reviews` slot is never filled (reading it signals). The
+   `forge-repository` `teams` slot is always nil in this version.
+2. Teams: `viewer { organizations { nodes { login teams(userLogins:[$me]) {
+   nodes { slug combinedSlug } } } } }`; on a PR `requestedReviewer` is
+   `Bot | EnterpriseTeam | Mannequin | Team | User`.
+3. Teammate-in-my-place: `latestReviews { author { login } onBehalfOf { slug } }`
+   against my Team list, and/or `timelineItems(itemTypes:
+   [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, PULL_REQUEST_REVIEW])`
+   with `requestedReviewer { ... on Team { combinedSlug } }`.
+4. Stack: same `repository`, both `open`, `(oref A base-ref)` non-nil and
+   `equal` to `(oref B head-ref)`, and `(oref B cross-repo-p)` nil. Bottom
+   PR: `base-ref` equals `(oref repo default-branch)`.
+5. forge adds `forge-insert-pullreqs` etc. to `magit-status-sections-hook`
+   via `magit-add-section-hook`; third parties do the same (public
+   `forge-insert-topics` needs the private `forge--topics-spec`, so prrr
+   should write its own inserter over `(oref repo pullreqs)`). Refspec:
+   `+refs/pull/*/head:refs/pullreqs/*` added by `forge-add-repository` /
+   `forge-add-pullreq-refspec`; `forge-pull` pulls API data then runs
+   `git fetch <remote>`, so PR N's head is at `refs/pullreqs/N`.
