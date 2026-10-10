@@ -60,18 +60,36 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+make compile   # byte-compile with warnings as errors
+make lint      # package-lint + checkdoc
+make test      # ERT suite, no network
+make bench     # performance budgets from SPEC.md section 12
 ```
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+prrr is an Emacs package for reviewing GitHub pull requests on top of magit
+and forge. Read, in this order:
+
+1. `CONTEXT.md`: the glossary. Use its terms in code, docstrings, and UI.
+2. `SPEC.md`: the approved design. Sections map to files; section 15 lists
+   the milestones.
+3. `docs/research/`: primary-source findings the spec cites (GitHub API
+   shapes, forge internals, tree-sitter measurements).
+4. The beads epic `prrr-t9q` holds every design decision with its full
+   reasoning (`bd show prrr-t9q`, then `bd show prrr-t9q.N`).
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- Only forge's public API: `oref` on its classes, `forge-get-*`,
+  `forge-pull`, `forge-query`, `forge-rest`, `magit-add-section-hook`. Never
+  call a `forge--` symbol or touch forge's database.
+- All GitHub calls live in `prrr-github.el`; all SQL in `prrr-db.el`; pure
+  logic in `prrr-state.el` with unit tests.
+- Every user command has a mnemonic single key and the same key in a
+  transient (`SPEC.md` section 9).
+- Writes are optimistic with an Outbox; the UI never blocks on the network.
+- `lexical-binding: t`, GPL-3.0-or-later headers, `prrr-` prefix on every
+  symbol, no personal paths or tokens anywhere in the repository.
+- Throwaway prototypes live on `prototype/*` branches, never on `main`.
