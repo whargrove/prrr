@@ -254,21 +254,41 @@ Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
         (should (equal "parser" (prrr-pr-head-ref pr)))
         (should (null (prrr-pr-cross-repo-p pr)))))))
 
+(defun prrr-queue-test--forge-pullreq (number their-id state)
+  "A `forge-pullreq' NUMBER with id THEIR-ID in STATE, every read slot bound."
+  (forge-pullreq :id (format "forge-%d" number) :number number :their-id their-id
+                 :state state :title (format "Change %d" number) :author "example-alice"
+                 :draft-p nil :created "2026-09-01T00:00:00Z" :updated "2026-09-02T00:00:00Z"
+                 :head-rev prrr-test-head :base-ref "main"
+                 :head-ref (format "change-%d" number) :cross-repo-p nil))
+
 (ert-deftest prrr-queue-test-inputs-tolerate-forge-and-meta-drift ()
-  "Review Focus 4: forge knows a PR prrr never pulled; prrr has a row forge closed."
+  "Review Focus 4: the queue's PRs are the open forge PRs with a prrr meta row.
+Each meta row is looked up in forge by number; a row whose PR forge
+closed or does not know is dropped.  A forge PR without a meta row is
+not shown until the next prrr pull stores one, so forge is never asked
+for the repository's whole history."
   (prrr-db-with-test-db
-    (prrr-db-insert (prrr-test-meta :pr-id "CLOSED-IN-FORGE"))
-    (let ((pullreq (forge-pullreq :id "forge-5" :number 5 :title "New" :state 'open
-                                  :author "example-alice" :their-id "NOT-PULLED-YET"
-                                  :base-ref "main" :head-ref "new"))
-          (prrr-github-user "example-me"))
-      (cl-letf (((symbol-function 'prrr-queue--open-pullreqs) (lambda (_) (list pullreq)))
+    (dolist (meta (list (prrr-test-meta :pr-id "CLOSED-IN-FORGE" :number 3)
+                        (prrr-test-meta :pr-id "UNKNOWN-TO-FORGE" :number 4)
+                        (prrr-test-meta :pr-id "OPEN" :number 5)))
+      (prrr-db-insert meta))
+    (let* ((forge (list (cons 3 (prrr-queue-test--forge-pullreq 3 "CLOSED-IN-FORGE" 'merged))
+                        (cons 5 (prrr-queue-test--forge-pullreq 5 "OPEN" 'open))
+                        (cons 6 (prrr-queue-test--forge-pullreq 6 "NOT-PULLED-YET" 'open))))
+           (asked nil)
+           (prrr-github-user "example-me"))
+      (cl-letf (((symbol-function 'forge-get-pullreq)
+                 (lambda (_repo number) (push number asked) (alist-get number forge)))
                 ((symbol-function 'prrr-queue--assignees) (lambda (_) '("example-me"))))
         (let ((inputs (prrr-queue--inputs (prrr-queue-test--repo))))
-          (should (equal '("CLOSED-IN-FORGE")
-                         (mapcar #'prrr-pr-meta-pr-id (plist-get inputs :metas))))
+          (should (equal '(3 4 5) (sort asked #'<)))
+          (should (equal '("OPEN") (mapcar (lambda (pair) (prrr-pr-id (cdr pair)))
+                                           (plist-get inputs :pairs))))
           (prrr-queue-test--with-render inputs
-            (should (string-match-p "assigned" (prrr-queue-test--line-of 5)))))))))
+            (should (string-match-p "assigned" (prrr-queue-test--line-of 5)))
+            (goto-char (point-min))
+            (should-not (re-search-forward "^#6 " nil t))))))))
 
 (defmacro prrr-queue-test--with-hook-env (repo &rest body)
   "Run BODY with forge's repository lookup answering REPO."

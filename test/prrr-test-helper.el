@@ -106,14 +106,14 @@ CREATED-AT, UPDATED-AT, HEAD-OID, BASE-REF, HEAD-REF and CROSS-REPO-P."
                   :updated-at updated-at :head-oid head-oid :base-ref base-ref
                   :head-ref head-ref :cross-repo-p cross-repo-p))
 
-(cl-defun prrr-test-meta (&key (pr-id "PR_1") (head-oid prrr-test-head)
+(cl-defun prrr-test-meta (&key (pr-id "PR_1") (number 1) (head-oid prrr-test-head)
                                       review-requests latest-reviews
                                       viewer-latest-review viewer-latest-review-request
                                       (created-at "2026-09-01T00:00:00Z"))
   "Build a `prrr-pr-meta' with sensible defaults.
-Keyword arguments: PR-ID, HEAD-OID, REVIEW-REQUESTS, LATEST-REVIEWS,
+Keyword arguments: PR-ID, NUMBER, HEAD-OID, REVIEW-REQUESTS, LATEST-REVIEWS,
 VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
-  (prrr-pr-meta-create :pr-id pr-id :forge-repo-id "example-repo-id" :number 1
+  (prrr-pr-meta-create :pr-id pr-id :forge-repo-id "example-repo-id" :number number
                        :head-oid head-oid :review-requests review-requests
                        :latest-reviews latest-reviews
                        :viewer-latest-review viewer-latest-review

@@ -174,6 +174,13 @@ triggers `prrr-pull` in the background when the newest `fetched-at` is older
 than `prrr-queue-stale-after` (default 300 seconds). Expanded by default when
 non-empty; when both groups are empty it shows collapsed headers with counts.
 
+**Which PRs.** The queue's PRs come from the repository's `pullreq-meta`
+rows: each row's `number` is looked up with `forge-get-pullreq`, and only
+PRs forge has and lists as `open` are kept. A refresh therefore costs in
+proportion to the open PRs, never to the repository's whole history. A PR
+forge knows but prrr has not pulled yet appears after the next prrr pull,
+at most `prrr-queue-stale-after` later.
+
 **Review State** (first match wins), For Me group: `new-commits` (the
 viewer's latest submitted review commit differs from the head oid stored
 with it in `pullreq-meta`; forge's head is used only for a PR prrr has
@@ -491,6 +498,10 @@ within these on the test fixtures in CI:
 | Expand one file (300 lines, highlighted) | 25 ms                                            |
 | Refresh with 3 files expanded, 417 files | 250 ms                                           |
 | Per-PR refetch                           | 1 GraphQL point, 1 request for up to 100 Threads |
+
+The Review Queue budget covers what a magit-status refresh pays: gathering
+the inputs from forge's and prrr's databases plus inserting the section,
+measured on a repository with 3000 PRs of which 200 are open.
 
 ## 13. Testing
 

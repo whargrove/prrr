@@ -41,7 +41,7 @@ test:
 bench:
 	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT && \
 	  cp $(SRC) bench/*.el "$$dir" && \
-	  $(BENCH) -L "$$dir" -f batch-byte-compile $(addprefix "$$dir"/,$(SRC)) "$$dir"/prrr-queue-bench.el ; \
+	  $(BENCH) -L "$$dir" -f batch-byte-compile $(addprefix "$$dir"/,$(SRC)) "$$dir"/prrr-queue-bench.el && \
 	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-queue-bench.elc -f prrr-queue-bench-run
 
 clean:

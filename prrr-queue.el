@@ -296,10 +296,17 @@ for a PR prrr has not pulled yet."
                   :head-ref (prrr-queue--slot pullreq 'head-ref)
                   :cross-repo-p (and (prrr-queue--slot pullreq 'cross-repo-p) t)))
 
-(defun prrr-queue--open-pullreqs (repo)
-  "Return forge's open pull requests of REPO."
-  (seq-filter (lambda (pullreq) (eq (oref pullreq state) 'open))
-              (oref repo pullreqs)))
+(defun prrr-queue--open-pullreqs (repo metas)
+  "Return forge's open pull requests of REPO that have a row in METAS.
+METAS are REPO's `prrr-pr-meta' rows; each is looked up in forge by
+number.  A row whose PR forge does not know or no longer has open is
+dropped.  A forge PR without a row waits for the next prrr pull: this
+keeps the cost bounded by the open PRs instead of the repository's
+whole history, which `(oref repo pullreqs)' would load."
+  (seq-filter (lambda (pullreq) (and pullreq (eq (oref pullreq state) 'open)))
+              (mapcar (lambda (meta) (forge-get-pullreq repo (prrr-pr-meta-number meta)))
+                      (seq-filter (lambda (meta) (numberp (prrr-pr-meta-number meta)))
+                                  metas))))
 
 (defun prrr-queue--width ()
   "Return the columns rows should fit: the buffer's window, else 80."
@@ -310,10 +317,11 @@ for a PR prrr has not pulled yet."
 (defun prrr-queue--inputs (repo)
   "Gather the `prrr-queue-insert' INPUTS of REPO from forge and the database."
   (let* ((id (oref repo id))
+         (metas (prrr-db-select 'pullreq-meta :forge-repo-id id))
          (pairs (mapcar (lambda (pullreq) (cons pullreq (prrr-queue-pr pullreq)))
-                        (prrr-queue--open-pullreqs repo))))
+                        (prrr-queue--open-pullreqs repo metas))))
     (list :pairs pairs
-          :metas (prrr-db-select 'pullreq-meta :forge-repo-id id)
+          :metas metas
           :teams (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))
           :me (prrr-github-viewer)
           :default-branch (oref repo default-branch)
