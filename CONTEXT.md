@@ -44,6 +44,12 @@ the package deals with. No implementation details live here.
   request changes, or comment.
 - **Submit**: sending the Pending Review to GitHub with a Verdict and an
   optional summary body.
+- **Outbox**: the user's comments and Viewed changes that prrr has written
+  locally but GitHub has not yet accepted. Shown distinctly until they are
+  sent; can be retried or discarded.
+- **Bookmark**: prrr's own record of the last PR head the user opened, used
+  to show what is new since the user last looked, independent of GitHub's
+  review history.
 - **Viewed**: the per-file flag marking that the user has finished looking at a
   file in the current Range. A Viewed file is folded away. GitHub stores this
   flag and clears it when the file changes.
