@@ -180,7 +180,8 @@ Signal an error when ROW does not have one value per slot."
 (defvar prrr-db-preserved-outbox nil
   "Outbox rows found when the database was last reset for a schema change.
 A list of `prrr-outbox' structs.  The UI shows them to the user before
-anything else; `prrr-db--init' sets it, nothing in this file reads it.")
+anything else; `prrr-db--init' sets it and
+`prrr-db-take-preserved-outbox' hands the rows out once.")
 
 (defun prrr-db--table-exists-p (db table)
   "Non-nil when TABLE exists in DB."
@@ -333,6 +334,53 @@ With no pairs every row of TABLE is deleted."
                (vector :delete :from table :where where)
              (vector :delete :from table))
            values)))
+
+;;;; Queue inputs
+
+(defun prrr-db-take-preserved-outbox ()
+  "Return the Outbox rows kept by the last schema reset, and forget them.
+Each row is handed out once, so whoever shows them to the user calls
+this and nothing is announced twice.  The rows stay in the `outbox'
+table."
+  (prog1 prrr-db-preserved-outbox
+    (setq prrr-db-preserved-outbox nil)))
+
+(defun prrr-db-replace-pr-metas (forge-repo-id metas)
+  "Make METAS the only `pullreq-meta' rows of FORGE-REPO-ID.
+METAS are the repository's open PRs, so rows of PRs that closed since
+the last pull disappear.  One transaction."
+  (let ((db (prrr-db)))
+    (emacsql-with-transaction db
+      (prrr-db-delete 'pullreq-meta :forge-repo-id forge-repo-id)
+      (when metas
+        (emacsql db [:insert-or-replace :into pullreq-meta :values $v1]
+                 (mapcar #'prrr-db--struct-to-row metas))))
+    nil))
+
+(defun prrr-db-replace-teams (teams)
+  "Make TEAMS, a list of `prrr-team', the viewer's only Teams.  One transaction."
+  (let ((db (prrr-db)))
+    (emacsql-with-transaction db
+      (prrr-db-delete 'team)
+      (when teams
+        (emacsql db [:insert-or-replace :into team :values $v1]
+                 (mapcar #'prrr-db--struct-to-row teams))))
+    nil))
+
+(defun prrr-db-unresolved-thread-counts (pr-ids)
+  "Return a hash table from each of PR-IDS to its number of unresolved Threads.
+A PR with no unresolved Thread, or whose Threads were never fetched, is
+absent from the table."
+  (let ((counts (make-hash-table :test #'equal)))
+    (when pr-ids
+      (pcase-dolist (`(,pr-id ,count)
+                     (emacsql (prrr-db)
+                              [:select [pr-id (funcall count *)] :from thread
+                               :where (and (in pr-id $v1) (isnull resolved-p))
+                               :group-by pr-id]
+                              (vconcat pr-ids)))
+        (puthash pr-id count counts)))
+    counts))
 
 (provide 'prrr-db)
 ;;; prrr-db.el ends here

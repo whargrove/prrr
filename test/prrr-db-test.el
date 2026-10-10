@@ -187,5 +187,51 @@
   (prrr-db-with-test-db
     (should-error (prrr-db-insert (list 'not 'a 'struct)))))
 
+;;;; Queue additions
+
+(ert-deftest prrr-db-test-take-preserved-outbox-returns-once ()
+  (let ((prrr-db-preserved-outbox (list (prrr-outbox-create :id "o1" :kind 'comment))))
+    (should (equal '("o1") (mapcar #'prrr-outbox-id (prrr-db-take-preserved-outbox))))
+    (should (null prrr-db-preserved-outbox))
+    (should (null (prrr-db-take-preserved-outbox)))))
+
+(ert-deftest prrr-db-test-replace-pr-metas-replaces-only-that-repository ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-pr-meta-create :pr-id "CLOSED" :forge-repo-id "repo-a"))
+    (prrr-db-insert (prrr-pr-meta-create :pr-id "OTHER" :forge-repo-id "repo-b"))
+    (prrr-db-replace-pr-metas "repo-a"
+                              (list (prrr-pr-meta-create :pr-id "OPEN-1" :forge-repo-id "repo-a")
+                                    (prrr-pr-meta-create :pr-id "OPEN-2" :forge-repo-id "repo-a")))
+    (should (equal '("OPEN-1" "OPEN-2")
+                   (mapcar #'prrr-pr-meta-pr-id
+                           (prrr-db-select 'pullreq-meta :forge-repo-id "repo-a"))))
+    (should (prrr-db-get 'pullreq-meta "OTHER"))))
+
+(ert-deftest prrr-db-test-replace-pr-metas-with-none-empties-the-repository ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-pr-meta-create :pr-id "CLOSED" :forge-repo-id "repo-a"))
+    (prrr-db-replace-pr-metas "repo-a" nil)
+    (should (null (prrr-db-select 'pullreq-meta :forge-repo-id "repo-a")))))
+
+(ert-deftest prrr-db-test-replace-teams ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-team-create :combined-slug "example-org/old"))
+    (prrr-db-replace-teams (list (prrr-team-create :combined-slug "example-org/new")))
+    (should (equal '("example-org/new")
+                   (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))))))
+
+(ert-deftest prrr-db-test-unresolved-thread-counts ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-thread-create :thread-id "t1" :pr-id "P1" :resolved-p nil))
+    (prrr-db-insert (prrr-thread-create :thread-id "t2" :pr-id "P1" :resolved-p nil))
+    (prrr-db-insert (prrr-thread-create :thread-id "t3" :pr-id "P1" :resolved-p t))
+    (prrr-db-insert (prrr-thread-create :thread-id "t4" :pr-id "P2" :resolved-p t))
+    (prrr-db-insert (prrr-thread-create :thread-id "t5" :pr-id "P3" :resolved-p nil))
+    (let ((counts (prrr-db-unresolved-thread-counts '("P1" "P2"))))
+      (should (= 2 (gethash "P1" counts)))
+      (should (null (gethash "P2" counts)))
+      (should (null (gethash "P3" counts))))
+    (should (zerop (hash-table-count (prrr-db-unresolved-thread-counts nil))))))
+
 (provide 'prrr-db-test)
 ;;; prrr-db-test.el ends here
