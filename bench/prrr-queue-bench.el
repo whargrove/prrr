@@ -132,7 +132,8 @@ Prints the median of the inputs, the render and their total."
                  (render (prrr-queue-bench--median (mapcar #'cadr runs)))
                  (total (prrr-queue-bench--median
                          (mapcar (lambda (run) (+ (car run) (cadr run))) runs))))
-            (message "queue, 200 open of 3000 PRs: inputs %.1f ms + render %.1f ms = %.1f ms (budget %.0f ms, fails over %.0f ms)"
+            (message (concat "queue, 200 open of 3000 PRs: inputs %.1f ms + render %.1f ms"
+                             " = %.1f ms (budget %.0f ms, fails over %.0f ms)")
                      inputs render total prrr-queue-bench-budget-ms
                      (* prrr-queue-bench-budget-ms prrr-queue-bench-tolerance))
             (setq over (> total (* prrr-queue-bench-budget-ms prrr-queue-bench-tolerance)))))

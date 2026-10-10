@@ -57,7 +57,7 @@ depends only on the files above it.
 | `prrr.el`           | Package entry: `defgroup`, the commands shared by the Review Queue and Review Buffer (`prrr-open-topic`, `prrr-browse`, `prrr-checkout`; `prrr-review` arrives with the Review Buffer). Loads nothing else; every command is autoloaded. Options that belong to one file are defined in that file. | nothing at load time |
 | `prrr-db.el`        | SQLite schema, connection, struct types, CRUD.                                                                               | emacsql                                |
 | `prrr-github.el`    | Every GitHub call: GraphQL queries and mutations, REST calls, pagination, rate-limit pauses, response decoding into structs. | forge-query, forge-rest, ghub, prrr-db |
-| `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, magit-git        |
+| `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, forge, magit-mode |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
 | `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
 | `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state  |
@@ -474,10 +474,19 @@ bodies; nothing else is added.
 
 ## 11. Errors, auth, and offline
 
-- Authentication failures surface forge's own message and leave the buffer
-  usable for reading local diffs.
+- Authentication failures (HTTP 401, or 403 without rate-limit headers)
+  show prrr's classified message, "GitHub rejected the token (HTTP N)",
+  and leave the buffer usable for reading local diffs. A missing token that
+  forge reports before sending shows forge's own message.
 - Rate-limit responses (primary or secondary) pause the Outbox and the
-  background refetch until the reset time and say so in the header.
+  background refetch until the reset time and say so in the header. An HTTP
+  403 with quota left is GitHub's secondary limit and waits one minute.
+- A pull that gets no answer within `prrr-sync-timeout` (default 60
+  seconds), as when the connection fails, ends as offline; a later answer
+  is ignored.
+- A failed Teams fetch does not stop the queue pull: the stored Teams stay,
+  Teams are not retried before their daily cadence, and the header says
+  "Teams unavailable: ...".
 - Network failures on refetch keep the database copy and show "offline" in
   the header; writes go to the Outbox.
 - A missing PR ref (`refs/pullreqs/N` absent) prompts to run `forge-pull`.

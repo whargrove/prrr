@@ -26,8 +26,9 @@
 ;; background when the inputs are stale.
 ;;
 ;; A row is a section of type `pullreq' whose value is forge's
-;; `forge-pullreq', so forge's commands work on it, with prrr's own
-;; keymap `prrr-queue-section-map'.  `prrr-queue--rows' maps each row
+;; `forge-pullreq', so forge's commands work on it.  Its keymap
+;; `prrr-queue-row-map' puts prrr's keys (`prrr-queue-section-map') in
+;; front of forge's.  `prrr-queue--rows' maps each row
 ;; section to its `prrr-queue-entry' for Stack navigation.
 
 ;;; Code:
@@ -113,6 +114,12 @@ RET opens forge's topic buffer until the Review Buffer arrives."
   ">" #'prrr-stack-up
   "<" #'prrr-stack-down)
 
+(defvar prrr-queue-row-map
+  (make-composed-keymap (list prrr-queue-section-map) forge-pullreq-section-map)
+  "The keymap of a Review Queue row.
+`prrr-queue-section-map' first, then forge's `forge-pullreq-section-map',
+so forge's own pull request keys keep working on rows.")
+
 ;;;; Formatting
 
 (defconst prrr-queue--badge-width
@@ -169,11 +176,14 @@ row's true position, which may skip hidden rows (prrr-knu.5)."
          (size (prrr-queue-entry-stack-size entry))
          (ago (prrr-queue--ago (prrr-pr-updated-at pr) now))
          (number (string-pad (format "#%d" (prrr-pr-number pr)) number-width))
-         (badge (propertize (string-pad (if state (symbol-name state) "") prrr-queue--badge-width)
-                            'font-lock-face (and state (intern (format "prrr-queue-state-%s" state)))))
+         (badge (propertize (string-pad (if state (symbol-name state) "")
+                                        prrr-queue--badge-width)
+                            'font-lock-face
+                            (and state (intern (format "prrr-queue-state-%s" state)))))
          (prefix (concat (propertize number 'font-lock-face 'forge-topic-slug-open)
                          "  " (make-string (* 2 depth) ?\s) badge "  "))
-         (suffix (concat "  " (propertize (or (prrr-pr-author pr) "") 'font-lock-face 'magit-log-author)
+         (suffix (concat "  " (propertize (or (prrr-pr-author pr) "")
+                                          'font-lock-face 'magit-log-author)
                          (and size (> size 1)
                               (format "  ⟰ %d/%d" (prrr-queue-entry-stack-pos entry) size))
                          (and (> unresolved 0) (format "  %d unresolved" unresolved))
@@ -209,7 +219,7 @@ in `prrr-queue-insert'."
       (let* ((id (prrr-pr-id (prrr-queue-entry-pr entry)))
              (pullreq (gethash id pullreqs)))
         (magit-insert-section row (pullreq pullreq)
-          (oset row keymap 'prrr-queue-section-map)
+          (oset row keymap 'prrr-queue-row-map)
           (insert (prrr-queue--line entry number-width depth
                                     (or (and unresolved (gethash id unresolved)) 0)
                                     (plist-get inputs :now) (plist-get inputs :width))
@@ -266,31 +276,25 @@ empty.  Sets `prrr-queue--rows'."
 
 (defun prrr-queue--assignees (pullreq)
   "Return the logins assigned to forge's PULLREQ."
-  (mapcar #'cadr (prrr-queue--slot pullreq 'assignees)))
-
-(defun prrr-queue--slot (pullreq slot)
-  "Return SLOT of forge's PULLREQ, or nil when forge never set it."
-  (condition-case nil
-      (eieio-oref pullreq slot)
-    (unbound-slot nil)))
+  (mapcar #'cadr (oref pullreq assignees)))
 
 (defun prrr-queue-pr (pullreq)
   "Return the `prrr-pr' the Review Queue rules see for forge's PULLREQ.
 HEAD-OID is forge's head-rev; the Review State prefers the head stored
 with the PR's meta row (`prrr-state--head-oid'), so forge's matters only
 for a PR prrr has not pulled yet."
-  (prrr-pr-create :id (prrr-queue--slot pullreq 'their-id)
-                  :number (prrr-queue--slot pullreq 'number)
-                  :title (prrr-queue--slot pullreq 'title)
-                  :author (prrr-queue--slot pullreq 'author)
-                  :draft-p (and (prrr-queue--slot pullreq 'draft-p) t)
+  (prrr-pr-create :id (oref pullreq their-id)
+                  :number (oref pullreq number)
+                  :title (oref pullreq title)
+                  :author (oref pullreq author)
+                  :draft-p (and (oref pullreq draft-p) t)
                   :assignees (prrr-queue--assignees pullreq)
-                  :created-at (prrr-queue--slot pullreq 'created)
-                  :updated-at (prrr-queue--slot pullreq 'updated)
-                  :head-oid (prrr-queue--slot pullreq 'head-rev)
-                  :base-ref (prrr-queue--slot pullreq 'base-ref)
-                  :head-ref (prrr-queue--slot pullreq 'head-ref)
-                  :cross-repo-p (and (prrr-queue--slot pullreq 'cross-repo-p) t)))
+                  :created-at (oref pullreq created)
+                  :updated-at (oref pullreq updated)
+                  :head-oid (oref pullreq head-rev)
+                  :base-ref (oref pullreq base-ref)
+                  :head-ref (oref pullreq head-ref)
+                  :cross-repo-p (and (oref pullreq cross-repo-p) t)))
 
 (defun prrr-queue--open-pullreqs (repo metas)
   "Return forge's open pull requests of REPO that have a row in METAS.
@@ -334,9 +338,11 @@ whole history, which `(oref repo pullreqs)' would load."
   (when-let ((rows (prrr-db-take-preserved-outbox)))
     (display-warning
      'prrr
-     (format "prrr's database was reset for a new layout; %d unsent write(s) are kept in the Outbox: %s"
+     (format (concat "prrr's database was reset for a new layout; "
+                     "%d unsent write(s) are kept in the Outbox: %s")
              (length rows)
-             (mapconcat (lambda (row) (format "%s on %s" (prrr-outbox-kind row) (prrr-outbox-pr-id row)))
+             (mapconcat (lambda (row)
+                          (format "%s on %s" (prrr-outbox-kind row) (prrr-outbox-pr-id row)))
                         rows ", "))
      :warning)))
 
@@ -353,20 +359,24 @@ whole history, which `(oref repo pullreqs)' would load."
 A `magit-status-sections-hook' function.  Inserts nothing outside a
 GitHub repository tracked by forge.  Starts a background pull when the
 stored inputs are stale (`prrr-sync-queue-due-p').  Any error becomes a
-one-line section, so the rest of the status buffer still renders."
+one-line section, so the rest of the status buffer still renders; text
+inserted before the error is removed first."
   (when-let* ((_ (forge-db t))
               (repo (forge-get-repository :tracked?))
               (_ (cl-typep repo 'forge-github-repository)))
-    (condition-case err
-        (let ((inputs (prrr-queue--inputs repo))
-              (id (oref repo id)))
-          (prrr-queue--announce-preserved-outbox)
-          (when (prrr-sync-queue-due-p id (plist-get inputs :metas))
-            (prrr-sync-pull repo (current-buffer)))
-          (prrr-queue-insert (plist-put inputs :status (prrr-sync-status id))))
-      (error
-       (message "Review Queue failed: %s" (error-message-string err))
-       (prrr-queue--insert-error err)))))
+    (let ((start (point)))
+      (condition-case err
+          (let ((inputs (prrr-queue--inputs repo))
+                (id (oref repo id)))
+            (prrr-queue--announce-preserved-outbox)
+            (when (prrr-sync-queue-due-p id (plist-get inputs :metas))
+              (prrr-sync-pull repo (current-buffer)))
+            (prrr-queue-insert (plist-put inputs :status (prrr-sync-status id))))
+        (error
+         (message "Review Queue failed: %s" (error-message-string err))
+         (delete-region start (point))
+         (setq prrr-queue--rows nil)
+         (prrr-queue--insert-error err))))))
 
 ;;;###autoload
 (define-minor-mode prrr-queue-mode
@@ -407,7 +417,8 @@ Queue Group are considered.  Return non-nil when point moved; signal a
                     (user-error "Not on a Review Queue row")))
          (group (prrr-queue-entry-group entry))
          (target (prrr-state-stack-neighbour
-                  (mapcar #'cdr (seq-filter (lambda (row) (eq (prrr-queue-entry-group (cdr row)) group))
+                  (mapcar #'cdr (seq-filter (lambda (row)
+                                              (eq (prrr-queue-entry-group (cdr row)) group))
                                             prrr-queue--rows))
                   entry direction)))
     (when target

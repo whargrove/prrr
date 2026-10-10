@@ -45,6 +45,11 @@ This also spaces retries after a failed pull."
   :type 'natnum
   :group 'prrr)
 
+(defconst prrr-sync-min-retry-spacing 30
+  "Fewest seconds between two pull attempts of one repository.
+Keeps a `prrr-queue-stale-after' of 0 from retrying a failing pull on
+every refresh.")
+
 (defcustom prrr-sync-timeout 60
   "Seconds a pull may wait for GitHub before it ends as offline.
 Some failures, such as a refused connection, never reach prrr; the
@@ -99,12 +104,15 @@ METAS are the repository's stored `prrr-pr-meta' rows and NOW a Lisp
 time, the current time by default.  Due when there are no rows or the
 newest is older than `prrr-queue-stale-after', unless a pull is
 running (`prrr-sync--running-p'), a rate limit has not reset, or the
-last attempt is more recent than `prrr-queue-stale-after'.  The last
-rule makes a failing pull retry at that pace instead of on every
-refresh."
-  (let* ((now-stamp (prrr-sync--timestamp now))
-         (threshold (prrr-sync--timestamp
-                     (time-subtract (or now (current-time)) prrr-queue-stale-after)))
+last attempt is more recent than `prrr-queue-stale-after' (at least
+`prrr-sync-min-retry-spacing').  The last rule makes a failing pull
+retry at that pace instead of on every refresh."
+  (let* ((now (or now (current-time)))
+         (now-stamp (prrr-sync--timestamp now))
+         (threshold (prrr-sync--timestamp (time-subtract now prrr-queue-stale-after)))
+         (retry-threshold (prrr-sync--timestamp
+                           (time-subtract now (max prrr-sync-min-retry-spacing
+                                                   prrr-queue-stale-after))))
          (status (prrr-sync-status repo-id))
          (reset-at (plist-get status :reset-at))
          (attempted-at (plist-get status :attempted-at))
@@ -112,7 +120,7 @@ refresh."
                             (lambda (a b) (string< b a))))))
     (and (not (prrr-sync--running-p status now))
          (not (and reset-at (string< now-stamp reset-at)))
-         (not (and attempted-at (string< threshold attempted-at)))
+         (not (and attempted-at (string< retry-threshold attempted-at)))
          (or (null newest) (string< newest threshold)))))
 
 (defun prrr-sync--teams-due-p (&optional now)

@@ -22,10 +22,10 @@
 ;; Pure functions implementing SPEC.md section 5: the Review State of a
 ;; PR for the viewer, Queue Group membership, the Awaiting me / Served
 ;; partitions and their FIFO ordering, Stack detection, the final ordered
-;; Review Queue, the display filters, and Stack neighbours.  Inputs are `prrr-pr' (built by the caller from
-;; forge's object) and `prrr-pr-meta' rows; there is no buffer, network
-;; or forge-object access, so every rule is unit-tested with constructed
-;; structs.
+;; Review Queue, the display filters, and Stack neighbours.  Inputs are
+;; `prrr-pr' (built by the caller from forge's object) and
+;; `prrr-pr-meta' rows; there is no buffer, network or forge-object
+;; access, so every rule is unit-tested with constructed structs.
 ;;
 ;; Line mapping across Ranges is milestone 5 and is not here yet.
 
@@ -312,10 +312,10 @@ and keep their members together, bottom first."
              (pairs (delq nil (cl-loop for pr in stack
                                        for pos from 1
                                        collect (funcall make pr pos size))))
-             (_ (dolist (pair pairs)
-                    (setf (prrr-queue-entry-stack-id (cdr pair))
-                          (prrr-pr-id (car stack)))))
              (keys (delq nil (mapcar #'car pairs))))
+        ;; Every entry carries the id of its Stack's bottom PR.
+        (dolist (pair pairs)
+          (setf (prrr-queue-entry-stack-id (cdr pair)) (prrr-pr-id (car stack))))
         (when keys
           (push (cons (car (sort keys #'string<)) (mapcar #'cdr pairs)) listed))))
     (apply #'append

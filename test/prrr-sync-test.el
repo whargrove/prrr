@@ -84,6 +84,16 @@
              prrr-sync--status)
     (should-not (prrr-sync-queue-due-p "example-repo-id" nil prrr-sync-test--now))))
 
+(ert-deftest prrr-sync-test-due-p-zero-stale-after-still-spaces-retries ()
+  "M4: with `prrr-queue-stale-after' at 0 a failing pull must not loop."
+  (prrr-sync-test--with-clean-status
+    (let ((prrr-queue-stale-after 0))
+      (puthash "example-repo-id" '(:state offline :attempted-at "2026-10-10T11:59:50Z")
+               prrr-sync--status)
+      (should-not (prrr-sync-queue-due-p "example-repo-id" nil prrr-sync-test--now))
+      (should (prrr-sync-queue-due-p "example-repo-id" nil
+                                     (encode-time '(0 1 12 10 10 2026 nil nil t)))))))
+
 (ert-deftest prrr-sync-test-due-p-old-failed-attempt-retries ()
   (prrr-sync-test--with-clean-status
     (puthash "example-repo-id" '(:state offline :attempted-at "2026-10-10T11:50:00Z")
@@ -243,7 +253,6 @@ The stored Teams stay, the failure is not retried before
             (apply (caar scheduled) (cdar scheduled))
             (should refreshed)))))))
 
-
 ;;;; No answer (C1)
 
 (defmacro prrr-sync-test--with-silent-ghub (callbacks timers &rest body)
@@ -319,7 +328,6 @@ call, newest first.  Nothing is scheduled for real."
       (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "queue")))
         (should (prrr-sync-pull (prrr-sync-test--repo)))
         (should (equal '(repository) prrr-test-requests))))))
-
 
 ;;;; Commands
 

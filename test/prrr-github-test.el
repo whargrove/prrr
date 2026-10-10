@@ -276,8 +276,17 @@
   (should (eq 'auth (plist-get (prrr-github-error '(error http 401)) :kind))))
 
 (ert-deftest prrr-github-test-error-http-403-without-limit-headers-is-auth ()
-  (should (eq 'auth (plist-get (prrr-github-error '(error http 403) '(("x-ratelimit-remaining" . "12")))
-                               :kind))))
+  (should (eq 'auth (plist-get (prrr-github-error '(error http 403) nil) :kind))))
+
+(ert-deftest prrr-github-test-error-http-403-with-quota-left-is-secondary-limit ()
+  "M5: GitHub's secondary limit is a 403 with quota left; wait a minute.
+x-ratelimit-reset belongs to the primary limit and must not set the wait."
+  (should (equal '(:kind rate-limited :message "GitHub secondary rate limit (HTTP 403)"
+                   :reset-at "2026-10-10T12:01:00Z")
+                 (prrr-github-error '(error http 403)
+                                    '(("x-ratelimit-remaining" . "12")
+                                      ("x-ratelimit-reset" . "1791633600"))
+                                    prrr-github-test--now))))
 
 (ert-deftest prrr-github-test-error-http-403-secondary-limit-uses-retry-after ()
   (should (equal '(:kind rate-limited :message "GitHub rate limit (HTTP 403)"

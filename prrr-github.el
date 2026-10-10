@@ -59,25 +59,25 @@ the current repository, which is where forge reads it."
 (eval-and-compile
   (defconst prrr-github-queue-query
     '(repository [(owner $owner String!) (name $name String!)]
-		 (pullRequests [(:edges t) (states . (OPEN))]
-			       id number headRefOid createdAt isDraft
-			       (author login)
-			       (reviewRequests [(:edges t)]
-					       (requestedReviewer "__typename ... on User { login } ... on Team { combinedSlug }\n"))
-			       (latestReviews [(:edges t)]
-					      (author login) state submittedAt (commit oid)
-					      (onBehalfOf [(:edges t)] combinedSlug))
-			       (viewerLatestReview state submittedAt (commit oid))
-			       (viewerLatestReviewRequest login)))
+       (pullRequests [(:edges t) (states . (OPEN))]
+         id number headRefOid createdAt isDraft
+         (author login)
+         (reviewRequests [(:edges t)]
+           (requestedReviewer "__typename ... on User { login } ... on Team { combinedSlug }\n"))
+         (latestReviews [(:edges t)]
+           (author login) state submittedAt (commit oid)
+           (onBehalfOf [(:edges t)] combinedSlug))
+         (viewerLatestReview state submittedAt (commit oid))
+         (viewerLatestReviewRequest login)))
     "Review Queue inputs of one repository (SPEC section 4).
 Variables: $owner and $name.  Pages every open PR."))
 
 (eval-and-compile
   (defconst prrr-github-teams-query
     '(viewer login
-	     (organizations [(:edges t)]
-			    login
-			    (teams [(:edges t) (userLogins $me \[String!\])] slug combinedSlug)))
+       (organizations [(:edges t)]
+         login
+         (teams [(:edges t) (userLogins $me \[String!\])] slug combinedSlug)))
     "The viewer's Teams in every organization (SPEC section 4).
 Variable: $me, a one-element list holding the viewer's login.  The
 type is the symbol `[String!]' because ghub prints a vector type as
@@ -86,17 +86,17 @@ type is the symbol `[String!]' because ghub prints a vector type as
 (eval-and-compile
   (defconst prrr-github-review-data-query
     '(repository [(owner $owner String!) (name $name String!)]
-		 (pullRequest [(number $number Int!)]
-			      id headRefOid
-			      (reviewThreads [(:edges t)]
-					     id path line startLine diffSide startDiffSide originalLine
-					     isOutdated isResolved subjectType viewerCanResolve viewerCanUnresolve
-					     (comments [(:edges t)]
-						       id (author login) body createdAt lastEditedAt (replyTo id) state
-						       (pullRequestReview id) (originalCommit oid)))
-			      (reviews [(:edges t) (states . (PENDING)) (author $me String!)]
-				       id (commit oid) body createdAt)
-			      (files [(:edges t)] path viewerViewedState)))
+       (pullRequest [(number $number Int!)]
+         id headRefOid
+         (reviewThreads [(:edges t)]
+           id path line startLine diffSide startDiffSide originalLine
+           isOutdated isResolved subjectType viewerCanResolve viewerCanUnresolve
+           (comments [(:edges t)]
+             id (author login) body createdAt lastEditedAt (replyTo id) state
+             (pullRequestReview id) (originalCommit oid)))
+         (reviews [(:edges t) (states . (PENDING)) (author $me String!)]
+           id (commit oid) body createdAt)
+         (files [(:edges t)] path viewerViewedState)))
     "Threads, the viewer's Pending Review, Viewed flags and head of one PR.
 Variables: $owner, $name, $number and $me (the viewer's login).
 The pending review's own comments are not selected: pending comments
@@ -243,19 +243,19 @@ Return nil when DATA has no pull request (deleted, or a wrong number)."
       (let ((decoded (mapcar (lambda (node) (prrr-github--thread node pr-id fetched-at))
                              (alist-get 'reviewThreads .pullRequest)))
             (pending (car (alist-get 'reviews .pullRequest))))
-	(list :threads (mapcar #'car decoded)
+        (list :threads (mapcar #'car decoded)
               :comments (apply #'append (mapcar #'cdr decoded))
               :pending-review
               (and pending
                    (let-alist pending
                      (prrr-pending-review-create :pr-id pr-id
-						 :review-id .id
-						 :commit-oid .commit.oid
-						 :body .body
-						 :created-at .createdAt)))
+                                                 :review-id .id
+                                                 :commit-oid .commit.oid
+                                                 :body .body
+                                                 :created-at .createdAt)))
               :viewed
               (mapcar (lambda (file)
-			(let-alist file
+                        (let-alist file
                           (prrr-viewed-create :pr-id pr-id
                                               :path .path
                                               :state (prrr-github--viewed-state .viewerViewedState)
@@ -288,7 +288,8 @@ errors, (error http CODE) for HTTP failures, (error SYMBOL ...) for
 transport failures.  HEADERS is the response header alist; NOW, a Lisp
 time defaulting to the current time, anchors a retry-after delay.
 KIND is one of:
-  `rate-limited'  a primary or secondary limit; RESET-AT says when it ends;
+  `rate-limited'  a primary or secondary limit; RESET-AT says when it ends.
+                  An HTTP 403 with quota left is GitHub's secondary limit;
   `auth'          the token was rejected;
   `not-found'     the repository or pull request does not exist;
   `offline'       no connection or a server error, worth retrying later;
@@ -312,6 +313,15 @@ RESET-AT is nil unless KIND is `rate-limited'."
               (list :kind 'rate-limited
                     :message (format "GitHub rate limit (HTTP %d)" code)
                     :reset-at (prrr-github--reset-at headers now)))
+             ((and (eq code 403)
+                   (let ((remaining (prrr-github--header headers "x-ratelimit-remaining")))
+                     (and remaining (not (equal remaining "0")))))
+              ;; GitHub's secondary limit: quota left, no retry-after.  Its
+              ;; documentation says to wait at least a minute; the
+              ;; x-ratelimit-reset header belongs to the primary limit.
+              (list :kind 'rate-limited
+                    :message "GitHub secondary rate limit (HTTP 403)"
+                    :reset-at (format-time-string "%Y-%m-%dT%H:%M:%SZ" (time-add now 60) t)))
              ((memq code '(401 403))
               (list :kind 'auth
                     :message (format "GitHub rejected the token (HTTP %d)" code)

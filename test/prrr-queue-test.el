@@ -86,7 +86,7 @@ Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
                                  (list (prrr-test-meta :pr-id "A" :review-requests '((user "example-me")))))
       (prrr-queue-test--line-of 7)
       (should (eq (car pair) (magit-section-value-if 'pullreq)))
-      (should (eq 'prrr-queue-section-map (oref (magit-current-section) keymap)))
+      (should (eq 'prrr-queue-row-map (oref (magit-current-section) keymap)))
       (should (equal "A" (prrr-pr-id (prrr-queue-entry-pr (cdr (car prrr-queue--rows)))))))))
 
 (ert-deftest prrr-queue-test-rows-follow-queue-order ()
@@ -318,6 +318,24 @@ for the repository's whole history."
       (let ((text (prrr-queue-test--hook-output)))
         (should (string-match-p "Review Queue (error: Database is locked)" text))))))
 
+(ert-deftest prrr-queue-test-hook-error-while-inserting-leaves-no-stray-text ()
+  "Review Focus 2 (M1): an error part-way through the rows removes what was inserted."
+  (prrr-queue-test--with-hook-env (prrr-queue-test--repo)
+    (cl-letf (((symbol-function 'prrr-queue--inputs)
+               (lambda (_)
+                 (prrr-queue-test--inputs
+                  (list (prrr-queue-test--pair :id "A" :number 1))
+                  (list (prrr-test-meta :pr-id "A" :review-requests '((user "example-me")))))))
+              ((symbol-function 'prrr-sync-queue-due-p) #'ignore)
+              ((symbol-function 'prrr-queue--line) (lambda (&rest _) (error "Boom"))))
+      (with-temp-buffer
+        (magit-section-mode)
+        (let ((inhibit-read-only t))
+          (magit-insert-section (status)
+            (prrr-queue-insert-section)))
+        (should (equal "Review Queue (error: Boom)\n\n" (buffer-string)))
+        (should (null prrr-queue--rows))))))
+
 (ert-deftest prrr-queue-test-hook-starts-due-pull ()
   (prrr-queue-test--with-hook-env (prrr-queue-test--repo)
     (let ((pulled nil))
@@ -403,10 +421,22 @@ for the repository's whole history."
   (let ((suffix (transient-get-suffix 'prrr-queue-menu key)))
     (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix)) :command)))
 
+(ert-deftest prrr-queue-test-row-keeps-forge-keys ()
+  "M2: a row is a forge pullreq section, so forge's own keys still work there.
+prrr's keys win where both bind a key."
+  (dolist (key '("C-c C-c" "C-<return>"))
+    (should (keymap-lookup forge-pullreq-section-map key))
+    (should (eq (keymap-lookup forge-pullreq-section-map key)
+                (keymap-lookup prrr-queue-row-map key))))
+  (should (eq 'prrr-open-topic (keymap-lookup prrr-queue-row-map "RET"))))
+
 (ert-deftest prrr-queue-test-menu-mirrors-row-keys ()
   "SPEC section 9: every row key has the same key and command in the menu."
   (dolist (key '("RET" "o" "b" "B" ">" "<" "G"))
+    (should (prrr-queue-test--menu-command key))
     (should (eq (keymap-lookup prrr-queue-section-map key)
+                (prrr-queue-test--menu-command key)))
+    (should (eq (keymap-lookup prrr-queue-row-map key)
                 (prrr-queue-test--menu-command key))))
   (should (eq 'prrr-queue-menu (keymap-lookup prrr-queue-section-map "C-o")))
   (should (eq 'prrr-queue-menu (keymap-lookup prrr-queue-heading-map "C-o")))
