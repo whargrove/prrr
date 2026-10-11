@@ -57,7 +57,7 @@
 
 (defun prrr-diff-bench--open (pullreq)
   "Open PULLREQ's Review Buffer in a fresh buffer; return the milliseconds."
-  (when-let ((old (get-buffer (prrr-diff--buffer-name pullreq))))
+  (when-let* ((old (get-buffer (prrr-diff--buffer-name pullreq))))
     (kill-buffer old))
   (garbage-collect)
   (prrr-diff-bench--ms (lambda () (prrr-diff-setup-buffer pullreq))))

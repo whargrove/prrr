@@ -299,7 +299,7 @@ whole history, which `(oref repo pullreqs)' would load."
 
 (defun prrr-queue--width ()
   "Return the columns rows should fit: the buffer's window, else 80."
-  (if-let ((window (get-buffer-window (current-buffer))))
+  (if-let* ((window (get-buffer-window (current-buffer))))
       (window-body-width window)
     80))
 
@@ -324,7 +324,7 @@ whole history, which `(oref repo pullreqs)' would load."
 
 (defun prrr-queue--announce-preserved-outbox ()
   "Warn once about Outbox rows kept across a database schema reset."
-  (when-let ((rows (prrr-db-take-preserved-outbox)))
+  (when-let* ((rows (prrr-db-take-preserved-outbox)))
     (display-warning
      'prrr
      (format (concat "prrr's database was reset for a new layout; "
@@ -350,9 +350,9 @@ GitHub repository tracked by forge.  Starts a background pull when the
 stored inputs are stale (`prrr-sync-queue-due-p').  Any error becomes a
 one-line section, so the rest of the status buffer still renders; text
 inserted before the error is removed first."
-  (when-let* ((_ (forge-db t))
+  (when-let* (((forge-db t))
               (repo (forge-get-repository :tracked?))
-              (_ (cl-typep repo 'forge-github-repository)))
+              ((cl-typep repo 'forge-github-repository)))
     (let ((start (point)))
       (condition-case err
           (let ((inputs (prrr-queue--inputs repo))
@@ -387,7 +387,7 @@ Turns on `prrr-queue-mode' when it is off, opens the repository's
   (unless prrr-queue-mode
     (prrr-queue-mode 1))
   (magit-status-setup-buffer)
-  (if-let ((section (magit-get-section '((prrr-queue) (status)))))
+  (if-let* ((section (magit-get-section '((prrr-queue) (status)))))
       (magit-section-goto section)
     (user-error "No Review Queue here: prrr needs a GitHub repository tracked by forge")))
 

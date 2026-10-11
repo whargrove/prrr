@@ -141,7 +141,7 @@ either limit ends the run."
 (defun prrr-diff--merge-base (pullreq head)
   "Return the merge base of PULLREQ's base commit and HEAD, or nil.
 nil when forge recorded no base commit or it is not in the repository."
-  (when-let ((base-rev (oref pullreq base-rev)))
+  (when-let* ((base-rev (oref pullreq base-rev)))
     (and (magit-rev-verify base-rev)
          (magit-git-string "merge-base" base-rev head))))
 
@@ -330,7 +330,7 @@ child, starting on the line before the run.  HIGHLIGHT is passed on."
                 (goto-char from)
                 (oset section end stop)
                 (cl-call-next-method section highlight))
-              (when-let ((child (seq-find (lambda (child) (= (oref child start) stop))
+              (when-let* ((child (seq-find (lambda (child) (= (oref child start) stop))
                                           children)))
                 ;; magit's method skips the line point is on: the
                 ;; child's last line, so painting resumes after it.
@@ -823,12 +823,12 @@ Lines of Threads in between are left out."
 
 (defun prrr-diff-thread-at-point ()
   "Return the `prrr-thread' at point, as the buffer shows it, or nil."
-  (when-let ((section (prrr-diff--section-of '(thread file-comment))))
+  (when-let* ((section (prrr-diff--section-of '(thread file-comment))))
     (gethash (oref section value) prrr-diff--threads)))
 
 (defun prrr-diff-comment-at-point ()
   "Return the `prrr-comment' at point, as the buffer shows it, or nil."
-  (when-let ((section (prrr-diff--section-of '(review-comment))))
+  (when-let* ((section (prrr-diff--section-of '(review-comment))))
     (gethash (oref section value) prrr-diff--comments)))
 ;;;; Commands
 
@@ -892,7 +892,7 @@ Interactively, read PATH with completion over the diff's files."
 
 (defun prrr-diff--threads-of (path)
   "Return every Thread the buffer shows in the file PATH."
-  (when-let ((entry (and prrr-diff--file-threads (gethash path prrr-diff--file-threads))))
+  (when-let* ((entry (and prrr-diff--file-threads (gethash path prrr-diff--file-threads))))
     (append (prrr-file-threads-file-comments entry)
             (prrr-file-threads-lines entry)
             (prrr-file-threads-outdated entry))))
@@ -1011,7 +1011,7 @@ once and reaches GitHub through the Outbox."
     (prrr-sync-write (forge-get-repository pullreq) pullreq 'viewed
                      (list :path path :viewed viewed) (current-buffer))
     (magit-refresh-buffer)
-    (when-let ((next (and viewed (prrr-diff--file-near-point 1))))
+    (when-let* ((next (and viewed (prrr-diff--file-near-point 1))))
       (magit-section-goto next))))
 
 (provide 'prrr-diff)

@@ -347,7 +347,7 @@ GitHub's ids.")
   "Return PAYLOAD with its :thread-id and :comment-id as GitHub names them."
   (let ((renamed (copy-sequence payload)))
     (dolist (key '(:thread-id :comment-id) renamed)
-      (when-let ((github (gethash (plist-get payload key) prrr-sync--renames)))
+      (when-let* ((github (gethash (plist-get payload key) prrr-sync--renames)))
         (setq renamed (plist-put renamed key github))))))
 
 (defvar prrr-sync--id-counter 0
@@ -482,7 +482,7 @@ BUFFER, when live, refreshes whenever the PR's writes change."
 Return how many writes were dropped: 0 when ID is no longer queued,
 as when it was sent meanwhile.  Signal a `user-error' while ID is
 being sent."
-  (if-let ((row (prrr-db-get 'outbox id)))
+  (if-let* ((row (prrr-db-get 'outbox id)))
       (progn
         (when (equal id (prrr-sync--sending-id))
           (user-error "That write is being sent; try again in a moment"))
@@ -583,7 +583,7 @@ COMMIT.  THEN receives nil when there is none and CREATE is nil.  FAIL
 receives a classified failure."
   (let ((pr-id (plist-get target :pr-id))
         (host (plist-get target :host)))
-    (if-let ((stored (prrr-db-get 'pending-review pr-id)))
+    (if-let* ((stored (prrr-db-get 'pending-review pr-id)))
         (funcall then (prrr-pending-review-review-id stored))
       (prrr-github-find-pending-review
        host (plist-get target :owner) (plist-get target :name) (plist-get target :number)
@@ -640,7 +640,7 @@ DONE receives GitHub's answer, a plist or nil; FAIL a classified failure."
                              callback errorback))
                           done fail))
       ('publish-reply
-       (if-let ((top (prrr-sync--top-database-id (plist-get payload :thread-id))))
+       (if-let* ((top (prrr-sync--top-database-id (plist-get payload :thread-id))))
            (prrr-sync--mutate (lambda (callback errorback)
                                 (prrr-github-publish-reply
                                  host (plist-get target :owner) (plist-get target :name)
@@ -709,7 +709,7 @@ RESULT is GitHub's answer.  A plist of `prrr-db-outbox-done''s keys."
                                                         'unviewed)
                                                :fetched-at (prrr-sync--timestamp)))))
       ('edit
-       (when-let ((comment (prrr-db-get 'review-comment comment-id)))
+       (when-let* ((comment (prrr-db-get 'review-comment comment-id)))
          (setf (prrr-comment-body comment) (plist-get payload :body)
                (prrr-comment-updated-at comment) (prrr-sync--timestamp))
          (list :insert (list comment))))
@@ -722,7 +722,7 @@ RESULT is GitHub's answer.  A plist of `prrr-db-outbox-done''s keys."
                                                                  :thread-id thread)))
                                     (list (list 'thread :thread-id thread)))))))
       ('resolve
-       (when-let ((thread (prrr-db-get 'thread thread-id)))
+       (when-let* ((thread (prrr-db-get 'thread thread-id)))
          (setf (prrr-thread-resolved-p thread) (and (plist-get payload :resolved) t))
          (list :insert (list thread))))
       ('submit
@@ -732,7 +732,7 @@ RESULT is GitHub's answer.  A plist of `prrr-db-outbox-done''s keys."
                                 (setf (prrr-comment-state comment) 'submitted)
                                 comment)
                               (prrr-db-select 'review-comment :pr-id pr-id :state 'pending))
-                      (when-let ((meta (prrr-db-get 'pullreq-meta pr-id)))
+                      (when-let* ((meta (prrr-db-get 'pullreq-meta pr-id)))
                         (setf (prrr-pr-meta-viewer-latest-review meta)
                               (list (pcase (plist-get payload :verdict)
                                       ('approve "APPROVED")
@@ -784,10 +784,10 @@ The PR is refetched in any case, so it shows what GitHub has."
 (defun prrr-sync--pull-topic (pr-id)
   "Ask forge to pull the PR of PR-ID, so a new Discussion Comment shows.
 Only when the PR's Review Buffer is live, since forge needs it."
-  (when-let ((buffer (gethash pr-id prrr-sync--outbox-buffers)))
+  (when-let* ((buffer (gethash pr-id prrr-sync--outbox-buffers)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (when-let ((topic (bound-and-true-p forge-buffer-topic)))
+        (when-let* ((topic (bound-and-true-p forge-buffer-topic)))
           (condition-case err
               (funcall-interactively #'forge-pull-topic topic)
             (error (message "prrr: forge could not pull the PR: %s"
@@ -802,7 +802,7 @@ retry."
     (setq prrr-sync--outbox-sending nil)
     (if (eq (plist-get failure :kind) 'rate-limited)
         (setq prrr-sync--outbox-paused-until (plist-get failure :reset-at))
-      (when-let ((stored (prrr-db-get 'outbox (prrr-outbox-id row))))
+      (when-let* ((stored (prrr-db-get 'outbox (prrr-outbox-id row))))
         (setf (prrr-outbox-attempts stored) (1+ (or (prrr-outbox-attempts stored) 0))
               (prrr-outbox-last-error stored) (plist-get failure :message))
         (prrr-db-insert stored)))

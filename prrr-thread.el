@@ -103,7 +103,7 @@ is not part of the diff."
 
 (defun prrr-thread--row-note (row)
   "Return \"  unsent\", or \"  failed: \" and the error, for the queued write ROW."
-  (if-let ((error (prrr-outbox-last-error row)))
+  (if-let* ((error (prrr-outbox-last-error row)))
       (propertize (concat "  failed: " error) 'font-lock-face 'prrr-failed)
     (propertize "  unsent" 'font-lock-face 'prrr-unsent)))
 
@@ -111,7 +111,7 @@ is not part of the diff."
   "Return the note on the queued write of ID in WRITES, or nil.
 WRITES is the :writes table of `prrr-state-outbox-view'; see
 `prrr-thread--row-note' for the note."
-  (when-let ((row (and writes id (gethash id writes))))
+  (when-let* ((row (and writes id (gethash id writes))))
     (prrr-thread--row-note row)))
 
 (defun prrr-thread-insert-unsent-post (body row)
@@ -320,7 +320,7 @@ back.  Point returns to the same place in the same magit section,
 even when the buffer was redrawn meanwhile.  When ON-CONFIRM
 signals, the capture buffer stays, so no text is lost."
   (let ((origin (point-marker))
-        (section-position (when-let ((section (magit-section-at)))
+        (section-position (when-let* ((section (magit-section-at)))
                             (cons section (magit-section-get-relative-position section))))
         (windows (current-window-configuration))
         (buffer (generate-new-buffer "*prrr comment*")))

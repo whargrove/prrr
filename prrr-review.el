@@ -192,7 +192,7 @@ again when there are agent comments (SPEC section 7)."
              (length pending) (if (= (length pending) 1) "" "s")
              (if (> agents 0) (format ", %d by an agent" agents) ""))
      (lambda (text _now)
-       (when-let ((problem (prrr-state-submit-problem verdict text (length pending))))
+       (when-let* ((problem (prrr-state-submit-problem verdict text (length pending))))
          (user-error "%s" problem))
        (when (and (> agents 0)
                   (not (yes-or-no-p (format "Submit %d comment%s an agent wrote? "

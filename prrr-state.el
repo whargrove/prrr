@@ -530,7 +530,7 @@ local id.  The oldest candidate wins.  Return nil when there is none,
 else (ROW . WAIT): send ROW after WAIT seconds, which is 0 unless ROW
 creates content and `prrr-state-creations-per-minute' were sent in the
 last minute."
-  (when-let ((row (seq-find #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
+  (when-let* ((row (seq-find #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
     (cons row
           (let ((recent (sort (seq-filter (lambda (time) (> time (- now 60))) creations) #'<)))
             (if (or (not (memq (prrr-outbox-kind row) prrr-state-creation-kinds))
