@@ -947,5 +947,54 @@ lines (bead prrr-836)."
                     "submit or discard it first (S), or publish this comment at once (C-c C-i)")
             (prrr-state-short-oid review-commit) (prrr-state-short-oid commit))))
 
+;;;; Line mapping
+
+(defun prrr-state-parse-hunk-ranges (diff)
+  "Return the line ranges of the hunks of DIFF, a unified diff of one file.
+Each is (OLD-START OLD-COUNT NEW-START NEW-COUNT), in order, read from
+the hunk headings \"@@ -OLD-START,OLD-COUNT +NEW-START,NEW-COUNT @@\";
+a count left out is 1."
+  (let ((ranges nil) (start 0))
+    (while (string-match (concat "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)?"
+                                 " \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@")
+                         diff start)
+      (push (list (string-to-number (match-string 1 diff))
+                  (if (match-string 2 diff) (string-to-number (match-string 2 diff)) 1)
+                  (string-to-number (match-string 3 diff))
+                  (if (match-string 4 diff) (string-to-number (match-string 4 diff)) 1))
+            ranges)
+      (setq start (match-end 0)))
+    (nreverse ranges)))
+
+(defun prrr-state-map-line (hunks line)
+  "Return the number that LINE of the old file has in the new file, or nil.
+HUNKS are the line ranges of a diff without context lines (`git diff
+-U0'), as `prrr-state-parse-hunk-ranges' returns them.  nil when the
+diff removes or rewrites LINE.  Switching Ranges and `.' use this to
+find a line again at another commit (SPEC section 8)."
+  (let ((shift 0))
+    (catch 'done
+      (pcase-dolist (`(,old-start ,old-count ,_new-start ,new-count) hunks)
+        ;; A hunk that only adds lines names the old line they follow.
+        (let ((first (if (zerop old-count) (1+ old-start) old-start)))
+          (cond ((< line first) (throw 'done (+ line shift)))
+                ((< line (+ first old-count)) (throw 'done nil))
+                (t (cl-incf shift (- new-count old-count))))))
+      (+ line shift))))
+
+;;;; Stack steps
+
+(defun prrr-state-stack-step (pr prs default-branch direction)
+  "Return the PR next to PR in its Stack in DIRECTION, or nil.
+PRS are the repository's open `prrr-pr's, PR among them.  DIRECTION
+`down' is the PR that PR is stacked on (see `prrr-state--parent' for
+DEFAULT-BRANCH), `up' the oldest PR stacked on PR."
+  (if (eq direction 'down)
+      (prrr-state--parent pr prs default-branch)
+    (car (sort (seq-filter (lambda (other)
+                             (eq pr (prrr-state--parent other prs default-branch)))
+                           prs)
+               #'prrr-state--older-p))))
+
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

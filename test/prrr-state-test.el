@@ -1063,5 +1063,56 @@
     (should (string-prefix-p "Your Pending Review is on aaaaaaa, not on the head shown (bbbbbbb)"
                              (prrr-state-review-commit-problem a b)))))
 
+;;;; Line mapping
+
+(ert-deftest prrr-state-test-parse-hunk-ranges ()
+  (should (equal '((12 1 12 1) (20 0 21 2) (30 3 31 0))
+                 (prrr-state-parse-hunk-ranges
+                  (concat "diff --git a/a.el b/a.el\n--- a/a.el\n+++ b/a.el\n"
+                          "@@ -12 +12 @@ (defun a ()\n-old\n+new\n"
+                          "@@ -20,0 +21,2 @@\n+one\n+two\n"
+                          "@@ -30,3 +31,0 @@\n-x\n-y\n-z\n"))))
+  (should-not (prrr-state-parse-hunk-ranges "")))
+
+(ert-deftest prrr-state-test-map-line ()
+  "SPEC section 13: line mapping across Ranges.
+One line rewritten at 12, two lines added after 20, three removed at 30."
+  (let ((hunks '((12 1 12 1) (20 0 21 2) (30 3 31 0))))
+    (should (= 11 (prrr-state-map-line hunks 11)))
+    (should-not (prrr-state-map-line hunks 12))
+    (should (= 13 (prrr-state-map-line hunks 13)))
+    (should (= 20 (prrr-state-map-line hunks 20)))
+    (should (= 23 (prrr-state-map-line hunks 21)))
+    (should (= 31 (prrr-state-map-line hunks 29)))
+    (should-not (prrr-state-map-line hunks 30))
+    (should-not (prrr-state-map-line hunks 32))
+    (should (= 32 (prrr-state-map-line hunks 33)))
+    (should (= 7 (prrr-state-map-line nil 7)))))
+
+(ert-deftest prrr-state-test-map-line-at-the-top ()
+  "Lines added before line 1, and line 1 removed."
+  (should (= 3 (prrr-state-map-line '((0 0 1 2)) 1)))
+  (should-not (prrr-state-map-line '((1 1 0 0)) 1))
+  (should (= 1 (prrr-state-map-line '((1 1 0 0)) 2))))
+
+;;;; Stack steps
+
+(ert-deftest prrr-state-test-stack-step ()
+  "SPEC section 8: > and < move along the Stack; a fork's branch is no parent."
+  (let* ((bottom (prrr-test-pr :id "PR_1" :number 1 :base-ref "main" :head-ref "a"))
+         (middle (prrr-test-pr :id "PR_2" :number 2 :base-ref "a" :head-ref "b"
+                               :created-at "2026-09-02T00:00:00Z"))
+         (later (prrr-test-pr :id "PR_3" :number 3 :base-ref "a" :head-ref "c"
+                              :created-at "2026-09-03T00:00:00Z"))
+         (fork (prrr-test-pr :id "PR_4" :number 4 :base-ref "main" :head-ref "b"
+                             :cross-repo-p t))
+         (prs (list later fork middle bottom)))
+    (should (eq middle (prrr-state-stack-step bottom prs "main" 'up)))
+    (should-not (prrr-state-stack-step middle prs "main" 'up))
+    (should (eq bottom (prrr-state-stack-step middle prs "main" 'down)))
+    (should (eq bottom (prrr-state-stack-step later prs "main" 'down)))
+    (should-not (prrr-state-stack-step bottom prs "main" 'down))
+    (should-not (prrr-state-stack-step fork prs "main" 'down))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here
