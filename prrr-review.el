@@ -56,12 +56,20 @@ The current buffer refreshes as the write goes out."
 (defun prrr-review--comment-on (anchor immediate body)
   "Capture a comment on ANCHOR and send it as a new Thread.
 IMMEDIATE is the initial choice of Immediate Publish; BODY the initial
-text."
+text.  A comment for the Pending Review is refused, and the capture
+buffer kept, when that review is on another commit than the head shown
+\(`prrr-state-review-commit-problem')."
   (let ((pullreq (prrr-diff-pullreq))
         (head (prrr-diff-head)))
     (prrr-comment-capture
      (prrr-state-anchor-label anchor)
      (lambda (text now)
+       (unless now
+         (when-let* ((problem (prrr-state-review-commit-problem
+                               (prrr-state-review-commit
+                                (prrr-sync-review-data (oref pullreq their-id)))
+                               head)))
+           (user-error "%s" problem)))
        (prrr-review--write pullreq (if now 'publish 'thread)
                            (list :anchor anchor :body text :commit head)))
      :body body :immediate immediate)))

@@ -140,11 +140,14 @@
                  :created "2026-09-01T00:00:00Z" :body "Why this change."))
 
 (defun prrr-diff-test--store-fixture ()
-  "Store the review-data fixture for the fixture PR."
-  (prrr-db-replace-review-data
-   prrr-diff-test--pr
-   (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-diff-test--pr
-                                   "2026-10-10T12:00:00Z")))
+  "Store the review-data fixture for the fixture PR.
+Its Pending Review is on the fixture repository's head, as a review
+the user started in this buffer would be."
+  (let ((data (prrr-github-decode-review-data (prrr-test-fixture "review-data")
+                                              prrr-diff-test--pr "2026-10-10T12:00:00Z")))
+    (setf (prrr-pending-review-commit-oid (plist-get data :pending-review))
+          (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+    (prrr-db-replace-review-data prrr-diff-test--pr data)))
 
 (defvar prrr-diff-test--posts nil
   "The Discussion Comments `prrr-diff--posts' returns in tests.")

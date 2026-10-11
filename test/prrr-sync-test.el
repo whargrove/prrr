@@ -554,6 +554,18 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                                (prrr-comment-database-id comment)))))
         (should (prrr-db-get 'thread "PRRT_kwDOexampleNew01"))))))
 
+(ert-deftest prrr-sync-test-outbox-thread-on-another-commit-fails ()
+  "Bead prrr-836: a Thread never joins a Pending Review on another commit."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "2222"))
+        (should-not prrr-test-requests)
+        (should (string-prefix-p "Your Pending Review is on 1111, not on the head shown (2222)"
+                                 (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))))))
+
 (ert-deftest prrr-sync-test-outbox-creates-the-pending-review ()
   "SPEC section 7: the first pending comment creates the Pending Review, after looking."
   (prrr-db-with-test-db
@@ -563,11 +575,11 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
             (addPullRequestReview . ,(prrr-test-fixture "create-review"))
             (addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
         (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
-                                             :commit "1111"))
+                                             :commit prrr-test-head))
         (should (equal '(repository addPullRequestReview addPullRequestReviewThread)
                        prrr-test-requests))
-        (should (equal "1111" (alist-get 'commitOID (prrr-sync-test--input
-                                                     'addPullRequestReview))))
+        (should (equal prrr-test-head
+                       (alist-get 'commitOID (prrr-sync-test--input 'addPullRequestReview))))
         (should (equal "PRR_kwDOexampleNew01"
                        (prrr-pending-review-review-id
                         (prrr-db-get 'pending-review prrr-sync-test--pr))))))))
@@ -579,7 +591,7 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
           `((repository . ,(prrr-test-fixture "pending-review"))
             (addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
         (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
-                                             :commit "1111"))
+                                             :commit prrr-test-head))
         (should (equal '(repository addPullRequestReviewThread) prrr-test-requests))
         (should (equal "PRR_kwDOexamplePending1"
                        (alist-get 'pullRequestReviewId

@@ -118,6 +118,28 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
                           (buffer-list)))
     (should-not prrr-test-requests)))
 
+(ert-deftest prrr-review-test-comment-refused-when-review-on-another-commit ()
+  "Bead prrr-836: the text is kept, and can still be published at once."
+  (prrr-review-test--with-buffer nil
+    (let ((review (prrr-db-get 'pending-review prrr-diff-test--pr)))
+      (setf (prrr-pending-review-commit-oid review) (prrr-diff-test--rev "refs/pullreqs/1~1"))
+      (prrr-db-insert review))
+    (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+      (prrr-diff-test--goto-line "src/example.el" "+line twelve")
+      (prrr-comment nil)
+      (should (string-prefix-p "Your Pending Review is on "
+                               (cadr (should-error (prrr-review-test--send "Nit.")
+                                                   :type 'user-error))))
+      (should-not prrr-test-requests)
+      (should-not captured)
+      (with-current-buffer (seq-find (lambda (buffer)
+                                       (string-prefix-p "*prrr comment*" (buffer-name buffer)))
+                                     (buffer-list))
+        (should (equal "Nit." (buffer-string)))
+        (prrr-comment-toggle-immediate)
+        (prrr-comment-confirm))
+      (should (equal "/repos/example-org/example-repo/pulls/1/comments" (cadr captured))))))
+
 (ert-deftest prrr-review-test-file-comment ()
   (prrr-review-test--with-buffer `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
     (goto-char (oref (prrr-diff-test--file-section "README.md") start))

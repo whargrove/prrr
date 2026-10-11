@@ -582,35 +582,39 @@ the callback receives, FAIL what the errorback receives."
       (funcall go))))
 
 (defun prrr-sync--with-review (target commit create then fail)
-  "Call THEN with the id of the viewer's Pending Review of TARGET's PR.
-The stored review is used when there is one; otherwise GitHub is asked,
-and when it has none and CREATE is non-nil, a review is created on
-COMMIT.  THEN receives nil when there is none and CREATE is nil.  FAIL
-receives a classified failure."
+  "Call THEN with the viewer's Pending Review of TARGET's PR.
+THEN receives a `prrr-pending-review'.  The stored review is used when
+there is one; otherwise GitHub is asked, and when it has none and
+CREATE is non-nil, a review is created on COMMIT.  THEN receives nil
+when there is none and CREATE is nil.  FAIL receives a classified
+failure."
   (let ((pr-id (plist-get target :pr-id))
         (host (plist-get target :host)))
     (if-let* ((stored (prrr-db-get 'pending-review pr-id)))
-        (funcall then (prrr-pending-review-review-id stored))
+        (funcall then stored)
       (prrr-github-find-pending-review
        host (plist-get target :owner) (plist-get target :name) (plist-get target :number)
        (plist-get target :me)
        (lambda (found)
          (cond (found
                 (prrr-db-insert found)
-                (funcall then (prrr-pending-review-review-id found)))
+                (funcall then found))
                ((not create) (funcall then nil))
                (t (prrr-sync--mutate
                    (lambda (callback errorback)
                      (prrr-github-create-pending-review host pr-id commit callback errorback))
                    (lambda (review)
                      (prrr-db-insert review)
-                     (funcall then (prrr-pending-review-review-id review)))
+                     (funcall then review))
                    fail))))
        fail))))
 
 (defun prrr-sync--outbox-run (row done fail)
   "Send the write ROW to GitHub.
-DONE receives GitHub's answer, a plist or nil; FAIL a classified failure."
+DONE receives GitHub's answer, a plist or nil; FAIL a classified failure.
+A new Thread fails when the Pending Review it joins is on another
+commit than the one its lines were numbered at
+\(`prrr-state-review-commit-problem')."
   (let* ((payload (prrr-outbox-payload row))
          (target (plist-get payload :target))
          (host (plist-get target :host))
@@ -627,16 +631,21 @@ DONE receives GitHub's answer, a plist or nil; FAIL a classified failure."
       ((and kind (or 'thread 'reply))
        (prrr-sync--with-review
         target commit t
-        (lambda (review-id)
-          (prrr-sync--mutate
-           (lambda (callback errorback)
-             (if (eq kind 'thread)
-                 (prrr-github-add-thread host review-id (plist-get payload :anchor) body
-                                         callback errorback)
-               (prrr-github-add-reply host review-id (plist-get payload :thread-id) body
-                                      callback errorback)))
-           (lambda (result) (funcall done (append (list :review-id review-id) result)))
-           fail))
+        (lambda (review)
+          (let ((review-id (prrr-pending-review-review-id review)))
+            (if-let* ((problem (and (eq kind 'thread)
+                                    (prrr-state-review-commit-problem
+                                     (prrr-pending-review-commit-oid review) commit))))
+                (funcall fail (list :kind 'error :message problem :reset-at nil))
+              (prrr-sync--mutate
+               (lambda (callback errorback)
+                 (if (eq kind 'thread)
+                     (prrr-github-add-thread host review-id (plist-get payload :anchor) body
+                                             callback errorback)
+                   (prrr-github-add-reply host review-id (plist-get payload :thread-id) body
+                                          callback errorback)))
+               (lambda (result) (funcall done (append (list :review-id review-id) result)))
+               fail))))
         fail))
       ('publish
        (prrr-sync--mutate (lambda (callback errorback)
@@ -677,20 +686,23 @@ DONE receives GitHub's answer, a plist or nil; FAIL a classified failure."
       ('submit
        (prrr-sync--with-review
         target commit nil
-        (lambda (review-id)
+        (lambda (review)
           (prrr-sync--mutate (lambda (callback errorback)
-                               (prrr-github-submit-review host review-id pr-id commit
-                                                          (plist-get payload :verdict) body
-                                                          callback errorback))
+                               (prrr-github-submit-review
+                                host (and review (prrr-pending-review-review-id review))
+                                pr-id commit (plist-get payload :verdict) body
+                                callback errorback))
                              done fail))
         fail))
       ('discard
        (prrr-sync--with-review
         target nil nil
-        (lambda (review-id)
-          (if review-id
+        (lambda (review)
+          (if review
               (prrr-sync--mutate (lambda (callback errorback)
-                                   (prrr-github-discard-review host review-id callback errorback))
+                                   (prrr-github-discard-review
+                                    host (prrr-pending-review-review-id review)
+                                    callback errorback))
                                  done fail)
             (funcall done)))
         fail))
