@@ -496,27 +496,238 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
   (should-not (prrr-sync-describe '(:state ok)))
   (should-not (prrr-sync-describe nil)))
 
-;;;; Viewed
+;;;; The Outbox
 
-(ert-deftest prrr-sync-test-set-viewed-writes-then-sends ()
-  (prrr-db-with-test-db
-    (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
-      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" t)
-      (should (eq 'markFileAsViewed (car (cadr (car captured))))))
-    (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "a.el"))))))
+(defconst prrr-sync-test--anchor
+  '(:path "src/example.el" :line 12 :side right :subject-type line)
+  "The anchor of the test comments.")
 
-(ert-deftest prrr-sync-test-set-viewed-failure-restores-row ()
-  (prrr-db-with-test-db
-    (prrr-db-insert (prrr-viewed-create :pr-id "PR_1" :path "a.el" :state 'viewed))
-    (prrr-test-with-ghub-error-stub '(error http 502) nil
-      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" nil))
-    (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "a.el"))))))
+(defconst prrr-sync-test--mark-viewed '((data (markFileAsViewed (clientMutationId))))
+  "GitHub's answer to markFileAsViewed.")
 
-(ert-deftest prrr-sync-test-set-viewed-failure-removes-new-row ()
+(defun prrr-sync-test--write (kind payload)
+  "Hand the write KIND with PAYLOAD to the fixture PR to the Outbox."
+  (prrr-sync-write (prrr-sync-test--repo) (prrr-sync-test--pullreq) kind payload))
+
+(defun prrr-sync-test--queue (kind payload)
+  "Queue the write KIND with PAYLOAD for the fixture PR without sending anything."
+  (prrr-sync--outbox-add prrr-sync-test--pr kind
+                         (append (list :target (prrr-sync--target (prrr-sync-test--repo)
+                                                                  (prrr-sync-test--pullreq)))
+                                 payload)))
+
+(defun prrr-sync-test--store-pending-review ()
+  "Store the viewer's Pending Review of the fixture PR."
+  (prrr-db-insert (prrr-pending-review-create :pr-id prrr-sync-test--pr
+                                              :review-id "PRR_kwDOexamplePending1"
+                                              :commit-oid "1111")))
+
+(defun prrr-sync-test--input (field)
+  "Return the input of the last request whose top-level field is FIELD."
+  (alist-get 'input (cdr (assq field prrr-test-variables))))
+
+(ert-deftest prrr-sync-test-outbox-shows-at-once-then-confirms ()
   (prrr-db-with-test-db
-    (prrr-test-with-ghub-error-stub '(error http 502) nil
-      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" t))
-    (should-not (prrr-db-get 'viewed "PR_1" "a.el"))))
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (let ((callback nil) (sent nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query variables &rest args)
+                     (setq sent variables callback (plist-get args :callback)))))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit "1111")))
+        (should (equal '((input (pullRequestReviewId . "PRR_kwDOexamplePending1")
+                                (path . "src/example.el") (body . "Nit.") (line . 12)
+                                (side . "RIGHT")))
+                       sent))
+        (let ((comment (car (last (plist-get (prrr-sync-review-data prrr-sync-test--pr)
+                                             :comments)))))
+          (should (prrr-state-local-id-p (prrr-comment-comment-id comment)))
+          (should (eq 'unsent (prrr-comment-local-state comment))))
+        (funcall callback (prrr-test-fixture "add-thread"))
+        (should-not (prrr-db-outbox-rows))
+        (let ((comment (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01")))
+          (should (equal '("PRRT_kwDOexampleNew01" pending sent "PRR_kwDOexamplePending1" "2001")
+                         (list (prrr-comment-thread-id comment) (prrr-comment-state comment)
+                               (prrr-comment-local-state comment)
+                               (prrr-comment-review-id comment)
+                               (prrr-comment-database-id comment)))))
+        (should (prrr-db-get 'thread "PRRT_kwDOexampleNew01"))))))
+
+(ert-deftest prrr-sync-test-outbox-creates-the-pending-review ()
+  "SPEC section 7: the first pending comment creates the Pending Review, after looking."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "pending-review-none"))
+            (addPullRequestReview . ,(prrr-test-fixture "create-review"))
+            (addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "1111"))
+        (should (equal '(repository addPullRequestReview addPullRequestReviewThread)
+                       prrr-test-requests))
+        (should (equal "1111" (alist-get 'commitOID (prrr-sync-test--input
+                                                     'addPullRequestReview))))
+        (should (equal "PRR_kwDOexampleNew01"
+                       (prrr-pending-review-review-id
+                        (prrr-db-get 'pending-review prrr-sync-test--pr))))))))
+
+(ert-deftest prrr-sync-test-outbox-reuses-the-pending-review-found ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "pending-review"))
+            (addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "1111"))
+        (should (equal '(repository addPullRequestReviewThread) prrr-test-requests))
+        (should (equal "PRR_kwDOexamplePending1"
+                       (alist-get 'pullRequestReviewId
+                                  (prrr-sync-test--input 'addPullRequestReviewThread))))))))
+
+(ert-deftest prrr-sync-test-outbox-reply-to-an-unsent-thread ()
+  "Review Focus 3: a reply waits for its Thread, then goes out under GitHub's id."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (let ((callbacks nil) (fields nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (query variables &rest args)
+                     (push (cons (car (cadr query)) variables) fields)
+                     (push (plist-get args :callback) callbacks))))
+          (let ((thread (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                             :body "Nit." :commit "1111"))))
+            (prrr-sync-test--write 'reply (list :thread-id (plist-get (prrr-outbox-payload thread)
+                                                                      :thread)
+                                                :body "And this."))
+            (should (= 1 (length fields)))
+            (funcall (car callbacks) (prrr-test-fixture "add-thread"))
+            (should (equal 'addPullRequestReviewThreadReply (car (car fields))))
+            (should (equal "PRRT_kwDOexampleNew01"
+                           (alist-get 'pullRequestReviewThreadId
+                                      (alist-get 'input (cdr (car fields))))))
+            (funcall (car callbacks) (prrr-test-fixture "add-reply"))
+            (should-not (prrr-db-outbox-rows))
+            (should (equal "PRRT_kwDOexampleNew01"
+                           (prrr-comment-thread-id
+                            (prrr-db-get 'review-comment "PRRC_kwDOexampleNew02"))))))))))
+
+(ert-deftest prrr-sync-test-outbox-failure-kept-and-retried ()
+  "Review Focus 1: a failed write stays, shows, and goes out on retry."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch '((markFileAsViewed . (:error (error http 502))))
+        (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t)))
+      (let ((row (car (prrr-db-outbox-rows))))
+        (should (equal "GitHub returned HTTP 502" (prrr-outbox-last-error row)))
+        (should (= 1 (prrr-outbox-attempts row))))
+      (should (eq 'viewed (prrr-viewed-state
+                           (car (plist-get (prrr-sync-review-data prrr-sync-test--pr) :viewed)))))
+      (prrr-test-with-ghub-dispatch `((markFileAsViewed . ,prrr-sync-test--mark-viewed))
+        (prrr-sync-retry prrr-sync-test--pr))
+      (should-not (prrr-db-outbox-rows))
+      (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed prrr-sync-test--pr "a.el")))))))
+
+(ert-deftest prrr-sync-test-outbox-failed-write-holds-back-its-pr-only ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch '((markFileAsViewed . (:error (error http 502))))
+        (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t)))
+      (prrr-test-with-ghub-dispatch `((markFileAsViewed . ,prrr-sync-test--mark-viewed))
+        (prrr-sync-test--queue 'viewed '(:path "b.el" :viewed t))
+        (prrr-sync--outbox-add "PR_other" 'viewed
+                               '(:target (:host "api.github.com" :pr-id "PR_other" :me "example-me")
+                                 :path "c.el" :viewed t))
+        (prrr-sync--outbox-pump)
+        (should (equal '(markFileAsViewed) prrr-test-requests))
+        (should (equal "PR_other" (alist-get 'pullRequestId
+                                             (prrr-sync-test--input 'markFileAsViewed)))))
+      (should (equal '("a.el" "b.el")
+                     (mapcar (lambda (row) (plist-get (prrr-outbox-payload row) :path))
+                             (prrr-db-outbox-rows)))))))
+
+(ert-deftest prrr-sync-test-outbox-rate-limit-pauses ()
+  "SPEC section 11: a rate limit pauses the Outbox until it resets."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch
+          '((markFileAsViewed . (:error (errors ((type . "RATE_LIMITED") (message . "Slow down"))))))
+        (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t)))
+      (should-not (prrr-outbox-last-error (car (prrr-db-outbox-rows))))
+      (should (string-prefix-p "rate limited until" (prrr-sync-outbox-describe)))
+      (should prrr-sync--outbox-scheduled)
+      (prrr-test-with-ghub-dispatch nil
+        (prrr-sync-retry prrr-sync-test--pr)
+        (should-not prrr-test-requests)))))
+
+(ert-deftest prrr-sync-test-outbox-spaces-mutations ()
+  "SPEC section 4: a second apart."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-sync--mutation-spacing 1.0))
+        (prrr-test-with-ghub-dispatch `((markFileAsViewed . ,prrr-sync-test--mark-viewed))
+          (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t))
+          (prrr-sync-test--write 'viewed '(:path "b.el" :viewed t))
+          (should (= 1 (length prrr-test-requests)))
+          (let ((timer (seq-find (lambda (timer) (and (numberp (car timer))
+                                                      (< 0 (car timer) 1.01)))
+                                 prrr-test-timers)))
+            (should timer)
+            (funcall (nth 1 timer)))
+          (should (= 2 (length prrr-test-requests)))
+          (should-not (prrr-db-outbox-rows)))))))
+
+(ert-deftest prrr-sync-test-outbox-no-answer-then-late-answer ()
+  "A write without an answer fails as offline; an answer that comes later still counts."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((callback nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query _variables &rest args)
+                     (setq callback (plist-get args :callback)))))
+          (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t)))
+        (let ((watchdog (seq-find (lambda (timer) (eql (car timer) prrr-sync-timeout))
+                                  prrr-test-timers)))
+          (apply (nth 1 watchdog) (nth 2 watchdog)))
+        (should (equal "No answer from GitHub" (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))
+        (should-not prrr-sync--outbox-sending)
+        (funcall callback prrr-sync-test--mark-viewed)
+        (should-not (prrr-db-outbox-rows))
+        (should (prrr-db-get 'viewed prrr-sync-test--pr "a.el"))))))
+
+(ert-deftest prrr-sync-test-outbox-sends-after-a-restart ()
+  "A queued write carries all it needs: no forge object, no buffer."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--queue 'viewed '(:path "a.el" :viewed t)))
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch `((markFileAsViewed . ,prrr-sync-test--mark-viewed))
+        (prrr-sync-retry)
+        (should (equal '(markFileAsViewed) prrr-test-requests))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-discard-takes-dependents ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch '((addPullRequestReviewThread . (:error (error http 502))))
+        (let ((thread (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                           :body "Nit." :commit "1111"))))
+          (prrr-sync-test--write 'reply (list :thread-id (plist-get (prrr-outbox-payload thread)
+                                                                    :thread)
+                                              :body "More."))
+          (should (= 2 (prrr-sync-discard (prrr-outbox-id thread))))
+          (should-not (prrr-db-outbox-rows))
+          (should-not (plist-get (prrr-sync-review-data prrr-sync-test--pr) :comments)))))))
+
+(ert-deftest prrr-sync-test-outbox-needs-a-login ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-github-user nil))
+        (cl-letf (((symbol-function 'magit-get) #'ignore))
+          (should-error (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t))
+                        :type 'user-error)))
+      (should-not (prrr-db-outbox-rows)))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

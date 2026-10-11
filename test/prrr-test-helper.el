@@ -32,6 +32,8 @@
 ;; tests of the pure rules.  `prrr-test-with-repo' runs BODY in a fresh
 ;; copy of the git fixture repository built by test/fixtures/make-repo.sh,
 ;; and `prrr-test-repo-base' is its main's tip, the PR's base-rev.
+;; `prrr-test-with-outbox' runs BODY with an empty Outbox that sends at once and
+;; records timers in `prrr-test-timers'; `prrr-test-run-timers' runs them.
 
 ;;; Code:
 
@@ -137,21 +139,33 @@ OUTDATED-P and RESOLVED-P."
 (defvar prrr-test-requests nil
   "Top-level fields of the requests seen by `prrr-test-with-ghub-dispatch'.")
 
+(defvar prrr-test-variables nil
+  "In `prrr-test-with-ghub-dispatch': (FIELD . VARIABLES) of each request.
+Newest first.")
+
 (defmacro prrr-test-with-ghub-dispatch (alist &rest body)
   "Run BODY with `ghub-query' answering each request from ALIST.
-ALIST maps the query's top-level field (`repository' or `viewer') to
-the fixture datum to answer with.  Callbacks run synchronously.  The
-variable `prrr-test-requests' collects the top-level field of every
-request, oldest first."
+ALIST maps the request's top-level field (`repository', `viewer', or a
+mutation such as `addPullRequestReviewThread') to its answer: a
+fixture datum; a function of the query and the variables that returns
+one; or (:error ERR), which fails the request as ghub does, with ERR
+and no headers.  Answers come synchronously.  The variable
+`prrr-test-requests' collects the top-level field of every request,
+oldest first, and `prrr-test-variables' their variables."
   (declare (indent 1) (debug (form body)))
-  `(let ((prrr-test-requests nil))
+  `(let ((prrr-test-requests nil)
+         (prrr-test-variables nil))
      (cl-letf (((symbol-function 'ghub-query)
-                (lambda (query _variables &rest args)
-                  (let ((field (car (cadr query))))
+                (lambda (query variables &rest args)
+                  (let* ((field (car (cadr query)))
+                         (answer (or (alist-get field ,alist)
+                                     (ert-fail (list "unexpected request" field))))
+                         (answer (if (functionp answer) (funcall answer query variables) answer)))
                     (setq prrr-test-requests (append prrr-test-requests (list field)))
-                    (funcall (plist-get args :callback)
-                             (or (alist-get field ,alist)
-                                 (ert-fail (list "unexpected request" field))))))))
+                    (push (cons field variables) prrr-test-variables)
+                    (if (eq (car-safe answer) :error)
+                        (funcall (plist-get args :errorback) (cadr answer) nil nil nil)
+                      (funcall (plist-get args :callback) answer))))))
        ,@body)))
 
 (defvar prrr-test-repo-base nil
@@ -199,6 +213,41 @@ ghub does.  Both run synchronously."
                                  (plist-get answer :error) (plist-get answer :headers) nil nil)
                       (funcall (plist-get args :callback) answer nil nil nil))))))
        ,@body)))
+
+(defvar prrr-test-timers nil
+  "In `prrr-test-with-outbox': (TIME FUNCTION ARGS) of each timer, newest first.")
+
+(defmacro prrr-test-with-outbox (&rest body)
+  "Run BODY with an empty Outbox, no spacing between mutations, and no timers.
+`run-at-time' records its calls in `prrr-test-timers' instead of
+setting timers, so nothing runs later; run one with
+`prrr-test-run-timers'.  The viewer is \"example-me\"."
+  (declare (indent 0) (debug t))
+  `(let ((prrr-sync--outbox-sending nil)
+         (prrr-sync--outbox-token 0)
+         (prrr-sync--outbox-mutated-at 0.0)
+         (prrr-sync--outbox-creations nil)
+         (prrr-sync--outbox-paused-until nil)
+         (prrr-sync--outbox-scheduled nil)
+         (prrr-sync--outbox-buffers (make-hash-table :test #'equal))
+         (prrr-sync--outbox-dirty (make-hash-table :test #'equal))
+         (prrr-sync--status (make-hash-table :test #'equal))
+         (prrr-sync--mutation-spacing 0)
+         (prrr-github-user "example-me")
+         (prrr-test-timers nil))
+     (cl-letf (((symbol-function 'run-at-time)
+                (lambda (time _repeat function &rest args)
+                  (push (list time function args) prrr-test-timers)
+                  nil)))
+       ,@body)))
+
+(defun prrr-test-run-timers (function)
+  "Run, and forget, the recorded timers that call FUNCTION, oldest first."
+  (let ((due (reverse (seq-filter (lambda (timer) (eq (nth 1 timer) function))
+                                  prrr-test-timers))))
+    (setq prrr-test-timers (seq-difference prrr-test-timers due #'eq))
+    (dolist (timer due)
+      (apply (nth 1 timer) (nth 2 timer)))))
 
 (provide 'prrr-test-helper)
 ;;; prrr-test-helper.el ends here

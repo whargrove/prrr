@@ -673,24 +673,45 @@ SETUP runs first, inside the fixture repository and a fresh database.
         (should (oref (prrr-diff-test--file-section path) hidden))))))
 
 (ert-deftest prrr-diff-test-toggle-viewed ()
+  "Toggling Viewed writes through the Outbox, shows at once and folds."
   (prrr-diff-test--with-buffer nil
-    (cl-letf (((symbol-function 'forge-get-repository)
-               (lambda (&rest _) (forge-github-repository :id "r" :apihost "api.github.com"))))
-      (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
-        (prrr-jump-to-file "README.md")
-        (prrr-toggle-viewed)
-        (should (eq 'markFileAsViewed (car (cadr (car captured)))))
-        (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'forge-get-repository)
+                 (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
+                                                            :name "example-repo"
+                                                            :apihost "api.github.com"))))
+        (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
+          (prrr-jump-to-file "README.md")
+          (prrr-toggle-viewed)
+          (should (eq 'markFileAsViewed (car (cadr (car captured)))))
+          (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+          (let ((readme (prrr-diff-test--file-section "README.md")))
+            (should (oref readme hidden))
+            (should (string-match-p "✓ viewed" (prrr-diff-test--text readme))))
+          (should (equal '(file . "data.bin") (prrr-diff-test--at)))
+          (prrr-jump-to-file "README.md")
+          (prrr-toggle-viewed)
+          (should (eq 'unviewed (prrr-viewed-state
+                                 (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+          (should-not (oref (prrr-diff-test--file-section "README.md") hidden))
+          (should (equal '(file . "README.md") (prrr-diff-test--at))))))))
+
+(ert-deftest prrr-diff-test-toggle-viewed-offline-shows-at-once ()
+  "Review Focus 1: offline, the flag shows and folds, and stays in the Outbox."
+  (prrr-diff-test--with-buffer nil
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'forge-get-repository)
+                 (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
+                                                            :name "example-repo"
+                                                            :apihost "api.github.com"))))
+        (prrr-test-with-ghub-error-stub '(error http 502) nil
+          (prrr-jump-to-file "README.md")
+          (prrr-toggle-viewed))
+        (should-not (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))
+        (should (= 1 (length (prrr-db-outbox-rows prrr-diff-test--pr))))
         (let ((readme (prrr-diff-test--file-section "README.md")))
           (should (oref readme hidden))
-          (should (string-match-p "✓ viewed" (prrr-diff-test--text readme))))
-        (should (equal '(file . "data.bin") (prrr-diff-test--at)))
-        (prrr-jump-to-file "README.md")
-        (prrr-toggle-viewed)
-        (should (eq 'unviewed (prrr-viewed-state
-                               (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
-        (should-not (oref (prrr-diff-test--file-section "README.md") hidden))
-        (should (equal '(file . "README.md") (prrr-diff-test--at)))))))
+          (should (string-match-p "✓ viewed" (prrr-diff-test--text readme))))))))
 
 (ert-deftest prrr-diff-test-keys-and-menu-agree ()
   "SPEC section 9: every key of this milestone, in the buffer and the menu."

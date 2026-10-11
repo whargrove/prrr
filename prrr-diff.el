@@ -166,6 +166,12 @@ nil when forge recorded no base commit or it is not in the repository."
 (defvar-local prrr-diff--file-threads nil
   "Hash table from path to its `prrr-file-threads'; set by each refresh.")
 
+(defvar-local prrr-diff--data nil
+  "The review data shown, from `prrr-sync-review-data'; set by each refresh.")
+
+(defvar-local prrr-diff--comments nil
+  "Hash table from comment id to the `prrr-comment' shown; set by each refresh.")
+
 ;;;; Washing
 
 (defun prrr-diff--insert-anchored (anchors side line comments)
@@ -557,15 +563,21 @@ DATA), and hidden `description' and `discussion' sections."
 
 (defun prrr-diff-refresh-buffer ()
   "Insert the Review Buffer of `prrr-diff--pullreq' from git and the database.
-The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'."
+The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'.
+The review data is `prrr-sync-review-data''s: what GitHub sent, with
+the Outbox's writes applied."
   (let* ((pullreq prrr-diff--pullreq)
          (ref (prrr-diff--head-ref pullreq))
          (head (magit-rev-verify ref))
          (base (and head (prrr-diff--merge-base pullreq head)))
-         (data (prrr-db-review-data (oref pullreq their-id))))
+         (data (prrr-sync-review-data (oref pullreq their-id))))
     (setq prrr-diff--base base
           prrr-diff--head head
+          prrr-diff--data data
+          prrr-diff--comments (make-hash-table :test #'equal)
           magit-buffer-diff-range (and base (concat base ".." head)))
+    (dolist (comment (plist-get data :comments))
+      (puthash (prrr-comment-comment-id comment) comment prrr-diff--comments))
     ;; magit resets this to nil when the root section finishes; a
     ;; failed refresh must not leave later insertions without markers.
     (setq magit-section-inhibit-markers 'delay)
@@ -629,7 +641,7 @@ the buffer."
     (prrr-sync-refetch (forge-get-repository pullreq) pullreq buffer)
     (prrr-diff-setup-buffer pullreq)))
 
-(defun prrr-diff--require-pullreq ()
+(defun prrr-diff-pullreq ()
   "Return the current Review Buffer's pull request.
 Signal a `user-error' outside a Review Buffer."
   (or (and (derived-mode-p 'prrr-diff-mode) prrr-diff--pullreq)
@@ -641,7 +653,7 @@ Signal a `user-error' outside a Review Buffer."
 The buffer shows \"refreshing…\" until the answer arrives, then redraws.
 `g' redraws from the database without fetching."
   (interactive)
-  (let ((pullreq (prrr-diff--require-pullreq)))
+  (let ((pullreq (prrr-diff-pullreq)))
     (if (prrr-sync-refetch (forge-get-repository pullreq) pullreq (current-buffer))
         (magit-refresh-buffer)
       (message "Not refetching: %s"
@@ -678,20 +690,20 @@ file is one after point; after the last, the last is one before it."
 (defun prrr-next-file ()
   "Move to the next file of the diff."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (magit-section-goto (or (prrr-diff--file-near-point 1) (user-error "No next file"))))
 
 (defun prrr-previous-file ()
   "Move to the previous file of the diff."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (magit-section-goto (or (prrr-diff--file-near-point -1) (user-error "No previous file"))))
 
 (defun prrr-jump-to-file (path)
   "Move to the file PATH of the diff and expand it.
 Interactively, read PATH with completion over the diff's files."
   (interactive
-   (progn (prrr-diff--require-pullreq)
+   (progn (prrr-diff-pullreq)
           (list (completing-read "Jump to file: "
                                  (mapcar (lambda (file) (oref file value)) (prrr-diff--files))
                                  nil t))))
@@ -732,7 +744,7 @@ Only Threads whose `prrr-thread' satisfies WANTED count.  A file not
 washed yet is expanded when it holds such a Thread, and the target is
 revealed wherever it is folded.  Signal a `user-error' when there is
 none."
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   ;; HERE is a marker that advances with insertions at it: washing a file
   ;; above point (or one ending at point) must not leave HERE behind its
   ;; Threads.
@@ -792,7 +804,7 @@ none."
 (defun prrr-collapse-all ()
   "Fold every file of the diff."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (mapc #'magit-section-hide (prrr-diff--files)))
 
 (defconst prrr-diff--expand-all-quietly 100
@@ -803,32 +815,32 @@ none."
 Asks first when that means washing more than
 `prrr-diff--expand-all-quietly' files, which takes seconds."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (let* ((files (prrr-diff--files))
          (unwashed (seq-count (lambda (file) (oref file washer)) files)))
     (when (or (<= unwashed prrr-diff--expand-all-quietly)
               (y-or-n-p (format "Wash %d more files? " unwashed)))
       (mapc #'magit-section-show files))))
 
-(defun prrr-diff--viewed-p (pr-id path)
-  "Non-nil when PATH of PR-ID is stored as Viewed."
-  (let ((row (prrr-db-get 'viewed pr-id path)))
-    (and row (eq (prrr-viewed-state row) 'viewed))))
+(defun prrr-diff--viewed-p (path)
+  "Non-nil when the buffer shows PATH as Viewed."
+  (member path (prrr-diff--viewed-paths (plist-get prrr-diff--data :viewed))))
 
 (defun prrr-toggle-viewed ()
   "Mark the file at point Viewed on GitHub and fold it, or unmark it.
-Marking moves to the next file, as GitHub does."
+Marking moves to the next file, as GitHub does.  The change shows at
+once and reaches GitHub through the Outbox."
   (interactive)
-  (let* ((pullreq (prrr-diff--require-pullreq))
+  (let* ((pullreq (prrr-diff-pullreq))
          (file (or (prrr-diff--file-at-point) (user-error "No file here")))
          (path (oref file value))
-         (pr-id (oref pullreq their-id))
-         (viewed (not (prrr-diff--viewed-p pr-id path))))
+         (viewed (not (prrr-diff--viewed-p path))))
     ;; Folding first records the fold in the visibility cache, so the
     ;; refresh below agrees with the Viewed flag.
     (if viewed (magit-section-hide file) (magit-section-show file))
     (magit-section-goto file)
-    (prrr-sync-set-viewed (forge-get-repository pullreq) pr-id path viewed (current-buffer))
+    (prrr-sync-write (forge-get-repository pullreq) pullreq 'viewed
+                     (list :path path :viewed viewed) (current-buffer))
     (magit-refresh-buffer)
     (when-let ((next (and viewed (prrr-diff--file-near-point 1))))
       (magit-section-goto next))))
