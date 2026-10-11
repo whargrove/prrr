@@ -325,7 +325,10 @@ GOTO-FROM is as for ORIG."
             (setq at (oref at parent)))
           (when at
             (goto-char (oref at start))
-            (forward-line -1))))
+            (forward-line -1)
+            ;; Several Threads can follow one diff line: step past them.
+            (while (and (not (bobp)) (not (eq (magit-section-at) section)))
+              (forward-line -1)))))
       (let ((content (oref section content)))
         (when (< (point) content)
           (goto-char content)

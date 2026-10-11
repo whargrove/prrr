@@ -153,7 +153,11 @@ A Thread inside a hunk visits the diff line it follows, through magit's
     (save-excursion
       (if (eq (oref parent type) 'hunk)
           (progn (goto-char (oref section start))
-                 (forward-line -1))
+                 (forward-line -1)
+                 ;; Several Threads can follow one diff line: step past
+                 ;; them to the diff line itself.
+                 (while (and (not (bobp)) (not (eq (magit-section-at) parent)))
+                   (forward-line -1)))
         (goto-char (oref file start)))
       (call-interactively #'magit-diff-visit-file))))
 

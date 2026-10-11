@@ -438,5 +438,23 @@ SETUP runs first, inside the fixture repository and a fresh database."
       (should (oref (car (oref (car (prrr-diff-test--hunks "src/example.el")) children))
                     hidden)))))
 
+(ert-deftest prrr-diff-test-second-thread-on-one-line ()
+  "From inside a second Thread on one line, both line and visit see that line."
+  (prrr-diff-test--with-buffer
+      (progn (prrr-diff-test--store-fixture)
+             (prrr-db-insert (prrr-thread-create :thread-id "T_SECOND" :pr-id prrr-diff-test--pr
+                                                 :path "src/example.el" :line 12 :side 'right
+                                                 :subject-type 'line)))
+    (let* ((hunk (car (prrr-diff-test--hunks "src/example.el")))
+           (second (cadr (oref hunk children))))
+      (should (equal "T_SECOND" (oref second value)))
+      (goto-char (oref second start))
+      (should (= 12 (magit-diff-hunk-line hunk nil)))
+      (prrr-thread-visit)
+      (with-current-buffer (window-buffer)
+        (should (string-match-p "example\\.el\\.~" (buffer-name)))
+        (should (= 12 (line-number-at-pos)))
+        (kill-buffer)))))
+
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here
