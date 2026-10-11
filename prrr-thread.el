@@ -326,8 +326,10 @@ back.  Point returns to the same place in the same magit section,
 even when the buffer was redrawn meanwhile.  When ON-CONFIRM
 signals, the capture buffer stays, so no text is lost."
   (let ((origin (point-marker))
+        ;; magit's hunk method moves point while a region is active.
         (section-position (when-let* ((section (magit-section-at)))
-                            (cons section (magit-section-get-relative-position section))))
+                            (cons section (save-excursion
+                                            (magit-section-get-relative-position section)))))
         (windows (current-window-configuration))
         (buffer (generate-new-buffer "*prrr comment*")))
     (with-current-buffer buffer

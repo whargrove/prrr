@@ -325,6 +325,32 @@ FINISH is the command that ends the capture; point must come back."
 (ert-deftest prrr-thread-test-capture-abort-survives-a-redraw ()
   (prrr-thread-test--with-redrawn-capture prrr-comment-abort))
 
+(ert-deftest prrr-thread-test-capture-keeps-point-with-an-active-region ()
+  "Starting a capture on a region in a hunk leaves point and the region alone.
+magit's hunk method of `magit-section-get-relative-position' moves
+point while a region is active."
+  (let ((origin (generate-new-buffer "prrr-test-origin")))
+    (unwind-protect
+        (with-current-buffer origin
+          (magit-section-mode)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (prrr-thread-test-root)
+              (magit-insert-section (magit-hunk-section "a.el")
+                (insert "@@ -1,3 +1,3 @@\n one\n-two\n+deux\n three\n"))))
+          (transient-mark-mode 1)
+          (goto-char (point-min))
+          (search-forward "-two")
+          (set-mark (line-beginning-position))
+          (search-forward "deux")
+          (activate-mark)
+          (let ((before (point)))
+            (prrr-comment-capture "a.el:2 right" #'ignore)
+            (should (= before (with-current-buffer origin (point))))))
+      (dolist (buffer (buffer-list))
+        (when (string-prefix-p "*prrr comment*" (buffer-name buffer))
+          (kill-buffer buffer)))
+      (kill-buffer origin))))
+
 (ert-deftest prrr-thread-test-capture-origin-killed ()
   "Review Focus 5: confirming after the Review Buffer is gone still sends."
   (let ((confirmed nil)
