@@ -292,6 +292,15 @@ NOW, a Lisp time); without either, one minute after NOW."
                               (t (time-add now 60)))
                         t)))
 
+(defun prrr-github--refusal (payload)
+  "Describe GitHub's refusal of a write, given the PAYLOAD of its HTTP 422."
+  (let* ((message (and (consp payload) (alist-get 'message payload)))
+         (first (and (consp payload) (car (alist-get 'errors payload))))
+         (detail (if (stringp first) first (and (consp first) (alist-get 'message first)))))
+    (cond ((and message detail) (format "GitHub refused: %s (%s)" message detail))
+          (message (format "GitHub refused: %s" message))
+          (t "GitHub refused the request (HTTP 422)"))))
+
 (defun prrr-github-error (err &optional headers now)
   "Classify ERR, a failed request, as (:kind KIND :message TEXT :reset-at TIME).
 ERR is what ghub hands an errorback: (errors ERROR...) for GraphQL
@@ -304,7 +313,7 @@ KIND is one of:
   `auth'          the token was rejected;
   `not-found'     the repository or pull request does not exist;
   `offline'       no connection or a server error, worth retrying later;
-  `error'         anything else.
+  `error'         anything else, such as GitHub refusing a write (HTTP 422).
 RESET-AT is nil unless KIND is `rate-limited'."
   (let ((now (or now (current-time))))
     (pcase err
@@ -317,7 +326,7 @@ RESET-AT is nil unless KIND is `rate-limited'."
                ((member "NOT_FOUND" types)
                 (list :kind 'not-found :message text :reset-at nil))
                (t (list :kind 'error :message text :reset-at nil)))))
-      (`(error http ,code . ,_)
+      (`(error http ,code . ,rest)
        (cond ((and (memq code '(403 429))
                    (or (equal (prrr-github--header headers "x-ratelimit-remaining") "0")
                        (prrr-github--header headers "retry-after")))
@@ -337,6 +346,8 @@ RESET-AT is nil unless KIND is `rate-limited'."
               (list :kind 'auth
                     :message (format "GitHub rejected the token (HTTP %d)" code)
                     :reset-at nil))
+             ((eq code 422)
+              (list :kind 'error :message (prrr-github--refusal (car (last rest))) :reset-at nil))
              ((eq code 404)
               (list :kind 'not-found :message "GitHub returned HTTP 404" :reset-at nil))
              (t (list :kind 'offline
@@ -578,6 +589,122 @@ failure classified by `prrr-github-error'."
              :database-id (prrr-github--database-id .comment.fullDatabaseId)
              :created-at .comment.createdAt)))
    callback errorback))
+
+(defun prrr-github--rest-comment (data)
+  "Decode the review comment DATA a REST call answered with.
+Return (:comment-id :database-id :created-at)."
+  (let-alist data
+    (list :comment-id .node_id :database-id (prrr-github--database-id .id)
+          :created-at .created_at)))
+
+(defun prrr-github-publish-comment (host owner name number commit anchor body
+                                         callback errorback)
+  "Publish BODY at ANCHOR of OWNER/NAME#NUMBER on HOST at once.
+This is Immediate Publish of a new Thread: GitHub's REST endpoint for
+one review comment, on COMMIT, the head the user commented on.  ANCHOR
+is a plist as `prrr-state-anchor' returns.  CALLBACK receives
+\(:comment-id :database-id :created-at); GitHub's answer does not name
+the new Thread.  ERRORBACK receives a failure classified by
+`prrr-github-error'."
+  (let ((file (eq (plist-get anchor :subject-type) 'file))
+        (line (plist-get anchor :line))
+        (side (prrr-github--side-name (plist-get anchor :side)))
+        (start (plist-get anchor :start-line))
+        (start-side (prrr-github--side-name (plist-get anchor :start-side)))
+        (path (plist-get anchor :path)))
+    (forge-rest host "POST" (format "/repos/%s/%s/pulls/%s/comments" owner name number)
+      ((body body) (commit_id commit) (path path)
+       (and (not file) (line line))
+       (and (not file) (side side))
+       (and start (start_line start))
+       (and start (start_side start-side))
+       (subject_type (if file "file" "line")))
+      :callback (prrr-github--callback #'prrr-github--rest-comment callback errorback)
+      :errorback (prrr-github--errorback errorback))))
+
+(defun prrr-github-publish-reply (host owner name number database-id body
+                                       callback errorback)
+  "Publish BODY at once as a reply on OWNER/NAME#NUMBER on HOST.
+DATABASE-ID is GitHub's database id of the first comment of the
+Thread replied to; GitHub's REST endpoint takes no other.  CALLBACK
+receives (:comment-id :database-id :created-at); ERRORBACK a failure
+classified by `prrr-github-error'."
+  (forge-rest host "POST"
+    (format "/repos/%s/%s/pulls/%s/comments/%s/replies" owner name number database-id)
+    ((body body))
+    :callback (prrr-github--callback #'prrr-github--rest-comment callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github--ignore-answer (callback errorback)
+  "Return a ghub callback that calls CALLBACK with no argument.
+ERRORBACK receives a failure if CALLBACK's caller signals."
+  (prrr-github--callback #'ignore (lambda (_) (funcall callback)) errorback))
+
+(defun prrr-github-add-discussion-comment (host pr-id body callback errorback)
+  "Post BODY as a Discussion Comment on the PR with node id PR-ID on HOST.
+CALLBACK receives no argument; ERRORBACK a failure classified by
+`prrr-github-error'."
+  (forge-mutate host addComment ((subjectId pr-id) (body body))
+    :callback (prrr-github--ignore-answer callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github-edit-comment (host comment-id body callback errorback)
+  "Make BODY the text of the review comment COMMENT-ID on HOST.
+CALLBACK receives no argument; ERRORBACK a classified failure."
+  (forge-mutate host updatePullRequestReviewComment
+    ((pullRequestReviewCommentId comment-id) (body body))
+    :callback (prrr-github--ignore-answer callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github-delete-comment (host comment-id callback errorback)
+  "Delete the review comment COMMENT-ID on HOST.
+CALLBACK receives no argument; ERRORBACK a classified failure."
+  (forge-mutate host deletePullRequestReviewComment ((id comment-id))
+    :callback (prrr-github--ignore-answer callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github-set-resolved (host thread-id resolved callback errorback)
+  "Resolve the Thread THREAD-ID on HOST, or unresolve it when RESOLVED is nil.
+CALLBACK receives no argument; ERRORBACK a classified failure."
+  (let ((callback (prrr-github--ignore-answer callback errorback))
+        (errorback (prrr-github--errorback errorback)))
+    (if resolved
+        (forge-mutate host resolveReviewThread ((threadId thread-id))
+          :callback callback :errorback errorback)
+      (forge-mutate host unresolveReviewThread ((threadId thread-id))
+        :callback callback :errorback errorback))))
+
+(defun prrr-github--event (verdict)
+  "Return GitHub's PullRequestReviewEvent for VERDICT."
+  (pcase-exhaustive verdict
+    ('approve "APPROVE")
+    ('request-changes "REQUEST_CHANGES")
+    ('comment "COMMENT")))
+
+(defun prrr-github-submit-review (host review-id pr-id commit verdict body
+                                       callback errorback)
+  "Submit the viewer's review of the PR with node id PR-ID on HOST.
+VERDICT is `approve', `request-changes' or `comment'; BODY the summary.
+REVIEW-ID is the Pending Review to submit; when nil, a review with no
+comments is created and submitted at once on COMMIT.  CALLBACK receives
+no argument; ERRORBACK a classified failure."
+  (let ((callback (prrr-github--ignore-answer callback errorback))
+        (errorback (prrr-github--errorback errorback))
+        (event (prrr-github--event verdict)))
+    (if review-id
+        (forge-mutate host submitPullRequestReview
+          ((pullRequestReviewId review-id) (event event) (body body))
+          :callback callback :errorback errorback)
+      (forge-mutate host addPullRequestReview
+        ((pullRequestId pr-id) (commitOID commit) (event event) (body body))
+        :callback callback :errorback errorback))))
+
+(defun prrr-github-discard-review (host review-id callback errorback)
+  "Delete the Pending Review REVIEW-ID and its comments on HOST.
+CALLBACK receives no argument; ERRORBACK a classified failure."
+  (forge-mutate host deletePullRequestReview ((pullRequestReviewId review-id))
+    :callback (prrr-github--ignore-answer callback errorback)
+    :errorback (prrr-github--errorback errorback)))
 
 (provide 'prrr-github)
 ;;; prrr-github.el ends here

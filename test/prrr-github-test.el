@@ -481,5 +481,68 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
       (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "x" #'ert-fail (lambda (f) (setq failure f)))
       (should (equal '(:kind error :message "one pending review" :reset-at nil) failure)))))
 
+(ert-deftest prrr-github-test-error-http-422-is-a-refusal ()
+  (should (equal '(:kind error :message "GitHub refused: Validation Failed (line must be part of the diff)" :reset-at nil)
+                 (prrr-github-error '(error http 422 ((message . "Validation Failed")
+                                                      (errors ((message . "line must be part of the diff")))))))))
+
+(ert-deftest prrr-github-test-publish-comment ()
+  (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+    (let ((result nil))
+      (prrr-github-publish-comment "api.github.com" "example-org" "example-repo" 1 "1111"
+                                   prrr-github-test--anchor "Now." (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '("POST" "/repos/example-org/example-repo/pulls/1/comments"
+                       ((body . "Now.") (commit_id . "1111") (path . "src/example.el") (line . 12)
+                        (side . "RIGHT") (start_line . 10) (start_side . "RIGHT") (subject_type . "line")))
+                     captured))
+      (should (equal '(:comment-id "PRRC_kwDOexampleNew03" :database-id "3001" :created-at "2026-10-10T12:02:00Z")
+                     result)))))
+
+(ert-deftest prrr-github-test-publish-file-comment ()
+  (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+    (prrr-github-publish-comment "api.github.com" "o" "n" 1 "1111" '(:path "a.el" :subject-type file) "File."
+                                 #'ignore #'ert-fail)
+    (should (equal '((body . "File.") (commit_id . "1111") (path . "a.el") (subject_type . "file"))
+                   (nth 2 captured)))))
+
+(ert-deftest prrr-github-test-publish-reply ()
+  (prrr-test-with-rest-stub (prrr-test-fixture "publish-reply") captured
+    (let ((result nil))
+      (prrr-github-publish-reply "api.github.com" "o" "n" 1 "1001" "Done." (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '("POST" "/repos/o/n/pulls/1/comments/1001/replies" ((body . "Done."))) captured))
+      (should (equal "3002" (plist-get result :database-id))))))
+
+(ert-deftest prrr-github-test-publish-refused ()
+  (prrr-test-with-rest-stub '(:error (error http 422 ((message . "Validation Failed")))) captured
+    (let ((failure nil))
+      (prrr-github-publish-reply "api.github.com" "o" "n" 1 "1001" "x" #'ert-fail (lambda (f) (setq failure f)))
+      (should (equal "GitHub refused: Validation Failed" (plist-get failure :message)))
+      (should (equal "POST" (car captured))))))
+
+(ert-deftest prrr-github-test-forge-mutations ()
+  (pcase-dolist (`(,call ,mutation ,input)
+                 `((,(lambda (cb eb) (prrr-github-add-discussion-comment "h" "PR_1" "Hi" cb eb))
+                    addComment ((subjectId . "PR_1") (body . "Hi")))
+                   (,(lambda (cb eb) (prrr-github-edit-comment "h" "C_1" "New" cb eb))
+                    updatePullRequestReviewComment ((pullRequestReviewCommentId . "C_1") (body . "New")))
+                   (,(lambda (cb eb) (prrr-github-delete-comment "h" "C_1" cb eb))
+                    deletePullRequestReviewComment ((id . "C_1")))
+                   (,(lambda (cb eb) (prrr-github-set-resolved "h" "T_1" t cb eb))
+                    resolveReviewThread ((threadId . "T_1")))
+                   (,(lambda (cb eb) (prrr-github-set-resolved "h" "T_1" nil cb eb))
+                    unresolveReviewThread ((threadId . "T_1")))
+                   (,(lambda (cb eb) (prrr-github-submit-review "h" "PRR_1" "PR_1" "1111" 'request-changes "Fix." cb eb))
+                    submitPullRequestReview ((pullRequestReviewId . "PRR_1") (event . "REQUEST_CHANGES") (body . "Fix.")))
+                   (,(lambda (cb eb) (prrr-github-submit-review "h" nil "PR_1" "1111" 'approve "" cb eb))
+                    addPullRequestReview ((pullRequestId . "PR_1") (commitOID . "1111") (event . "APPROVE") (body . "")))
+                   (,(lambda (cb eb) (prrr-github-discard-review "h" "PRR_1" cb eb))
+                    deletePullRequestReview ((pullRequestReviewId . "PRR_1")))))
+    (prrr-test-with-ghub-stub `((data (,mutation (clientMutationId)))) captured
+      (let ((done nil))
+        (funcall call (lambda () (setq done t)) #'ert-fail)
+        (should done)
+        (should (equal (list mutation (list (cons 'input input)))
+                       (list (car (cadr (car captured))) (cadr captured))))))))
+
 (provide 'prrr-github-test)
 ;;; prrr-github-test.el ends here

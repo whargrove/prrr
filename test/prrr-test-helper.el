@@ -25,7 +25,8 @@
 ;; a fresh temporary database) and `prrr-test-with-ghub-stub' (run BODY
 ;; with ghub's GraphQL entry point stubbed) and
 ;; `prrr-test-with-ghub-error-stub' (the same,
-;; failing every request).  The builders `prrr-test-pr',
+;; failing every request).  `prrr-test-with-rest-stub' does
+;; the same for ghub's REST entry point.  The builders `prrr-test-pr',
 ;; `prrr-test-meta' and `prrr-test-thread', and the constants `prrr-test-me',
 ;; `prrr-test-teams', `prrr-test-head' and `prrr-test-old' serve the
 ;; tests of the pure rules.  `prrr-test-with-repo' runs BODY in a fresh
@@ -180,6 +181,24 @@ test/fixtures/make-repo.sh: refs/pullreqs/1 is the PR's head and
                     (prrr-test-repo-base (car (process-lines "git" "rev-parse" "main"))))
                ,@body))
          (delete-directory ,dir t)))))
+
+(defmacro prrr-test-with-rest-stub (answer captured &rest body)
+  "Run BODY with `ghub-request' answering every request with ANSWER.
+CAPTURED is bound to (METHOD RESOURCE PARAMS) of the last request.
+ANSWER is the decoded JSON value handed to the callback, or
+\(:error ERR HEADERS) to call the errorback with ERR and HEADERS as
+ghub does.  Both run synchronously."
+  (declare (indent 2) (debug (form symbolp body)))
+  `(let ((,captured nil))
+     (cl-letf (((symbol-function 'ghub-request)
+                (lambda (method resource params &rest args)
+                  (setq ,captured (list method resource params))
+                  (let ((answer ,answer))
+                    (if (eq (car-safe answer) :error)
+                        (funcall (plist-get args :errorback)
+                                 (plist-get answer :error) (plist-get answer :headers) nil nil)
+                      (funcall (plist-get args :callback) answer nil nil nil))))))
+       ,@body)))
 
 (provide 'prrr-test-helper)
 ;;; prrr-test-helper.el ends here
