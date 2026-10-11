@@ -28,7 +28,9 @@
 ;; failing every request).  The builders `prrr-test-pr',
 ;; `prrr-test-meta' and `prrr-test-thread', and the constants `prrr-test-me',
 ;; `prrr-test-teams', `prrr-test-head' and `prrr-test-old' serve the
-;; tests of the pure rules.
+;; tests of the pure rules.  `prrr-test-with-repo' runs BODY in a fresh
+;; copy of the git fixture repository built by test/fixtures/make-repo.sh,
+;; and `prrr-test-repo-base' is its main's tip, the PR's base-rev.
 
 ;;; Code:
 
@@ -150,6 +152,34 @@ request, oldest first."
                              (or (alist-get field ,alist)
                                  (ert-fail (list "unexpected request" field))))))))
        ,@body)))
+
+(defvar prrr-test-repo-base nil
+  "Inside `prrr-test-with-repo': the oid of main's tip, the PR's base-rev.")
+
+(defmacro prrr-test-with-repo (&rest body)
+  "Run BODY in a fresh copy of the Review Buffer fixture repository.
+`default-directory' is the repository, built by
+test/fixtures/make-repo.sh: refs/pullreqs/1 is the PR's head and
+`prrr-test-repo-base' main's tip.  The copy is deleted afterwards."
+  (declare (indent 0) (debug t))
+  (let ((dir (make-symbol "dir")))
+    `(let ((,dir (make-temp-file "prrr-repo" t)))
+       (unwind-protect
+           (progn
+             (unless (zerop (call-process "sh" nil nil nil
+                                          (expand-file-name "test/fixtures/make-repo.sh"
+                                                            prrr-test-root)
+                                          ,dir))
+               (error "Building the fixture repository failed"))
+             (let* ((default-directory (file-name-as-directory ,dir))
+                    ;; The developer's git configuration (diff.context, say)
+                    ;; must not change what the tests see.
+                    (process-environment (append (list "GIT_CONFIG_GLOBAL=/dev/null"
+                                                       "GIT_CONFIG_NOSYSTEM=1")
+                                                 process-environment))
+                    (prrr-test-repo-base (car (process-lines "git" "rev-parse" "main"))))
+               ,@body))
+         (delete-directory ,dir t)))))
 
 (provide 'prrr-test-helper)
 ;;; prrr-test-helper.el ends here
