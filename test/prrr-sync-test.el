@@ -776,6 +776,35 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (funcall callback prrr-sync-test--mark-viewed)
         (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))))))
 
+(ert-deftest prrr-sync-test-outbox-late-answer-to-a-discarded-write-renames ()
+  "GitHub made what a discarded write asked for, so its ids are still learned.
+A reply that names the Thread's local id, from a buffer drawn before the
+discard, reaches the Thread under GitHub's id."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (let ((callback nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query _variables &rest args)
+                     (setq callback (plist-get args :callback)))))
+          (let* ((thread (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                              :body "Nit." :commit "1111")))
+                 (local (plist-get (prrr-outbox-payload thread) :thread)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            (prrr-sync-discard (prrr-outbox-id thread))
+            (prrr-sync-test--queue 'reply (list :thread-id local :comment "local:R"
+                                                :body "More."))
+            (prrr-test-with-ghub-dispatch
+                `((addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+              (funcall callback (prrr-test-fixture "add-thread"))
+              (should (equal "PRRT_kwDOexampleNew01" (gethash local prrr-sync--renames)))
+              (should (equal '(addPullRequestReviewThreadReply) prrr-test-requests))
+              (should (equal "PRRT_kwDOexampleNew01"
+                             (alist-get 'pullRequestReviewThreadId
+                                        (prrr-sync-test--input
+                                         'addPullRequestReviewThreadReply))))
+              (should-not (prrr-db-outbox-rows)))))))))
+
 (ert-deftest prrr-sync-test-outbox-sends-after-a-restart ()
   "A queued write carries all it needs: no forge object, no buffer."
   (prrr-db-with-test-db

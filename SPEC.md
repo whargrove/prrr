@@ -348,7 +348,10 @@ retried on the PR's next write or refetch and through
 drops the writes that need it. A rate limit pauses the Outbox until it
 resets. Success stores GitHub's rows and renames the write's local ids
 in the PR's queued writes, so a reply to a Thread not yet sent goes
-out once the Thread has GitHub's id. Edit or delete of a comment whose
+out once the Thread has GitHub's id. A success that answers after its
+write was dropped stores nothing, since the refetch that follows shows
+what GitHub made, but still renames, so a command naming the local id
+from a buffer drawn before the drop reaches GitHub's. Edit or delete of a comment whose
 own write is still queued and not yet sent changes or drops that write.
 
 A write whose send started is *unconfirmed* until GitHub answers: it

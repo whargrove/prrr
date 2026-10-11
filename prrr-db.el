@@ -488,6 +488,14 @@ caller's transaction."
           (setf (prrr-outbox-payload row) payload)
           (prrr-db-insert row))))))
 
+(defun prrr-db-outbox-rename (pr-id renames)
+  "Replace the ids in RENAMES in the payloads of PR-ID's queued writes.
+RENAMES is an alist from local id to GitHub's id.  For a write GitHub
+carried out after it left the Outbox: `prrr-db-outbox-done' renames
+as it removes a write, and has none to remove then."
+  (emacsql-with-transaction (prrr-db)
+    (prrr-db--rename-outbox-ids pr-id renames)))
+
 (cl-defun prrr-db-outbox-done (id &key insert delete renames)
   "Record that GitHub accepted the queued write ID, in one transaction.
 The write's row leaves the `outbox' table.  DELETE lists (TABLE . PLIST)

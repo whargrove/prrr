@@ -893,17 +893,32 @@ where it shows.  The caller refreshes buffers and pumps."
   (when (eq (prrr-outbox-kind row) 'discussion)
     (prrr-sync--pull-topic (prrr-outbox-pr-id row))))
 
+(defun prrr-sync--outbox-record-renames (row result)
+  "Learn GitHub's ids of what the write ROW created, as RESULT names them.
+ROW was dropped from the Outbox before GitHub's answer RESULT came, so
+nothing of it is stored: the refetch that follows shows what GitHub
+made.  Its local ids are renamed all the same, in the PR's queued
+writes and in `prrr-sync--renames', so a command that names one, from
+a buffer drawn before the drop, still reaches what GitHub made."
+  (when (memq (prrr-outbox-kind row) '(thread publish reply publish-reply))
+    (let ((renames (cdr (prrr-state-outbox-created row result))))
+      (prrr-db-outbox-rename (prrr-outbox-pr-id row) renames)
+      (prrr-sync--learn-renames renames))))
+
 (defun prrr-sync--outbox-succeeded (row token result)
   "Record that GitHub accepted the write ROW, sent as TOKEN, with RESULT.
 A late answer, after the watchdog ended the send, is still recorded
 when the write is queued and not being sent again: it did happen.
-The PR is refetched in any case, so it shows what GitHub has."
+One for a write dropped meanwhile records only its renames
+\(`prrr-sync--outbox-record-renames').  The PR is refetched in any
+case, so it shows what GitHub has."
   (let ((id (prrr-outbox-id row))
         (pr-id (prrr-outbox-pr-id row)))
     (when (prrr-sync--outbox-current-p token)
       (setq prrr-sync--outbox-sending nil))
-    (when (and (prrr-db-get 'outbox id) (not (equal id (prrr-sync--sending-id))))
-      (prrr-sync--outbox-record-success row result))
+    (cond ((equal id (prrr-sync--sending-id))) ; sent again: its own answer records it
+          ((prrr-db-get 'outbox id) (prrr-sync--outbox-record-success row result))
+          (t (prrr-sync--outbox-record-renames row result)))
     ;; Even a write discarded meanwhile changed GitHub: refetch to show it.
     (prrr-sync--outbox-mark-dirty row)
     (prrr-sync--outbox-changed pr-id)
