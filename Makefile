@@ -43,8 +43,10 @@ bench:
 	  cp $(SRC) bench/*.el bench/*.sh "$$dir" && \
 	  $(BENCH) -L "$$dir" -f batch-byte-compile $(addprefix "$$dir"/,$(SRC)) \
 	    "$$dir"/prrr-queue-bench.el "$$dir"/prrr-diff-bench.el && \
-	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-queue-bench.elc -f prrr-queue-bench-run && \
-	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-diff-bench.elc -f prrr-diff-bench-run
+	  status=0; \
+	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-queue-bench.elc -f prrr-queue-bench-run || status=1; \
+	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-diff-bench.elc -f prrr-diff-bench-run || status=1; \
+	  exit $$status
 
 clean:
 	rm -f *.elc test/*.elc bench/*.elc
