@@ -286,36 +286,6 @@ resets.  NOW is a Lisp time, the current time by default."
          (let ((reset-at (plist-get status :reset-at)))
            (not (and reset-at (string< (prrr-sync--timestamp now) reset-at)))))))
 
-(defun prrr-sync-refetch (repo pullreq &optional buffer)
-  "Refetch the review data of PULLREQ in the background.
-The review data is its Threads, Pending Review and Viewed flags.
-REPO is PULLREQ's `forge-github-repository'.  Stores the answer with
-`prrr-db-replace-review-data', records the outcome in
-`prrr-sync-review-status' and refreshes BUFFER, when live, once the
-refetch ends either way.  Return non-nil when a refetch started; return
-nil and do nothing when `prrr-sync-refetch-due-p' says no.  Never
-signals: every failure becomes the status."
-  (let ((pr-id (oref pullreq their-id)))
-    (when (prrr-sync-refetch-due-p pr-id)
-      (let* ((key (cons 'review pr-id))
-             (token (prrr-sync--start key buffer))
-             (fail (lambda (failure) (prrr-sync--finish key token failure buffer))))
-        (prrr-sync--guarded fail
-          (let ((me (prrr-github-viewer)))
-            (if (null me)
-                (funcall fail (list :kind 'error :message prrr-sync-no-login :reset-at nil))
-              (prrr-github-fetch-review-data
-               (oref repo apihost) (oref repo owner) (oref repo name) (oref pullreq number) me
-               (lambda (data)
-                 (when (prrr-sync--current-p key token)
-                   (prrr-sync--guarded fail
-                     (prrr-db-replace-review-data pr-id data)
-                     (prrr-sync--finish key token
-                                        (list :kind 'ok :head-oid (plist-get data :head-oid))
-                                        buffer))))
-               fail))))
-        t))))
-
 (defun prrr-sync-describe (status &optional busy)
   "Return a few words describing sync STATUS, or nil when all is well.
 BUSY describes a job that is running; it defaults to \"pulling…\"."
@@ -486,12 +456,14 @@ Does nothing while a write is being sent or a timer will try later."
          (float-time (time-subtract (parse-iso8601-time-string prrr-sync--outbox-paused-until)
                                     nil)))
       (setq prrr-sync--outbox-paused-until nil)
-      (pcase (prrr-state-outbox-next (prrr-db-outbox-rows) prrr-sync--outbox-creations
-                                     (float-time))
-        (`(,row . ,wait)
-         (if (> wait 0)
-             (prrr-sync--outbox-schedule wait)
-           (prrr-sync--outbox-send row)))))))
+      (let* ((rows (prrr-db-outbox-rows))
+             (next (prrr-state-outbox-next rows prrr-sync--outbox-creations (float-time))))
+        (prrr-sync--outbox-refetch-idle rows)
+        (pcase next
+          (`(,row . ,wait)
+           (if (> wait 0)
+               (prrr-sync--outbox-schedule wait)
+             (prrr-sync--outbox-send row))))))))
 
 (defun prrr-sync--outbox-current-p (token)
   "Non-nil when the send identified by TOKEN is still running."
@@ -635,6 +607,76 @@ retry."
         (prrr-db-insert stored)))
     (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
     (prrr-sync--outbox-pump)))
+
+(defun prrr-sync--outbox-refetch-idle (rows)
+  "Refetch each PR GitHub changed that has no write left to send now.
+ROWS are every queued write.  The refetch starts from a timer, never
+inside a write's answer."
+  (let ((busy (prrr-state-outbox-busy-prs rows))
+        (sending (and prrr-sync--outbox-sending (prrr-outbox-pr-id prrr-sync--outbox-sending))))
+    (maphash (lambda (pr-id target)
+               (unless (or (member pr-id busy) (equal pr-id sending))
+                 (run-at-time 0 nil #'prrr-sync--refetch target
+                              (gethash pr-id prrr-sync--outbox-buffers))))
+             prrr-sync--outbox-dirty)))
+
+(defun prrr-sync-refetch (repo pullreq &optional buffer)
+  "Refetch the review data of PULLREQ in the background.
+The review data is its Threads, Pending Review and Viewed flags.
+REPO is PULLREQ's `forge-github-repository'.  Stores the answer with
+`prrr-db-replace-review-data', records the outcome in
+`prrr-sync-review-status' and refreshes BUFFER, when live, once the
+refetch ends either way.  A successful refetch retries the PR's failed
+writes.  Return non-nil when a refetch started; return nil and do
+nothing when `prrr-sync-refetch-due-p' says no.  Never signals: every
+failure becomes the status."
+  (prrr-sync--refetch (prrr-sync--target repo pullreq) buffer))
+
+(defun prrr-sync--outbox-races-p (pr-id)
+  "Non-nil when a write may have changed PR-ID on GitHub during a refetch.
+That is when a write of PR-ID succeeded since the refetch started, or
+one is being sent: the refetch's answer may then miss it."
+  (or (gethash pr-id prrr-sync--outbox-dirty)
+      (and prrr-sync--outbox-sending
+           (equal pr-id (prrr-outbox-pr-id prrr-sync--outbox-sending)))))
+
+(defun prrr-sync--refetch (target buffer)
+  "Refetch TARGET's PR and refresh BUFFER, as `prrr-sync-refetch' does.
+TARGET is a plist from `prrr-sync--target'.  An answer that a write of
+the PR may have raced is not stored: the PR stays changed, and the
+Outbox refetches it once it has nothing more to send."
+  (let ((pr-id (plist-get target :pr-id)))
+    (when (prrr-sync-refetch-due-p pr-id)
+      (let* ((key (cons 'review pr-id))
+             (token (prrr-sync--start key buffer))
+             (fail (lambda (failure) (prrr-sync--finish key token failure buffer))))
+        (remhash pr-id prrr-sync--outbox-dirty)
+        (prrr-sync--guarded fail
+          (let ((me (plist-get target :me)))
+            (if (null me)
+                (funcall fail (list :kind 'error :message prrr-sync-no-login :reset-at nil))
+              (prrr-github-fetch-review-data
+               (plist-get target :host) (plist-get target :owner) (plist-get target :name)
+               (plist-get target :number) me
+               (lambda (data)
+                 (when (prrr-sync--current-p key token)
+                   (prrr-sync--guarded fail
+                     (let ((raced (prrr-sync--outbox-races-p pr-id)))
+                       (if raced
+                           (puthash pr-id target prrr-sync--outbox-dirty)
+                         (prrr-db-replace-review-data
+                          pr-id data
+                          (prrr-state-thread-renames
+                           (prrr-db-select 'review-comment :pr-id pr-id)
+                           (plist-get data :comments))))
+                       (prrr-sync--finish key token
+                                          (list :kind 'ok :head-oid (plist-get data :head-oid))
+                                          buffer)
+                       (if raced
+                           (prrr-sync--outbox-pump)
+                         (prrr-sync-retry pr-id buffer))))))
+               fail))))
+        t))))
 
 ;;;; Commands
 

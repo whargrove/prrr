@@ -729,5 +729,85 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                         :type 'user-error)))
       (should-not (prrr-db-outbox-rows)))))
 
+;;;; Reconciliation
+
+(ert-deftest prrr-sync-test-refetch-keeps-queued-writes ()
+  "SPEC 7, bead prrr-8ok: a refetch keeps unsent writes, then retries them."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch `((markFileAsViewed . (:error (error http 502)))
+                                      (repository . ,(prrr-test-fixture "review-data")))
+        (prrr-sync-test--write 'viewed '(:path "docs/notes.md" :viewed t))
+        (should (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+        (let ((view (prrr-sync-review-data prrr-sync-test--pr)))
+          (should (= 5 (length (plist-get view :threads))))
+          (should (eq 'viewed (prrr-viewed-state
+                               (seq-find (lambda (flag)
+                                           (equal "docs/notes.md" (prrr-viewed-path flag)))
+                                         (plist-get view :viewed))))))
+        (should (equal '(markFileAsViewed repository markFileAsViewed) prrr-test-requests))))))
+
+(ert-deftest prrr-sync-test-refetch-raced-by-a-write-is-not-stored ()
+  "Review Focus 2: an answer that may miss a write is dropped and fetched again."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((callback nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query _variables &rest args)
+                     (setq callback (plist-get args :callback)))))
+          (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+        ;; A write of the PR succeeds while the refetch is out.
+        (puthash prrr-sync-test--pr (prrr-sync--target (prrr-sync-test--repo)
+                                                       (prrr-sync-test--pullreq))
+                 prrr-sync--outbox-dirty)
+        (funcall callback (prrr-test-fixture "review-data"))
+        (should-not (prrr-db-select 'thread))
+        (should (eq 'ok (plist-get (prrr-sync-review-status prrr-sync-test--pr) :state)))
+        (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+          (prrr-test-run-timers 'prrr-sync--refetch)
+          (should (equal '(repository) prrr-test-requests)))
+        (should (= 5 (length (prrr-db-select 'thread))))
+        (should-not (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))))))
+
+(ert-deftest prrr-sync-test-refetch-while-a-write-is-out-is-not-stored ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (setq prrr-sync--outbox-sending
+              (prrr-sync-test--queue 'viewed '(:path "a.el" :viewed t)))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq))
+        (should-not (prrr-db-select 'thread))
+        (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))))))
+
+(ert-deftest prrr-sync-test-outbox-refetches-once-done ()
+  "After its last write of a PR succeeds, the Outbox refetches the PR, from a timer."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch `((markFileAsViewed . ,prrr-sync-test--mark-viewed)
+                                      (repository . ,(prrr-test-fixture "review-data")))
+        (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t))
+        (should (equal '(markFileAsViewed) prrr-test-requests))
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(markFileAsViewed repository) prrr-test-requests))))))
+
+(ert-deftest prrr-sync-test-refetch-names-a-published-thread ()
+  "A reply to a Thread published at once goes out once a refetch names the Thread."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      ;; What a successful Immediate Publish leaves: GitHub's comment id in a local Thread.
+      (prrr-db-insert (prrr-comment-create :comment-id "PRRC_kwDOexample0000006"
+                                           :thread-id "local:T" :pr-id prrr-sync-test--pr
+                                           :state 'submitted :local-state 'sent))
+      (prrr-sync-test--queue 'reply '(:thread-id "local:T" :comment "local:R" :body "More."))
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "review-data"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq))
+        (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
+        (should (equal "PRRT_kwDOexample0000005"
+                       (alist-get 'pullRequestReviewThreadId
+                                  (prrr-sync-test--input 'addPullRequestReviewThreadReply))))))))
+
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here
