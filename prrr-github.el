@@ -317,6 +317,8 @@ KIND is one of:
   `not-found'     the repository or pull request does not exist;
   `offline'       no connection or a server error, worth retrying later;
   `error'         anything else, such as GitHub refusing a write (HTTP 422).
+A request whose success answer does not name what it created fails
+as `unconfirmed' instead (`prrr-github--created').
 RESET-AT is nil unless KIND is `rate-limited'."
   (let ((now (or now (current-time))))
     (pcase err
@@ -520,13 +522,16 @@ a failure classified by `prrr-github-error'.  Exactly one is called."
     :errorback (prrr-github--errorback errorback)))
 
 (defun prrr-github--created (id)
-  "Return ID, GitHub's id of what a mutation created.
-GitHub can answer a mutation with a null payload and no errors; that
-created nothing, so it signals `prrr-github-failure' rather than let
-the write count as done."
+  "Return ID, GitHub's id of what a request created.
+GitHub can answer a creation with success but without the id: a null
+GraphQL payload with no errors, or a REST answer without a node_id.
+GitHub may have made the thing all the same, and prrr cannot store it
+without its id, so this signals `prrr-github-failure' with an
+`unconfirmed' failure: the write counts neither as done nor as failed,
+and the Outbox has a refetch decide whether it landed."
   (or id
       (signal 'prrr-github-failure
-              (list :kind 'error :message "GitHub accepted the request but created nothing"
+              (list :kind 'unconfirmed :message "GitHub's answer does not name what it made"
                     :reset-at nil))))
 
 (defun prrr-github--pending-review (node pr-id)
@@ -615,10 +620,10 @@ failure classified by `prrr-github-error'."
 (defun prrr-github--rest-comment (data)
   "Decode the review comment DATA a REST call answered with.
 Return (:comment-id :database-id :created-at).  Like the GraphQL
-creations, an answer without GitHub's node id signals
-`prrr-github-failure' (`prrr-github--created'): prrr names every
-comment by that id, so a comment stored without one could be neither
-edited, deleted nor matched by a refetch."
+creations, an answer without GitHub's node id fails as `unconfirmed'
+\(`prrr-github--created'): prrr names every comment by that id, so a
+comment stored without one could be neither edited, deleted nor
+matched by a refetch."
   (let-alist data
     (list :comment-id (prrr-github--created .node_id)
           :database-id (prrr-github--database-id .id)

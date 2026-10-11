@@ -943,18 +943,54 @@ by itself then."
         ;; Too soon: a pump now does not refetch.
         (prrr-sync--outbox-pump)
         (should-not (prrr-sync-test--refetch-timers))
-        (should (seq-find (lambda (timer) (eq (nth 1 timer) 'prrr-sync--outbox-pump))
+        (should (seq-find (lambda (timer) (eq (nth 1 timer) 'prrr-sync--retry-pump))
                           prrr-test-timers)))
       (prrr-sync-test--age-refetch-attempt)
       (prrr-test-with-ghub-dispatch
           `((repository . ,(prrr-test-fixture "review-data"))
             (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
-        (prrr-test-run-timers 'prrr-sync--outbox-pump)
+        (prrr-test-run-timers 'prrr-sync--retry-pump)
         (prrr-test-run-timers 'prrr-sync--refetch)
         (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
         (should (equal "PRRT_kwDOexample0000005"
                        (alist-get 'pullRequestReviewThreadId
                                   (prrr-sync-test--input 'addPullRequestReviewThreadReply))))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-refetch-after-a-recent-failure-is-pumped ()
+  "A PR changed shortly after a failed refetch is refetched once spacing allows.
+The failed refetch was a Review Buffer's, which the Outbox did not need;
+the Outbox still pumps by itself when the PR may be refetched, so the
+reply waiting for its Thread's id does not need G."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch '((repository . (:error (error http 502))))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+      (setq prrr-test-timers nil)
+      ;; Then an Immediate Publish succeeds: its comment sits in a local Thread.
+      (prrr-db-insert (prrr-comment-create :comment-id "PRRC_kwDOexample0000006"
+                                           :thread-id "local:T" :pr-id prrr-sync-test--pr
+                                           :state 'submitted :local-state 'sent))
+      (prrr-sync--outbox-mark-dirty
+       (prrr-sync-test--queue 'reply '(:thread-id "local:T" :comment "local:R" :body "More.")))
+      (prrr-sync--outbox-pump)
+      (should-not (prrr-sync-test--refetch-timers))
+      (let ((pumps (seq-filter (lambda (timer) (eq (nth 1 timer) 'prrr-sync--retry-pump))
+                               prrr-test-timers)))
+        (should (= 1 (length pumps)))
+        (should (< 0 (car (car pumps)) (1+ prrr-sync-min-retry-spacing))))
+      ;; Another pump meanwhile does not stack a second timer.
+      (prrr-sync--outbox-pump)
+      (should (= 1 (seq-count (lambda (timer) (eq (nth 1 timer) 'prrr-sync--retry-pump))
+                              prrr-test-timers)))
+      (prrr-sync-test--age-refetch-attempt)
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "review-data"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-test-run-timers 'prrr-sync--retry-pump)
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
         (should-not (prrr-db-outbox-rows))))))
 
 (ert-deftest prrr-sync-test-outbox-retries-a-refetch-without-answer ()
@@ -1332,6 +1368,40 @@ The Pending Review is the review-data fixture's.  Return the row of the write."
                            (prrr-comment-thread-id comment)))
             (should (eq 'submitted (prrr-comment-state comment)))
             (should (equal "3001" (prrr-comment-database-id comment)))))))))
+
+(ert-deftest prrr-sync-test-outbox-success-without-ids-is-unconfirmed ()
+  "GitHub made the comment, but its answer does not name it: never resent blindly.
+Another write on the PR does not send it again; the refetch that finds
+the comment records it once."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((posts 0))
+        (prrr-test-with-rest-stub
+            (progn (cl-incf posts)
+                   (mapcar (lambda (pair) (if (eq (car pair) 'node_id) (list 'node_id) pair))
+                           (prrr-test-fixture "publish-comment")))
+            captured
+          (let ((row (prrr-sync-test--write 'publish (list :anchor prrr-sync-test--anchor
+                                                           :body "Nit." :commit prrr-test-head))))
+            (should (equal "POST" (car captured)))
+            (let ((stored (prrr-db-get 'outbox (prrr-outbox-id row))))
+              (should (prrr-state-outbox-unconfirmed-p stored))
+              (should-not (prrr-outbox-last-error stored)))
+            (should-not prrr-sync--outbox-sending)
+            (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+            (prrr-test-with-ghub-dispatch nil
+              (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t))
+              (should-not prrr-test-requests))
+            (should (= 1 posts))
+            (prrr-test-with-ghub-dispatch `((repository . ,(prrr-sync-test--landed-data))
+                                            (markFileAsViewed . ,prrr-sync-test--mark-viewed))
+              (prrr-test-run-timers 'prrr-sync--refetch)
+              (should (equal '(repository markFileAsViewed) (seq-take prrr-test-requests 2))))
+            (should (= 1 posts))
+            (should-not (prrr-db-outbox-rows))
+            (should (= 1 (seq-count (lambda (comment) (equal "Nit." (prrr-comment-body comment)))
+                                    (prrr-db-select 'review-comment
+                                                    :pr-id prrr-sync-test--pr))))))))))
 
 (ert-deftest prrr-sync-test-outbox-publish-reply ()
   (prrr-db-with-test-db

@@ -369,7 +369,10 @@ one, counts the attempt and keeps GitHub's message. When GitHub has not
 answered after `prrr-sync-timeout` seconds, the send ends: the Outbox
 moves on to other PRs' writes, but the unconfirmed write holds back its
 PR, shows as unsent, "waiting for GitHub's answer", and is never sent
-again blindly, not by a retry and not after a restart. An edit or delete
+again blindly, not by a retry and not after a restart. A success
+answer that does not name what GitHub made (a null GraphQL payload, a
+REST answer without `node_id`) counts as no answer: GitHub may have
+made it, so the write stays unconfirmed and the refetch decides. An edit or delete
 of what it creates becomes a write of its own that waits for GitHub's
 id. The Outbox starts by itself once per session, when prrr opens its
 database: it refetches the PRs of unconfirmed writes, then sends what
@@ -381,7 +384,10 @@ writes, which live only in `outbox`, survive and are re-attempted
 against the current pending review id. An answer that a write of the
 PR may have raced (one succeeded since the refetch started, or one is
 being sent) is not stored; the Outbox refetches the PR once it has
-nothing more to send to it. A refetch the Outbox needed (after a
+nothing more to send to it. A PR whose last refetch failed is
+refetched by the Outbox no sooner than `prrr-sync-min-retry-spacing`
+after that attempt and not before a rate limit resets; the Outbox then
+pumps by itself. A refetch the Outbox needed (after a
 success, a send without an answer, or for an unconfirmed write) that
 fails or gets no answer is tried again by the Outbox, no sooner than
 `prrr-sync-min-retry-spacing` after it started and not before a rate

@@ -995,6 +995,17 @@ attempt is counted."
 
 (defun prrr-sync--outbox-failed (row token failure)
   "Record that the write ROW, sent as TOKEN, failed with FAILURE.
+An `unconfirmed' failure is a success answer that does not name what
+GitHub made (`prrr-github--created'): GitHub may have made it, so ROW
+stays unconfirmed, as after a timeout (`prrr-sync--outbox-timed-out'),
+and a refetch decides whether it landed; a retry never sends it again.
+Any other failure is GitHub's answer (`prrr-sync--outbox-refused')."
+  (if (eq (plist-get failure :kind) 'unconfirmed)
+      (prrr-sync--outbox-timed-out row token)
+    (prrr-sync--outbox-refused row token failure)))
+
+(defun prrr-sync--outbox-refused (row token failure)
+  "Record that GitHub answered the write ROW, sent as TOKEN, with FAILURE.
 GitHub answered, so ROW is no longer unconfirmed.  A rate limit pauses
 the Outbox until it ends and leaves ROW queued as it was; any other
 failure stays on ROW, with the attempt counted, until a retry.  A late
@@ -1060,19 +1071,43 @@ the current time by default."
            (+ prrr-sync-min-retry-spacing (or (funcall from-now :attempted-at) 0))
            (or (funcall from-now :reset-at) 0)))))
 
+(defvar prrr-sync--retry-pump-at nil
+  "When the next pump `prrr-sync--schedule-retry-pump' set runs, or nil.
+A float time.")
+
+(defun prrr-sync--retry-pump ()
+  "Pump the Outbox, as the timer `prrr-sync--schedule-retry-pump' set asks."
+  (setq prrr-sync--retry-pump-at nil)
+  (prrr-sync--outbox-pump))
+
+(defun prrr-sync--schedule-retry-pump (seconds)
+  "Pump the Outbox in SECONDS, when a refetch it waits for may start.
+Unlike `prrr-sync--outbox-schedule', this holds back no send.  Nothing
+new is set when a pump is already due by then, give or take the
+second that a refetch's start time is rounded to, so pumps do not
+stack."
+  (let ((at (+ (float-time) seconds)))
+    (unless (and prrr-sync--retry-pump-at (<= prrr-sync--retry-pump-at (1+ at)))
+      (setq prrr-sync--retry-pump-at at)
+      (run-at-time seconds nil #'prrr-sync--retry-pump))))
+
 (defun prrr-sync--outbox-refetch-idle (rows)
   "Refetch each PR GitHub changed that has no write left to send now.
 ROWS are every queued write.  A PR whose first write is unconfirmed
 has none: only the refetch can let it go on.  A PR whose last refetch
-failed waits for `prrr-sync--refetch-retry-wait'.  The refetch starts
-from a timer, never inside a write's answer."
+failed waits for `prrr-sync--refetch-retry-wait', and the Outbox pumps
+again when it is over (`prrr-sync--schedule-retry-pump'), so nothing
+else need happen meanwhile.  The refetch starts from a timer, never
+inside a write's answer."
   (let ((busy (prrr-state-outbox-busy-prs rows))
         (sending (and prrr-sync--outbox-sending (prrr-outbox-pr-id prrr-sync--outbox-sending))))
     (maphash (lambda (pr-id target)
-               (unless (or (member pr-id busy) (equal pr-id sending)
-                           (> (prrr-sync--refetch-retry-wait pr-id) 0))
-                 (run-at-time 0 nil #'prrr-sync--refetch target
-                              (gethash pr-id prrr-sync--outbox-buffers))))
+               (unless (or (member pr-id busy) (equal pr-id sending))
+                 (let ((wait (prrr-sync--refetch-retry-wait pr-id)))
+                   (if (> wait 0)
+                       (prrr-sync--schedule-retry-pump wait)
+                     (run-at-time 0 nil #'prrr-sync--refetch target
+                                  (gethash pr-id prrr-sync--outbox-buffers))))))
              prrr-sync--outbox-dirty)))
 
 (defun prrr-sync-refetch (repo pullreq &optional buffer)
@@ -1121,7 +1156,7 @@ the PR may have raced is not stored: the PR stays changed, and the
 Outbox refetches it once it has nothing more to send.  A refetch the
 Outbox needed that fails, or gets no answer, leaves the PR changed
 too, and the Outbox pumps again once it may retry
-\(`prrr-sync--refetch-retry-wait'): a write waiting for an id only the
+\(`prrr-sync--schedule-retry-pump'): a write waiting for an id only the
 refetch brings goes out without the user's refetch."
   (let ((pr-id (plist-get target :pr-id)))
     (when (prrr-sync-refetch-due-p pr-id)
@@ -1134,8 +1169,8 @@ refetch brings goes out without the user's refetch."
                          (puthash pr-id target prrr-sync--outbox-dirty))
                        (prrr-sync--finish key token failure buffer)
                        (when (gethash pr-id prrr-sync--outbox-dirty)
-                         (run-at-time (prrr-sync--refetch-retry-wait pr-id) nil
-                                      #'prrr-sync--outbox-pump))))))
+                         (prrr-sync--schedule-retry-pump
+                          (prrr-sync--refetch-retry-wait pr-id)))))))
         (setq token (prrr-sync--start key buffer fail))
         (remhash pr-id prrr-sync--outbox-dirty)
         (prrr-sync--guarded fail

@@ -235,7 +235,8 @@ you, the header says until when, and prrr waits. Unsent changes are
 kept in prrr's database, so they survive restarting Emacs, and prrr
 sends them once it starts again.
 
-When GitHub does not answer within `prrr-sync-timeout` seconds, the
+When GitHub does not answer within `prrr-sync-timeout` seconds, or
+answers without naming what it made, the
 change may or may not have reached GitHub. It shows as unsent, `waiting
 for GitHub's answer`, and is never sent twice blindly: prrr refetches
 the pull request, records the change if GitHub has it and sends it
