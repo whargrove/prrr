@@ -127,9 +127,6 @@
                                                  (prrr-diff-test--file "c" 1))
                                            '("b"))))))
 
-(provide 'prrr-diff-test)
-;;; prrr-diff-test.el ends here
-
 ;;;; Review Buffer
 
 (defconst prrr-diff-test--pr "PR_kwDOexample0000001"
@@ -290,3 +287,6 @@ SETUP runs first, inside the fixture repository and a fresh database."
       (let ((notes (prrr-diff-test--file-section "docs/notes.md")))
         (should-not (oref notes hidden))
         (should (oref notes children))))))
+
+(provide 'prrr-diff-test)
+;;; prrr-diff-test.el ends here
