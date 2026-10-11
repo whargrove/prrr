@@ -716,5 +716,117 @@
   (should (equal '(right . 9) (prrr-state-thread-anchor
                                (prrr-test-thread :start-line 4 :line 9)))))
 
+;;;; The Outbox
+
+(defconst prrr-state-test--target
+  '(:host "api.github.com" :owner "example-org" :name "example-repo" :number 1
+    :pr-id "PR_1" :me "example-me")
+  "The target every test write carries.")
+
+(defun prrr-state-test--write (id pr-id kind payload &optional last-error)
+  "A queued write ID of PR-ID with KIND, PAYLOAD and LAST-ERROR."
+  (prrr-outbox-create :id id :pr-id pr-id :kind kind
+                      :payload (append (list :target prrr-state-test--target) payload)
+                      :created-at "2026-10-10T12:00:00Z" :attempts 0
+                      :last-error last-error))
+
+(ert-deftest prrr-state-test-outbox-next-in-order-per-pr ()
+  (let ((a (prrr-state-test--write "1" "PR_1" 'viewed '(:path "a")))
+        (b (prrr-state-test--write "2" "PR_1" 'viewed '(:path "b")))
+        (c (prrr-state-test--write "3" "PR_2" 'viewed '(:path "c"))))
+    (should (equal (cons a 0) (prrr-state-outbox-next (list a b c) nil 100.0)))
+    (should (equal '("PR_1" "PR_2") (prrr-state-outbox-busy-prs (list a b c))))
+    ;; A failed write holds back its PR, not the others.
+    (setf (prrr-outbox-last-error a) "offline")
+    (should (equal (cons c 0) (prrr-state-outbox-next (list a b c) nil 100.0)))
+    (should (equal '("PR_2") (prrr-state-outbox-busy-prs (list a b c))))
+    (should-not (prrr-state-outbox-next (list a b) nil 100.0))))
+
+(ert-deftest prrr-state-test-outbox-next-waits-for-ids ()
+  "A write on something GitHub has not named yet waits."
+  (let ((reply (prrr-state-test--write "1" "PR_1" 'reply
+                                       '(:thread-id "local:T" :comment "local:C"))))
+    (should-not (prrr-state-outbox-ready-p reply))
+    (should-not (prrr-state-outbox-next (list reply) nil 100.0))
+    (should-not (prrr-state-outbox-busy-prs (list reply)))))
+
+(ert-deftest prrr-state-test-outbox-next-creations-per-minute ()
+  "SPEC section 4: at most 80 content creations in any minute."
+  (let ((thread (prrr-state-test--write "1" "PR_1" 'thread
+                                        '(:thread "local:T" :comment "local:C")))
+        (viewed (prrr-state-test--write "2" "PR_1" 'viewed '(:path "a")))
+        (times (number-sequence 41.0 120.0 1.0)))
+    (should (= 80 (length times)))
+    ;; The oldest of the 80, sent at 41, leaves the window at 101.
+    (should (equal (cons thread 1.0) (prrr-state-outbox-next (list thread) times 100.0)))
+    (should (equal (cons thread 0) (prrr-state-outbox-next (list thread) (cdr times) 100.0)))
+    (should (equal (cons viewed 0) (prrr-state-outbox-next (list viewed) times 100.0)))))
+
+(ert-deftest prrr-state-test-outbox-dependents ()
+  (let* ((thread (prrr-state-test--write "1" "PR_1" 'thread
+                                         '(:thread "local:T" :comment "local:C")))
+         (reply (prrr-state-test--write "2" "PR_1" 'reply
+                                        '(:thread-id "local:T" :comment "local:R")))
+         (edit (prrr-state-test--write "3" "PR_1" 'edit '(:comment-id "local:R" :body "x")))
+         (other (prrr-state-test--write "4" "PR_1" 'edit '(:comment-id "PRRC_1" :body "y")))
+         (rows (list thread reply edit other)))
+    (should (equal '("local:T" "local:C") (prrr-state-outbox-created-ids thread)))
+    (should (equal (list reply edit)
+                   (prrr-state-outbox-dependents rows (prrr-state-outbox-created-ids thread))))
+    (should-not (prrr-state-outbox-dependents rows '("local:X")))))
+
+(ert-deftest prrr-state-test-thread-renames ()
+  (should (equal '(("local:T" . "PRRT_9"))
+                 (prrr-state-thread-renames
+                  (list (prrr-comment-create :comment-id "PRRC_1" :thread-id "local:T")
+                        (prrr-comment-create :comment-id "PRRC_2" :thread-id "local:T")
+                        (prrr-comment-create :comment-id "PRRC_3" :thread-id "PRRT_3"))
+                  (list (prrr-comment-create :comment-id "PRRC_1" :thread-id "PRRT_9")
+                        (prrr-comment-create :comment-id "PRRC_2" :thread-id "PRRT_9")))))
+  (should-not (prrr-state-thread-renames
+               (list (prrr-comment-create :comment-id "PRRC_1" :thread-id "local:T"))
+               nil)))
+
+(ert-deftest prrr-state-test-outbox-created-thread ()
+  (let ((write (prrr-state-test--write
+                "1" "PR_1" 'thread
+                '(:thread "local:T" :comment "local:C" :body "Nit." :commit "1111"
+                  :anchor (:path "a.el" :line 3 :side right :subject-type line)))))
+    (pcase-let ((`(,rows . ,renames)
+                 (prrr-state-outbox-created write '(:thread-id "PRRT_1" :comment-id "PRRC_1"
+                                                    :created-at "2026-10-10T12:00:00Z"
+                                                    :database-id "9" :review-id "PRR_1"))))
+      (should (equal '(("local:T" . "PRRT_1") ("local:C" . "PRRC_1")) renames))
+      (pcase-let ((`(,thread ,comment) rows))
+        (should (equal '("PRRT_1" "a.el" 3 right)
+                       (list (prrr-thread-thread-id thread) (prrr-thread-path thread)
+                             (prrr-thread-line thread) (prrr-thread-side thread))))
+        (should (equal '("PRRC_1" "PRRT_1" "example-me" "Nit." pending sent "PRR_1" "9")
+                       (list (prrr-comment-comment-id comment) (prrr-comment-thread-id comment)
+                             (prrr-comment-author comment) (prrr-comment-body comment)
+                             (prrr-comment-state comment) (prrr-comment-local-state comment)
+                             (prrr-comment-review-id comment)
+                             (prrr-comment-database-id comment))))))))
+
+(ert-deftest prrr-state-test-outbox-created-published-thread-keeps-local-id ()
+  "GitHub's answer to Immediate Publish does not name the Thread."
+  (let ((write (prrr-state-test--write
+                "1" "PR_1" 'publish
+                '(:thread "local:T" :comment "local:C" :body "Now."
+                  :anchor (:path "a.el" :line 3 :side right)))))
+    (pcase-let ((`((,thread ,comment) . ,renames)
+                 (prrr-state-outbox-created write '(:comment-id "PRRC_1" :database-id "9"))))
+      (should (equal '(("local:C" . "PRRC_1")) renames))
+      (should (equal "local:T" (prrr-thread-thread-id thread)))
+      (should (eq 'submitted (prrr-comment-state comment))))))
+
+(ert-deftest prrr-state-test-outbox-created-reply ()
+  (let ((write (prrr-state-test--write "1" "PR_1" 'reply
+                                       '(:thread-id "PRRT_1" :comment "local:R" :body "Yes."))))
+    (pcase-let ((`((,comment) . ,renames)
+                 (prrr-state-outbox-created write '(:comment-id "PRRC_2" :review-id "PRR_1"))))
+      (should (equal '(("local:R" . "PRRC_2")) renames))
+      (should (equal "PRRT_1" (prrr-comment-thread-id comment))))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here
