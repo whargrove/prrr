@@ -431,6 +431,26 @@ forge's own lookups, as when magit's process buffer is set up, do not count."
       (should (equal (list head) (process-lines "git" "-C" repo "rev-parse"
                                                 (format "refs/prrr/1/%s" head)))))))
 
+(ert-deftest prrr-range-test-reopen-at-a-new-head ()
+  "Reopening a Review Buffer that moves its head ends the visit of the old head."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (prrr-diff-test--with-open-stubs
+        (let* ((pullreq (prrr-diff-test--pullreq))
+               (buffer (prrr-diff-open pullreq))
+               (head (buffer-local-value 'prrr-diff--head buffer)))
+          (unwind-protect
+              (progn
+                ;; At the same head, the visit goes on.
+                (prrr-diff-open pullreq)
+                (should-not (prrr-range-test--bookmark))
+                (call-process "git" nil nil nil "update-ref" "refs/pullreqs/1"
+                              (prrr-diff-test--rev "refs/pullreqs/1~1"))
+                (should (eq buffer (prrr-diff-open pullreq)))
+                (should (equal head (prrr-range-test--bookmark)))
+                (should-not (equal head (buffer-local-value 'prrr-diff--head buffer))))
+            (kill-buffer buffer)))))))
+
 (ert-deftest prrr-range-test-kill-without-a-head ()
   "A Review Buffer that shows no head records no Bookmark when killed."
   (prrr-diff-test--with-buffer (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")

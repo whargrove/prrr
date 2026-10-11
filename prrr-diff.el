@@ -751,13 +751,28 @@ so forge's commands, and `prrr-current-pullreq', act on PULLREQ."
 
 ;;;; Opening
 
+(defun prrr-diff--end-visit-before-reopen (pullreq)
+  "Record the Bookmark of PULLREQ's open Review Buffer if opening moves its head.
+Opening always shows the head forge fetched, so a buffer showing an
+older head ends the visit of that head here, as leaving would
+\(`prrr-diff-record-bookmark').  At the same head the visit goes on."
+  (when-let* ((buffer (get-buffer (prrr-diff--buffer-name pullreq))))
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'prrr-diff-mode)
+                 prrr-diff--head
+                 (not (equal prrr-diff--head
+                             (magit-rev-verify (prrr-diff--head-ref pullreq)))))
+        (prrr-diff-record-bookmark)))))
+
 (defun prrr-diff-open (pullreq)
   "Show the Review Buffer of PULLREQ and refetch its review data in the background.
 The buffer renders at once from the database and refreshes when the
 refetch ends.  The commit of the viewer's latest review is pinned
-\(`prrr-sync-pin').  When forge has not fetched the PR's head ref, offer to
-run `forge-pull' and signal a `user-error' instead of opening.  Return
-the buffer."
+\(`prrr-sync-pin').  The buffer shows the head forge fetched; when it
+was open at an older head, that head is recorded as the Bookmark
+first.  When forge has not fetched the PR's head ref, offer to run
+`forge-pull' and signal a `user-error' instead of opening.  Return the
+buffer."
   (let ((ref (prrr-diff--head-ref pullreq)))
     (unless (magit-rev-verify ref)
       (when (y-or-n-p (format "%s is missing; run `forge-pull' now? " ref))
@@ -770,6 +785,7 @@ the buffer."
   (prrr-sync-pin (oref pullreq number)
                  (prrr-state-since-review-start
                   (prrr-db-get 'pullreq-meta (oref pullreq their-id))))
+  (prrr-diff--end-visit-before-reopen pullreq)
   ;; The refetch starts before the one render, so the header says
   ;; "refreshing…" from the start; its answer refreshes from a timer,
   ;; never during the render.

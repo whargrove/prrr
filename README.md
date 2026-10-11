@@ -276,10 +276,10 @@ takes a comment. Threads show inline where the Range numbers lines as
 GitHub does, and in the file's "Not in this diff" group otherwise.
 
 "Since opened" starts at the head you saw when you last left the
-Review Buffer, by `q`, by killing it or by stepping to another PR of
-its Stack with `>` or `<`, or last submitted a review, or last pressed
-`m`. Opening a PR does not count, so it means "since my previous
-visit".
+Review Buffer, by `q`, by killing it, by stepping to another PR of
+its Stack with `>` or `<`, or by opening it again once forge fetched a
+newer head; or last submitted a review, or last pressed `m`. Opening a
+PR does not count otherwise, so it means "since my previous visit".
 
 When the author force-pushes, a Range from an older commit compares the
 two trees directly, and the header says `history rewritten`. prrr keeps

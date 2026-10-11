@@ -458,9 +458,10 @@ file's `not-in-range` section.
 **Viewed** is GitHub's flag only, shown and toggled on every Range.
 
 **Bookmark** updates when the Review Buffer is killed or its window
-quit (`q`), when `>` or `<` steps to another PR of its Stack, on Submit,
-and through `prrr-mark-seen`; never on open. It records the head the
-buffer shows.
+quit (`q`), when `>` or `<` steps to another PR of its Stack, when
+opening the PR again moves its open buffer to a newer head, on Submit,
+and through `prrr-mark-seen`; never otherwise on open. It records the
+head the buffer shows (before the move, when opening moves it).
 
 **Force-push and moving heads.** prrr pins each commit it may need later as
 `refs/prrr/<number>/<oid>` when it records a Bookmark (Submit records
