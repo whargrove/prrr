@@ -670,5 +670,51 @@
     (should (eq three (prrr-state-stack-neighbour (list one three) one 'up)))
     (should (eq one (prrr-state-stack-neighbour (list one three) three 'down)))))
 
+;;;; Threads in the Review Buffer
+
+(defun prrr-state-test--thread-ids (threads)
+  "Return the ids of THREADS."
+  (mapcar #'prrr-thread-thread-id threads))
+
+(ert-deftest prrr-state-test-layout-sorts-by-kind ()
+  (let* ((layout (prrr-state-thread-layout
+                  (list (prrr-test-thread :id "FILE" :subject-type 'file :line nil)
+                        (prrr-test-thread :id "LINE")
+                        (prrr-test-thread :id "OLD" :outdated-p t)
+                        (prrr-test-thread :id "NOLINE" :line nil))
+                  '("src/example.el")))
+         (entry (gethash "src/example.el" (car layout))))
+    (should (equal '("FILE") (prrr-state-test--thread-ids (prrr-file-threads-file-comments entry))))
+    (should (equal '("LINE") (prrr-state-test--thread-ids (prrr-file-threads-lines entry))))
+    (should (equal '("OLD" "NOLINE") (prrr-state-test--thread-ids (prrr-file-threads-outdated entry))))
+    (should (null (cdr layout)))))
+
+(ert-deftest prrr-state-test-layout-keeps-input-order ()
+  (let ((entry (gethash "a" (car (prrr-state-thread-layout
+                                  (list (prrr-test-thread :id "2" :path "a" :line 30)
+                                        (prrr-test-thread :id "1" :path "a" :line 5))
+                                  '("a"))))))
+    (should (equal '("2" "1") (prrr-state-test--thread-ids (prrr-file-threads-lines entry))))))
+
+(ert-deftest prrr-state-test-layout-files-not-in-diff ()
+  "A Thread of any kind on a file outside PATHS goes to ELSEWHERE, in order."
+  (let ((layout (prrr-state-thread-layout
+                 (list (prrr-test-thread :id "G1" :path "gone.el")
+                       (prrr-test-thread :id "IN" :path "a")
+                       (prrr-test-thread :id "G2" :path "gone.el" :subject-type 'file :line nil))
+                 '("a"))))
+    (should (equal '("G1" "G2") (prrr-state-test--thread-ids (cdr layout))))
+    (should-not (gethash "gone.el" (car layout)))))
+
+(ert-deftest prrr-state-test-layout-path-without-threads-absent ()
+  (should (zerop (hash-table-count (car (prrr-state-thread-layout nil '("a" "b")))))))
+
+(ert-deftest prrr-state-test-anchor ()
+  (should (equal '(right . 12) (prrr-state-thread-anchor (prrr-test-thread))))
+  (should (equal '(left . 7) (prrr-state-thread-anchor (prrr-test-thread :side 'left :line 7))))
+  (should (equal '(right . 3) (prrr-state-thread-anchor (prrr-test-thread :side nil :line 3))))
+  (should (equal '(right . 9) (prrr-state-thread-anchor
+                               (prrr-test-thread :start-line 4 :line 9)))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

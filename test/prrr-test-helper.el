@@ -25,8 +25,8 @@
 ;; a fresh temporary database) and `prrr-test-with-ghub-stub' (run BODY
 ;; with ghub's GraphQL entry point stubbed) and
 ;; `prrr-test-with-ghub-error-stub' (the same,
-;; failing every request).  The builders `prrr-test-pr' and
-;; `prrr-test-meta' and the constants `prrr-test-me',
+;; failing every request).  The builders `prrr-test-pr',
+;; `prrr-test-meta' and `prrr-test-thread', and the constants `prrr-test-me',
 ;; `prrr-test-teams', `prrr-test-head' and `prrr-test-old' serve the
 ;; tests of the pure rules.
 
@@ -119,6 +119,17 @@ VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
                        :viewer-latest-review viewer-latest-review
                        :viewer-latest-review-request viewer-latest-review-request
                        :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
+
+(cl-defun prrr-test-thread (&key (id "T_1") (path "src/example.el") (line 12) start-line
+                                 (side 'right) (subject-type 'line) outdated-p resolved-p)
+  "Build a `prrr-thread' of PR_1 with sensible defaults.
+Keyword arguments: ID, PATH, LINE, START-LINE, SIDE, SUBJECT-TYPE,
+OUTDATED-P and RESOLVED-P."
+  (prrr-thread-create :thread-id id :pr-id "PR_1" :path path :line line
+                      :start-line start-line :side side
+                      :start-side (and start-line side)
+                      :subject-type subject-type :outdated-p outdated-p
+                      :resolved-p resolved-p :original-line line))
 
 (defvar prrr-test-requests nil
   "Top-level fields of the requests seen by `prrr-test-with-ghub-dispatch'.")
