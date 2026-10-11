@@ -979,17 +979,29 @@ The head is the one the buffer shows."
   (and prrr-diff--head (prrr-diff--merge-base prrr-diff--pullreq prrr-diff--head)))
 
 (defun prrr-diff-position ()
-  "Return where point is in the diff, as (PATH SIDE LINE COMMIT), or nil.
+  "Return where point is in the diff, as (PATH SIDE LINE COMMIT NAME), or nil.
 PATH is the file around point.  On a removed line, SIDE is `left' and
 LINE its number at COMMIT, the commit the diff starts at; on any other
 diff line SIDE is `right' and LINE its number at the commit the diff
-ends at.  Elsewhere in the file SIDE, LINE and COMMIT are nil.  nil
-outside every file."
+ends at.  NAME is the file's path at COMMIT: its old path on the left
+side of a renamed or copied file, else PATH.  Elsewhere in the file,
+the \"\\ No newline at end of file\" lines included, SIDE, LINE,
+COMMIT and NAME are nil.  nil outside every file."
   (when-let* ((file (prrr-diff--file-at-point)))
-    (pcase (prrr-diff--line-at (point))
-      (`(,_hunk ?- ,old ,_new ,_text) (list (oref file value) 'left old prrr-diff--start))
-      (`(,_hunk ,_kind ,_old ,new ,_text) (list (oref file value) 'right new prrr-diff--end))
-      (_ (list (oref file value) nil nil nil)))))
+    (let ((path (oref file value)))
+      (pcase (prrr-diff--line-at (point))
+        (`(,_hunk ?- ,old ,_new ,_text)
+         (list path 'left old prrr-diff--start (or (oref file source) path)))
+        (`(,_hunk ,_kind ,_old ,(and new (pred integerp)) ,_text)
+         (list path 'right new prrr-diff--end path))
+        (_ (list path nil nil nil nil))))))
+
+(defun prrr-diff-old-path (path)
+  "Return the path at the diff's start of the file the diff shows as PATH.
+That is its old path when the diff renames or copies it, else PATH.
+nil when the diff does not show PATH."
+  (when-let* ((file (prrr-diff--file path)))
+    (or (oref file source) path)))
 
 (defun prrr-diff-goto-line (path side line)
   "Move to LINE of SIDE in the diff of PATH and return non-nil, or return nil.
@@ -998,8 +1010,7 @@ one it starts at; a context line has both numbers.  The file is
 expanded, and washed when needed.  Without LINE, move to the file's
 heading.  Return nil, and leave point alone, when PATH is not in the
 diff or LINE is not in its hunks."
-  (when-let* ((file (seq-find (lambda (file) (equal (oref file value) path))
-                              (prrr-diff--files))))
+  (when-let* ((file (prrr-diff--file path)))
     (magit-section-show file)
     (if (not line)
         (progn (magit-section-goto file) t)
@@ -1020,6 +1031,10 @@ diff or LINE is not in its hunks."
   "Return the `file' sections of the buffer, in order."
   (seq-filter (lambda (section) (eq (oref section type) 'file))
               (oref magit-root-section children)))
+
+(defun prrr-diff--file (path)
+  "Return the `file' section of PATH, or nil when the diff does not show PATH."
+  (seq-find (lambda (file) (equal (oref file value) path)) (prrr-diff--files)))
 
 (defun prrr-diff--file-at-point ()
   "Return the `file' section around point, or nil."
@@ -1060,7 +1075,7 @@ Interactively, read PATH with completion over the diff's files."
           (list (completing-read "Jump to file: "
                                  (mapcar (lambda (file) (oref file value)) (prrr-diff--files))
                                  nil t))))
-  (let ((file (or (seq-find (lambda (file) (equal (oref file value) path)) (prrr-diff--files))
+  (let ((file (or (prrr-diff--file path)
                   (user-error "No file %s in this diff" path))))
     (magit-section-show file)
     (magit-section-goto file)))

@@ -42,28 +42,32 @@
 
 ;;;; Switching
 
-(defun prrr-range--map-line (path line from to)
-  "Return the number at commit TO of LINE of PATH at commit FROM, or nil.
-nil when the commits in between remove or rewrite that line."
-  (if (equal from to)
+(defun prrr-range--map-line (line from from-path to to-path)
+  "Return the number at commit TO of LINE of FROM-PATH at commit FROM, or nil.
+TO-PATH is the file's path at TO, which differs from FROM-PATH across
+a rename.  nil when the commits in between remove or rewrite that
+line, or when either commit has no such file."
+  (if (and (equal from to) (equal from-path to-path))
       line
-    (prrr-state-map-line
-     (prrr-state-parse-hunk-ranges
-      (magit-git-output "diff" "--no-ext-diff" "--no-color" "-U0" from to "--" path))
-     line)))
+    (with-temp-buffer
+      ;; Diffing the two blobs needs no rename detection.
+      (and (zerop (magit-git-insert "diff" "--no-ext-diff" "--no-color" "-U0"
+                                    (concat from ":" from-path) (concat to ":" to-path)))
+           (prrr-state-map-line (prrr-state-parse-hunk-ranges (buffer-string)) line)))))
 
 (defun prrr-range--restore (position)
   "Move to POSITION, from `prrr-diff-position', in the Range now shown.
 The line is looked for on the right side, then on the left; failing
 both, point goes to the file's heading.  When the file is not in the
 diff, point stays where the redraw left it."
-  (pcase-let ((`(,path ,_side ,line ,commit) position)
+  (pcase-let ((`(,path ,_side ,line ,commit ,name) position)
               (`(,start . ,end) (prrr-diff-ends)))
     (when (and start end)
       (or (and line
-               (or (when-let* ((right (prrr-range--map-line path line commit end)))
+               (or (when-let* ((right (prrr-range--map-line line commit name end path)))
                      (prrr-diff-goto-line path 'right right))
-                   (when-let* ((left (prrr-range--map-line path line commit start)))
+                   (when-let* ((old (prrr-diff-old-path path))
+                               (left (prrr-range--map-line line commit name start old)))
                      (prrr-diff-goto-line path 'left left))))
           (prrr-diff-goto-line path nil nil)))))
 
@@ -73,7 +77,9 @@ A fetch that ends after another Range was chosen changes nothing.")
 
 (defun prrr-range--switch (range)
   "Show RANGE, keeping point on the same file and line when it shows them.
-A fetch for an earlier choice no longer changes the Range."
+A fetch for an earlier choice no longer changes the Range.  Signal a
+`user-error' outside a Review Buffer."
+  (prrr-diff-pullreq)
   (setq prrr-range--fetching nil)
   (let ((position (prrr-diff-position)))
     (prrr-diff-show-range range)
@@ -86,7 +92,6 @@ A fetch for an earlier choice no longer changes the Range."
 Lines that are read-only in another Range take comments there (SPEC
 section 8)."
   (interactive)
-  (prrr-diff-pullreq)
   (prrr-range--switch (prrr-range-create :kind 'default)))
 
 ;;;; Choosing a Range
@@ -204,7 +209,6 @@ then TO among the commits after it."
      (list from (prrr-range--read-commit
                  "Diff to: " (cdr (seq-drop-while (lambda (commit) (not (equal (car commit) from)))
                                                   commits))))))
-  (prrr-diff-pullreq)
   (prrr-range--switch (prrr-range-create :kind 'between :start from :end to)))
 
 ;;;; Bookmark

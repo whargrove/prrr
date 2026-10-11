@@ -41,19 +41,57 @@
   (prrr-range-create :kind 'commit :start (prrr-diff-test--rev from)
                      :end (prrr-diff-test--rev to)))
 
+(defun prrr-range-test--push (message change)
+  "Commit what the function CHANGE does on top of the PR's head; make it the head.
+MESSAGE is the commit's message.  The commit before it stays as the
+branch feature's parent."
+  (call-process "git" nil nil nil "checkout" "-q" "feature")
+  (funcall change)
+  (call-process "git" nil nil nil "-c" "user.name=example" "-c" "user.email=example@example.com"
+                "commit" "-q" "-a" "-m" message)
+  (call-process "git" nil nil nil "update-ref" "refs/pullreqs/1" "HEAD"))
+
+(defun prrr-range-test--rewrite (path from to)
+  "Replace the line FROM of PATH with TO."
+  (with-temp-file path
+    (insert-file-contents path)
+    (re-search-forward (concat "^" (regexp-quote from) "$"))
+    (replace-match to t t)))
+
 ;;;; Positions
 
 (ert-deftest prrr-range-test-position ()
   (prrr-diff-test--with-buffer nil
     (pcase-let ((`(,start . ,end) (prrr-diff-ends)))
       (prrr-diff-test--goto-line "src/example.el" "+line thirty")
-      (should (equal (list "src/example.el" 'right 30 end) (prrr-diff-position)))
+      (should (equal (list "src/example.el" 'right 30 end "src/example.el") (prrr-diff-position)))
       (prrr-diff-test--goto-line "src/example.el" "-line 30")
-      (should (equal (list "src/example.el" 'left 30 start) (prrr-diff-position)))
+      (should (equal (list "src/example.el" 'left 30 start "src/example.el") (prrr-diff-position)))
       (goto-char (oref (prrr-diff-test--file-section "src/example.el") start))
-      (should (equal '("src/example.el" nil nil nil) (prrr-diff-position)))
+      (should (equal '("src/example.el" nil nil nil nil) (prrr-diff-position)))
       (goto-char (point-min))
       (should-not (prrr-diff-position)))))
+
+(ert-deftest prrr-range-test-position-on-no-newline ()
+  "A \"\\ No newline at end of file\" line is no line of either side."
+  (prrr-diff-test--with-buffer
+      (prrr-range-test--push "no newline"
+                             (lambda ()
+                               (with-temp-file "src/example.el"
+                                 (insert-file-contents "src/example.el")
+                                 (goto-char (point-max))
+                                 (delete-char -1))))
+    (prrr-diff-test--goto-line "src/example.el" "\\ No newline at end of file")
+    (should (equal '("src/example.el" nil nil nil nil) (prrr-diff-position)))))
+
+(ert-deftest prrr-range-test-position-of-a-renamed-file ()
+  "The left side of a renamed file names the line in the file's old path."
+  (prrr-diff-test--with-buffer
+      (prrr-range-test--push "five"
+                             (lambda () (prrr-range-test--rewrite "src/moved-to.el" "moved 5" "moved five")))
+    (prrr-diff-test--goto-line "src/moved-to.el" "-moved 5")
+    (should (equal (list "src/moved-to.el" 'left 5 (car (prrr-diff-ends)) "src/moved-from.el")
+                   (prrr-diff-position)))))
 
 (ert-deftest prrr-range-test-goto-line ()
   (let ((prrr-eager-files 0))
@@ -101,6 +139,20 @@
     (prrr-diff-test--goto-line "src/example.el" "-line 30")
     (prrr-range--switch (prrr-range-test--commit-range "refs/pullreqs/1~1" "refs/pullreqs/1"))
     (should (equal "-line 30" (prrr-range-test--line)))))
+
+(ert-deftest prrr-range-test-switch-keeps-a-left-line-of-a-renamed-file ()
+  "A removed line of a renamed file is mapped from its old path."
+  (prrr-diff-test--with-buffer
+      (prrr-range-test--push "five"
+                             (lambda () (prrr-range-test--rewrite "src/moved-to.el" "moved 5" "moved five")))
+    (prrr-diff-test--goto-line "src/moved-to.el" "-moved 5")
+    (prrr-range--switch (prrr-range-test--commit-range "refs/pullreqs/1~1" "refs/pullreqs/1"))
+    (should (equal "-moved 5" (prrr-range-test--line)))))
+
+(ert-deftest prrr-range-test-switch-outside-a-review-buffer ()
+  (with-temp-buffer
+    (should-error (prrr-range--switch (prrr-range-create :kind 'default)) :type 'user-error)
+    (should-not (local-variable-p 'prrr-range--fetching))))
 
 (ert-deftest prrr-range-test-switch-to-a-range-without-the-line ()
   "Review Focus 4: a line the new Range does not show leaves point on its file."
