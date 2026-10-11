@@ -409,5 +409,77 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
                               (lambda (f) (setq failure f)))
       (should (eq 'auth (plist-get failure :kind))))))
 
+;;;; Writes
+
+(defconst prrr-github-test--anchor
+  '(:path "src/example.el" :line 12 :side right :start-line 10 :start-side right :subject-type line)
+  "A range anchor on the right side.")
+
+(ert-deftest prrr-github-test-decode-review-data-database-id-and-resolvable ()
+  (let ((data (prrr-github-decode-review-data (prrr-test-fixture "review-data") "PR_1")))
+    (should (equal "1001" (prrr-comment-database-id (car (plist-get data :comments)))))
+    (should (prrr-thread-resolvable-p (car (plist-get data :threads))))))
+
+(ert-deftest prrr-github-test-find-pending-review ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "pending-review") captured
+    (let ((found :none))
+      (prrr-github-find-pending-review "api.github.com" "example-org" "example-repo" 1 "example-me"
+                                       (lambda (review) (setq found review))
+                                       (lambda (f) (ert-fail f)))
+      (should (equal "PRR_kwDOexamplePending1" (prrr-pending-review-review-id found)))
+      (should (equal "PR_kwDOexample0000001" (prrr-pending-review-pr-id found)))
+      (should (equal "example-me" (alist-get 'me (cadr captured)))))))
+
+(ert-deftest prrr-github-test-find-pending-review-none ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "pending-review-none") captured
+    (let ((found :none))
+      (prrr-github-find-pending-review "api.github.com" "o" "n" 1 "me"
+                                       (lambda (review) (setq found review)) #'ert-fail)
+      (should (null found))
+      (should captured))))
+
+(ert-deftest prrr-github-test-create-pending-review ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "create-review") captured
+    (let ((review nil))
+      (prrr-github-create-pending-review "api.github.com" "PR_1" "1111" (lambda (r) (setq review r)) #'ert-fail)
+      (should (eq 'mutation (car (car captured))))
+      (should (equal '((input (pullRequestId . "PR_1") (commitOID . "1111"))) (cadr captured)))
+      (should (equal "PRR_kwDOexampleNew01" (prrr-pending-review-review-id review)))
+      (should (equal "PR_1" (prrr-pending-review-pr-id review))))))
+
+(ert-deftest prrr-github-test-add-thread-range ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-thread") captured
+    (let ((result nil))
+      (prrr-github-add-thread "api.github.com" "PRR_1" prrr-github-test--anchor "Nit."
+                              (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '((input (pullRequestReviewId . "PRR_1") (path . "src/example.el") (body . "Nit.")
+                              (line . 12) (side . "RIGHT") (startLine . 10) (startSide . "RIGHT")))
+                     (cadr captured)))
+      (should (equal '(:thread-id "PRRT_kwDOexampleNew01" :comment-id "PRRC_kwDOexampleNew01"
+                       :database-id "2001" :created-at "2026-10-10T12:00:00Z")
+                     result)))))
+
+(ert-deftest prrr-github-test-add-thread-file ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-thread") captured
+    (prrr-github-add-thread "api.github.com" "PRR_1" '(:path "a.el" :subject-type file) "Split."
+                            #'ignore #'ert-fail)
+    (should (equal '((input (pullRequestReviewId . "PRR_1") (path . "a.el") (body . "Split.")
+                            (subjectType . "FILE")))
+                   (cadr captured)))))
+
+(ert-deftest prrr-github-test-add-reply ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-reply") captured
+    (let ((result nil))
+      (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "Agreed." (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '((input (pullRequestReviewThreadId . "PRRT_1") (pullRequestReviewId . "PRR_1") (body . "Agreed.")))
+                     (cadr captured)))
+      (should (equal "PRRC_kwDOexampleNew02" (plist-get result :comment-id))))))
+
+(ert-deftest prrr-github-test-write-failure-reaches-errorback ()
+  (prrr-test-with-ghub-error-stub '(errors ((type . "UNPROCESSABLE") (message . "one pending review"))) nil
+    (let ((failure nil))
+      (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "x" #'ert-fail (lambda (f) (setq failure f)))
+      (should (equal '(:kind error :message "one pending review" :reset-at nil) failure)))))
+
 (provide 'prrr-github-test)
 ;;; prrr-github-test.el ends here

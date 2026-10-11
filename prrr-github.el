@@ -32,7 +32,11 @@
 ;;
 ;; Every request takes an ERRORBACK that receives a failure classified by
 ;; `prrr-github-error'; ghub's own error shapes never leave this file.
-;; The Viewed mutations are here; the others arrive in milestone 4.
+;; Writes are here too.  Most go through `forge-mutate' or
+;; `forge-rest'.  `forge-mutate' selects only clientMutationId, so the
+;; three mutations whose answer prrr reads (creating the Pending
+;; Review, a Thread, a reply) go through `prrr-github--mutate', which
+;; calls `ghub-query' with forge's token as `forge-query' does.
 
 ;;; Code:
 
@@ -92,7 +96,7 @@ type is the symbol `[String!]' because ghub prints a vector type as
            id path line startLine diffSide startDiffSide originalLine
            isOutdated isResolved subjectType viewerCanResolve viewerCanUnresolve
            (comments [(:edges t)]
-             id (author login) body createdAt lastEditedAt (replyTo id) state
+             id (author login) body createdAt lastEditedAt (replyTo id) state fullDatabaseId
              (pullRequestReview id) (originalCommit oid)))
          (reviews [(:edges t) (states . (PENDING)) (author $me String!)]
            id (commit oid) body createdAt)
@@ -186,6 +190,11 @@ record, nil when the caller stamps rows itself."
   "Translate a DiffSide string SIDE into `left', `right' or nil."
   (pcase side ("LEFT" 'left) ("RIGHT" 'right)))
 
+(defun prrr-github--database-id (value)
+  "Return the database id VALUE as a string, or nil.
+GitHub sends a BigInt as a string in GraphQL and a number in REST."
+  (and value (format "%s" value)))
+
 (defun prrr-github--comment (node thread-id pr-id)
   "Decode a review comment NODE of THREAD-ID on PR-ID into a `prrr-comment'."
   (let-alist node
@@ -201,7 +210,8 @@ record, nil when the caller stamps rows itself."
      :review-id .pullRequestReview.id
      :state (if (equal .state "PENDING") 'pending 'submitted)
      :local-state 'sent
-     :agent-p nil)))
+     :agent-p nil
+     :database-id (prrr-github--database-id .fullDatabaseId))))
 
 (defun prrr-github--thread (node pr-id fetched-at)
   "Decode a reviewThreads NODE of PR-ID into (THREAD . COMMENTS).
@@ -218,6 +228,7 @@ FETCHED-AT is stamped on the Thread."
            :subject-type (if (equal .subjectType "FILE") 'file 'line)
            :outdated-p (and .isOutdated t)
            :resolved-p (and .isResolved t)
+           :resolvable-p (and (if .isResolved .viewerCanUnresolve .viewerCanResolve) t)
            :original-line .originalLine
            :original-commit (let-alist (car .comments) .originalCommit.oid)
            :fetched-at fetched-at)
@@ -434,6 +445,139 @@ accepts.  ERRORBACK receives a failure classified by
           :callback callback :errorback errorback)
       (forge-mutate host unmarkFileAsViewed ((pullRequestId pr-id) (path path))
         :callback callback :errorback errorback))))
+
+;;;; Writes
+
+(defun prrr-github--input (&rest pairs)
+  "Return the alist of NAME VALUE PAIRS whose VALUE is non-nil."
+  (let ((input nil))
+    (while pairs
+      (let ((name (pop pairs)) (value (pop pairs)))
+        (when value (push (cons name value) input))))
+    (nreverse input)))
+
+(defun prrr-github--side-name (side)
+  "Return GitHub's DiffSide for SIDE, `left' or `right', or nil."
+  (pcase side ('left "LEFT") ('right "RIGHT")))
+
+(eval-and-compile
+  (defconst prrr-github-pending-review-query
+    '(repository [(owner $owner String!) (name $name String!)]
+       (pullRequest [(number $number Int!)]
+         id
+         (reviews [(:edges t) (states . (PENDING)) (author $me String!)]
+           id (commit oid) body createdAt)))
+    "The viewer's Pending Review of one PR.
+Variables: $owner, $name, $number and $me.")
+
+  (defconst prrr-github-create-review-mutation
+    '(mutation (addPullRequestReview [(input $input AddPullRequestReviewInput!)]
+                 (pullRequestReview id (commit oid) body createdAt)))
+    "Create a Pending Review; selects the new review.")
+
+  (defconst prrr-github-add-thread-mutation
+    '(mutation (addPullRequestReviewThread [(input $input AddPullRequestReviewThreadInput!)]
+                 (thread id (comments [(first 1)] (nodes id createdAt fullDatabaseId)))))
+    "Add a Thread to a Pending Review; selects the Thread and its comment.")
+
+  (defconst prrr-github-add-reply-mutation
+    '(mutation (addPullRequestReviewThreadReply
+                [(input $input AddPullRequestReviewThreadReplyInput!)]
+                (comment id createdAt fullDatabaseId)))
+    "Add a reply to a Thread in a Pending Review; selects the new comment."))
+
+(defun prrr-github--mutate (host document input decode callback errorback)
+  "Send the GraphQL mutation DOCUMENT to HOST with INPUT as its $input.
+`forge-mutate' selects only clientMutationId, and these mutations
+create things whose ids prrr needs, so DOCUMENT selects them and goes
+through `ghub-query' with forge's token, as `forge-query' does.  DECODE
+turns the answer's data into what CALLBACK receives; ERRORBACK receives
+a failure classified by `prrr-github-error'.  Exactly one is called."
+  (ghub-query document `((input . ,input))
+    :auth 'forge :host host :forge 'github
+    :callback (prrr-github--callback decode callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github--pending-review (node pr-id)
+  "Decode a PullRequestReview NODE of PR-ID into a `prrr-pending-review'."
+  (let-alist node
+    (prrr-pending-review-create :pr-id pr-id :review-id .id :commit-oid .commit.oid
+                                :body .body :created-at .createdAt)))
+
+(defun prrr-github-find-pending-review (host owner name number me callback errorback)
+  "Find the Pending Review of ME on OWNER/NAME#NUMBER on HOST.
+CALLBACK receives a `prrr-pending-review', or nil when ME has none.
+ERRORBACK receives a failure classified by `prrr-github-error'; a
+response without the pull request is a `not-found' failure.  Exactly
+one of the two is called."
+  (prrr-github--query host prrr-github-pending-review-query
+    ((owner owner) (name name) (number number) (me me))
+    :callback
+    (prrr-github--callback
+     (lambda (data)
+       (let ((pr (alist-get 'pullRequest (cdr (assq 'repository data)))))
+         (unless pr
+           (signal 'prrr-github-failure
+                   (list :kind 'not-found
+                         :message (format "Pull request %s/%s#%s not found" owner name number)
+                         :reset-at nil)))
+         (let ((review (car (alist-get 'reviews pr))))
+           (and review (prrr-github--pending-review review (alist-get 'id pr))))))
+     callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github-create-pending-review (host pr-id commit callback errorback)
+  "Create the viewer's Pending Review on the PR with node id PR-ID on HOST.
+The review is on COMMIT, the head the user commented on.  CALLBACK
+receives the new `prrr-pending-review'; ERRORBACK a failure classified
+by `prrr-github-error'."
+  (prrr-github--mutate
+   host prrr-github-create-review-mutation
+   (prrr-github--input 'pullRequestId pr-id 'commitOID commit)
+   (lambda (data)
+     (prrr-github--pending-review
+      (alist-get 'pullRequestReview (alist-get 'addPullRequestReview data)) pr-id))
+   callback errorback))
+
+(defun prrr-github-add-thread (host review-id anchor body callback errorback)
+  "On HOST, add a Thread at ANCHOR to the Pending Review REVIEW-ID.
+BODY is its first comment.
+ANCHOR is a plist as `prrr-state-anchor' returns.  CALLBACK receives
+\(:thread-id :comment-id :database-id :created-at) of what GitHub made;
+ERRORBACK a failure classified by `prrr-github-error'."
+  (prrr-github--mutate
+   host prrr-github-add-thread-mutation
+   (prrr-github--input 'pullRequestReviewId review-id
+                       'path (plist-get anchor :path)
+                       'body body
+                       'line (plist-get anchor :line)
+                       'side (prrr-github--side-name (plist-get anchor :side))
+                       'startLine (plist-get anchor :start-line)
+                       'startSide (prrr-github--side-name (plist-get anchor :start-side))
+                       'subjectType (and (eq (plist-get anchor :subject-type) 'file) "FILE"))
+   (lambda (data)
+     (let* ((thread (alist-get 'thread (alist-get 'addPullRequestReviewThread data)))
+            (comment (car (alist-get 'nodes (alist-get 'comments thread)))))
+       (let-alist comment
+         (list :thread-id (alist-get 'id thread) :comment-id .id
+               :database-id (prrr-github--database-id .fullDatabaseId)
+               :created-at .createdAt))))
+   callback errorback))
+
+(defun prrr-github-add-reply (host review-id thread-id body callback errorback)
+  "On HOST, reply BODY to the Thread THREAD-ID in the Pending Review REVIEW-ID.
+CALLBACK receives (:comment-id :database-id :created-at); ERRORBACK a
+failure classified by `prrr-github-error'."
+  (prrr-github--mutate
+   host prrr-github-add-reply-mutation
+   (prrr-github--input 'pullRequestReviewThreadId thread-id
+                       'pullRequestReviewId review-id 'body body)
+   (lambda (data)
+     (let-alist (alist-get 'addPullRequestReviewThreadReply data)
+       (list :comment-id .comment.id
+             :database-id (prrr-github--database-id .comment.fullDatabaseId)
+             :created-at .comment.createdAt)))
+   callback errorback))
 
 (provide 'prrr-github)
 ;;; prrr-github.el ends here

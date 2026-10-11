@@ -21,6 +21,7 @@
      (viewerCanUnresolve . t)
      (comments
       ((id . "PRRC_kwDOexample0000001")
+       (fullDatabaseId . "1001")
        (author (login . "example-bob"))
        (body . "Should this be a `when'?")
        (createdAt . "2026-09-02T10:00:00Z")
@@ -30,6 +31,7 @@
        (pullRequestReview (id . "PRR_kwDOexample0000001"))
        (originalCommit (oid . "1111111111111111111111111111111111111111")))
       ((id . "PRRC_kwDOexample0000002")
+       (fullDatabaseId . "1002")
        (author (login . "example-me"))
        (body . "Yes, fixing.")
        (createdAt . "2026-09-02T11:00:00Z")
@@ -52,6 +54,7 @@
      (viewerCanUnresolve . t)
      (comments
       ((id . "PRRC_kwDOexample0000003")
+       (fullDatabaseId . "1003")
        (author (login . "example-carol"))
        (body . "Typo in the title.")
        (createdAt . "2026-09-02T12:00:00Z")
@@ -74,6 +77,7 @@
      (viewerCanUnresolve . t)
      (comments
       ((id . "PRRC_kwDOexample0000004")
+       (fullDatabaseId . "1004")
        (author (login . "example-bob"))
        (body . "This branch is dead.")
        (createdAt . "2026-08-30T09:00:00Z")
@@ -96,6 +100,7 @@
      (viewerCanUnresolve . t)
      (comments
       ((id . "PRRC_kwDOexample0000005")
+       (fullDatabaseId . "1005")
        (author (login . "example-carol"))
        (body . "Please split this file.")
        (createdAt . "2026-09-03T08:00:00Z")
@@ -118,6 +123,7 @@
      (viewerCanUnresolve . t)
      (comments
       ((id . "PRRC_kwDOexample0000006")
+       (fullDatabaseId . "1006")
        (author (login . "example-me"))
        (body . "Draft: rename this.")
        (createdAt . "2026-09-04T09:00:00Z")
