@@ -196,14 +196,16 @@ GitHub sends a BigInt as a string in GraphQL and a number in REST."
   (and value (format "%s" value)))
 
 (defun prrr-github--comment (node thread-id pr-id)
-  "Decode a review comment NODE of THREAD-ID on PR-ID into a `prrr-comment'."
+  "Decode a review comment NODE of THREAD-ID on PR-ID into a `prrr-comment'.
+The body's line ends become newlines: GitHub's web UI sends CRLF,
+which would hide suggestion blocks and show as ^M."
   (let-alist node
     (prrr-comment-create
      :comment-id .id
      :thread-id thread-id
      :pr-id pr-id
      :author .author.login
-     :body .body
+     :body (and .body (string-replace "\r\n" "\n" .body))
      :created-at .createdAt
      :updated-at .lastEditedAt
      :reply-to .replyTo.id
@@ -509,6 +511,16 @@ a failure classified by `prrr-github-error'.  Exactly one is called."
     :callback (prrr-github--callback decode callback errorback)
     :errorback (prrr-github--errorback errorback)))
 
+(defun prrr-github--created (id)
+  "Return ID, GitHub's id of what a mutation created.
+GitHub can answer a mutation with a null payload and no errors; that
+created nothing, so it signals `prrr-github-failure' rather than let
+the write count as done."
+  (or id
+      (signal 'prrr-github-failure
+              (list :kind 'error :message "GitHub accepted the request but created nothing"
+                    :reset-at nil))))
+
 (defun prrr-github--pending-review (node pr-id)
   "Decode a PullRequestReview NODE of PR-ID into a `prrr-pending-review'."
   (let-alist node
@@ -546,8 +558,9 @@ by `prrr-github-error'."
    host prrr-github-create-review-mutation
    (prrr-github--input 'pullRequestId pr-id 'commitOID commit)
    (lambda (data)
-     (prrr-github--pending-review
-      (alist-get 'pullRequestReview (alist-get 'addPullRequestReview data)) pr-id))
+     (let ((review (alist-get 'pullRequestReview (alist-get 'addPullRequestReview data))))
+       (prrr-github--created (alist-get 'id review))
+       (prrr-github--pending-review review pr-id)))
    callback errorback))
 
 (defun prrr-github-add-thread (host review-id anchor body callback errorback)
@@ -570,7 +583,8 @@ ERRORBACK a failure classified by `prrr-github-error'."
      (let* ((thread (alist-get 'thread (alist-get 'addPullRequestReviewThread data)))
             (comment (car (alist-get 'nodes (alist-get 'comments thread)))))
        (let-alist comment
-         (list :thread-id (alist-get 'id thread) :comment-id .id
+         (list :thread-id (prrr-github--created (alist-get 'id thread))
+               :comment-id (prrr-github--created .id)
                :database-id (prrr-github--database-id .fullDatabaseId)
                :created-at .createdAt))))
    callback errorback))
@@ -585,7 +599,7 @@ failure classified by `prrr-github-error'."
                        'pullRequestReviewId review-id 'body body)
    (lambda (data)
      (let-alist (alist-get 'addPullRequestReviewThreadReply data)
-       (list :comment-id .comment.id
+       (list :comment-id (prrr-github--created .comment.id)
              :database-id (prrr-github--database-id .comment.fullDatabaseId)
              :created-at .comment.createdAt)))
    callback errorback))

@@ -134,6 +134,17 @@
                                   "PR_kwDOexample0000001"
                                   "2026-10-10T12:00:00Z"))
 
+(ert-deftest prrr-github-test-decode-review-data-crlf-body ()
+  "Bodies written in GitHub's web UI end lines with CRLF; suggestions in them must still show."
+  (let* ((crlf "Try:\r\n```suggestion\r\n(when x\r\n```\r\n")
+         (data (cl-subst crlf "Typo in the title." (prrr-test-fixture "review-data")
+                         :test #'equal))
+         (comment (seq-find (lambda (c) (string-prefix-p "Try:" (prrr-comment-body c)))
+                            (plist-get (prrr-github-decode-review-data data "PR_1") :comments))))
+    (should (equal "Try:\n```suggestion\n(when x\n```\n" (prrr-comment-body comment)))
+    (should (equal '((text . "Try:") (suggestion "(when x"))
+                   (prrr-state-split-suggestions (prrr-comment-body comment))))))
+
 (ert-deftest prrr-github-test-decode-review-data-threads ()
   (let ((threads (plist-get (prrr-github-test--review-data) :threads)))
     (should (= 5 (length threads)))
@@ -474,6 +485,38 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
       (should (equal '((input (pullRequestReviewThreadId . "PRRT_1") (pullRequestReviewId . "PRR_1") (body . "Agreed.")))
                      (cadr captured)))
       (should (equal "PRRC_kwDOexampleNew02" (plist-get result :comment-id))))))
+
+(defconst prrr-github-test--created-nothing
+  '(:kind error :message "GitHub accepted the request but created nothing" :reset-at nil)
+  "The failure of a creation GitHub answered with a null payload.")
+
+(defmacro prrr-github-test--null-payload (answer call)
+  "Check that CALL, answered with ANSWER, fails as having created nothing.
+CALL is a function of a callback and an errorback that sends the request."
+  `(prrr-test-with-ghub-stub ,answer captured
+     (let ((failure nil))
+       (funcall ,call #'ert-fail (lambda (f) (setq failure f)))
+       (should captured)
+       (should (equal prrr-github-test--created-nothing failure)))))
+
+(ert-deftest prrr-github-test-add-thread-null-payload-is-a-failure ()
+  "A null Thread without errors must not count as success: the comment would be lost."
+  (dolist (answer '((data (addPullRequestReviewThread (thread)))
+                    (data (addPullRequestReviewThread))))
+    (prrr-github-test--null-payload answer
+      (lambda (callback errorback)
+        (prrr-github-add-thread "api.github.com" "PRR_1" prrr-github-test--anchor "Nit."
+                                callback errorback)))))
+
+(ert-deftest prrr-github-test-add-reply-null-payload-is-a-failure ()
+  (prrr-github-test--null-payload '(data (addPullRequestReviewThreadReply (comment)))
+    (lambda (callback errorback)
+      (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "x" callback errorback))))
+
+(ert-deftest prrr-github-test-create-review-null-payload-is-a-failure ()
+  (prrr-github-test--null-payload '(data (addPullRequestReview (pullRequestReview)))
+    (lambda (callback errorback)
+      (prrr-github-create-pending-review "api.github.com" "PR_1" "1111" callback errorback))))
 
 (ert-deftest prrr-github-test-write-failure-reaches-errorback ()
   (prrr-test-with-ghub-error-stub '(errors ((type . "UNPROCESSABLE") (message . "one pending review"))) nil
