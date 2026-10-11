@@ -809,5 +809,173 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                        (alist-get 'pullRequestReviewThreadId
                                   (prrr-sync-test--input 'addPullRequestReviewThreadReply))))))))
 
+;;;; Every kind of write
+
+(ert-deftest prrr-sync-test-outbox-publish ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+        (let ((row (prrr-sync-test--write 'publish (list :anchor prrr-sync-test--anchor
+                                                         :body "Now." :commit "1111"))))
+          (should (equal "/repos/example-org/example-repo/pulls/1/comments" (cadr captured)))
+          (let ((comment (prrr-db-get 'review-comment "PRRC_kwDOexampleNew03")))
+            (should (equal (plist-get (prrr-outbox-payload row) :thread)
+                           (prrr-comment-thread-id comment)))
+            (should (eq 'submitted (prrr-comment-state comment)))
+            (should (equal "3001" (prrr-comment-database-id comment)))))))))
+
+(ert-deftest prrr-sync-test-outbox-publish-reply ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-db-replace-review-data
+       prrr-sync-test--pr
+       (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-sync-test--pr))
+      (prrr-test-with-rest-stub (prrr-test-fixture "publish-reply") captured
+        (prrr-sync-test--write 'publish-reply '(:thread-id "PRRT_kwDOexample0000001"
+                                                :body "Done."))
+        (should (equal "/repos/example-org/example-repo/pulls/1/comments/1001/replies"
+                       (cadr captured)))
+        (should (prrr-db-get 'review-comment "PRRC_kwDOexampleNew04"))))))
+
+(ert-deftest prrr-sync-test-outbox-discussion-pulls-the-topic ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((pulled nil))
+        (with-temp-buffer
+          (setq-local forge-buffer-topic 'example-topic)
+          (cl-letf (((symbol-function 'forge-pull-topic)
+                     (lambda (topic) (interactive) (setq pulled topic))))
+            (prrr-test-with-ghub-dispatch '((addComment . ((data (addComment (clientMutationId))))))
+              (prrr-sync-write (prrr-sync-test--repo) (prrr-sync-test--pullreq) 'discussion
+                               '(:body "Thanks!") (current-buffer))
+              (should (equal prrr-sync-test--pr
+                             (alist-get 'subjectId (prrr-sync-test--input 'addComment)))))))
+        (should (eq 'example-topic pulled))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-edit-amends-an-unsent-comment ()
+  "Review Focus 3: editing what GitHub has not got changes the queued write."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch '((addPullRequestReviewThread . (:error (error http 502))))
+        (let* ((thread (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                            :body "Nit." :commit "1111")))
+               (comment (plist-get (prrr-outbox-payload thread) :comment)))
+          (should (equal (prrr-outbox-id thread)
+                         (prrr-outbox-id (prrr-sync-test--write 'edit (list :comment-id comment
+                                                                         :body "Better.")))))
+          (should (equal '(thread) (mapcar #'prrr-outbox-kind (prrr-db-outbox-rows))))
+          (should (equal "Better." (plist-get (prrr-outbox-payload (car (prrr-db-outbox-rows)))
+                                              :body)))
+          ;; The edit retried the write.
+          (should (equal '(addPullRequestReviewThread addPullRequestReviewThread)
+                         prrr-test-requests)))))))
+
+(ert-deftest prrr-sync-test-outbox-edit-of-a-comment-being-sent-queues ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (cl-letf (((symbol-function 'ghub-query) #'ignore))
+        (let* ((thread (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                            :body "Nit." :commit "1111")))
+               (comment (plist-get (prrr-outbox-payload thread) :comment)))
+          (prrr-sync-test--write 'edit (list :comment-id comment :body "Better."))
+          (should (equal '(thread edit) (mapcar #'prrr-outbox-kind (prrr-db-outbox-rows))))
+          (should (equal "Better." (prrr-comment-body
+                                    (car (last (plist-get (prrr-sync-review-data
+                                                           prrr-sync-test--pr)
+                                                          :comments)))))))))))
+
+(ert-deftest prrr-sync-test-outbox-delete-drops-an-unsent-comment ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch '((addPullRequestReviewThread . (:error (error http 502))))
+        (let* ((thread (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                            :body "Nit." :commit "1111")))
+               (comment (plist-get (prrr-outbox-payload thread) :comment)))
+          (should-not (prrr-sync-test--write 'delete (list :comment-id comment)))
+          (should-not (prrr-db-outbox-rows))
+          (should-not (plist-get (prrr-sync-review-data prrr-sync-test--pr) :threads)))))))
+
+(ert-deftest prrr-sync-test-outbox-edit-delete-resolve-sent ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-db-replace-review-data
+       prrr-sync-test--pr
+       (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-sync-test--pr))
+      (prrr-test-with-ghub-dispatch
+          '((updatePullRequestReviewComment . ((data (updatePullRequestReviewComment
+                                                      (clientMutationId)))))
+            (deletePullRequestReviewComment . ((data (deletePullRequestReviewComment
+                                                      (clientMutationId)))))
+            (resolveReviewThread . ((data (resolveReviewThread (clientMutationId))))))
+        (prrr-sync-test--write 'edit '(:comment-id "PRRC_kwDOexample0000002" :body "Fixed."))
+        (prrr-sync-test--write 'resolve '(:thread-id "PRRT_kwDOexample0000001" :resolved t))
+        (prrr-sync-test--write 'delete '(:comment-id "PRRC_kwDOexample0000006"))
+        (should (equal '(updatePullRequestReviewComment resolveReviewThread
+                         deletePullRequestReviewComment)
+                       prrr-test-requests)))
+      (should (equal "Fixed." (prrr-comment-body
+                               (prrr-db-get 'review-comment "PRRC_kwDOexample0000002"))))
+      (should (prrr-thread-resolved-p (prrr-db-get 'thread "PRRT_kwDOexample0000001")))
+      ;; The deleted comment was its Thread's only one.
+      (should-not (prrr-db-get 'review-comment "PRRC_kwDOexample0000006"))
+      (should-not (prrr-db-get 'thread "PRRT_kwDOexample0000005")))))
+
+(ert-deftest prrr-sync-test-outbox-submit-touches-the-pr ()
+  "SPEC section 7: Submit sends the review and moves the PR to Served."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-db-insert (prrr-comment-create :comment-id "C1" :thread-id "T1"
+                                           :pr-id prrr-sync-test--pr
+                                           :state 'pending :local-state 'sent))
+      (prrr-db-insert (prrr-pr-meta-create :pr-id prrr-sync-test--pr
+                                           :forge-repo-id "example-repo-id" :number 1))
+      (prrr-test-with-ghub-dispatch '((submitPullRequestReview
+                                       . ((data (submitPullRequestReview (clientMutationId))))))
+        (prrr-sync-test--write 'submit '(:verdict approve :body "LGTM" :commit "1111"))
+        (should (equal "APPROVE" (alist-get 'event (prrr-sync-test--input
+                                                    'submitPullRequestReview)))))
+      (should-not (prrr-db-get 'pending-review prrr-sync-test--pr))
+      (should (eq 'submitted (prrr-comment-state (prrr-db-get 'review-comment "C1"))))
+      (should (equal '("APPROVED" "1111")
+                     (let ((review (prrr-pr-meta-viewer-latest-review
+                                    (prrr-db-get 'pullreq-meta prrr-sync-test--pr))))
+                       (list (nth 0 review) (nth 2 review))))))))
+
+(ert-deftest prrr-sync-test-outbox-submit-without-a-pending-review ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "pending-review-none"))
+            (addPullRequestReview . ((data (addPullRequestReview (clientMutationId))))))
+        (prrr-sync-test--write 'submit '(:verdict approve :body "" :commit "1111"))
+        (should (equal '(repository addPullRequestReview) prrr-test-requests))
+        (should (equal "APPROVE" (alist-get 'event (prrr-sync-test--input
+                                                    'addPullRequestReview))))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-discard-drops-queued-pending-writes ()
+  "Review Focus 3: discarding takes the queued pending comments with it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-db-insert (prrr-comment-create :comment-id "C1" :thread-id "T1"
+                                           :pr-id prrr-sync-test--pr
+                                           :state 'pending :local-state 'sent))
+      (prrr-test-with-ghub-dispatch
+          '((addPullRequestReviewThread . (:error (error http 502)))
+            (deletePullRequestReview . ((data (deletePullRequestReview (clientMutationId))))))
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "1111"))
+        (prrr-sync-test--write 'discard nil)
+        (should (equal '(addPullRequestReviewThread deletePullRequestReview) prrr-test-requests)))
+      (should-not (prrr-db-outbox-rows))
+      (should-not (prrr-db-get 'pending-review prrr-sync-test--pr))
+      (should-not (prrr-db-get 'review-comment "C1")))))
+
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

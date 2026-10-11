@@ -388,16 +388,62 @@ KIND and PAYLOAD are as `prrr-state-outbox-kinds' describes, without
 the Outbox, so `prrr-sync-review-data' shows it at once, and is sent in
 the background after the PR's earlier writes, one mutation at a time
 \(SPEC section 4).  Every failed write of the PR is tried again too.
-BUFFER, when live, refreshes whenever the PR's writes change.  Return
-the write's `prrr-outbox' row.  Signal a `user-error' when the
-viewer's login is unknown."
+An edit or delete of a comment whose own write is queued and not being
+sent changes or drops that write instead, and a discard drops the
+queued writes of the Pending Review first.  BUFFER, when live,
+refreshes whenever the PR's writes change.  Return the `prrr-outbox'
+row that carries the write, or nil when it dropped queued writes
+instead.  Signal a `user-error' when the viewer's login is unknown."
   (let* ((target (prrr-sync--target repo pullreq))
-         (pr-id (plist-get target :pr-id)))
+         (pr-id (plist-get target :pr-id))
+         (creator (and (memq kind '(edit delete))
+                       (prrr-sync--outbox-creator pr-id (plist-get payload :comment-id)))))
     (unless (plist-get target :me)
       (user-error "No GitHub login: set github.user or `prrr-github-user'"))
     (prrr-sync--remember-buffer pr-id buffer)
-    (prog1 (prrr-sync--outbox-add pr-id kind (prrr-sync--outbox-payload kind payload target))
+    (prog1 (cond ((and creator (eq kind 'edit))
+                  (setf (prrr-outbox-payload creator)
+                        (plist-put (copy-sequence (prrr-outbox-payload creator))
+                                   :body (plist-get payload :body)))
+                  (prrr-db-insert creator))
+                 (creator
+                  (prrr-sync-discard (prrr-outbox-id creator))
+                  nil)
+                 (t
+                  (when (eq kind 'discard)
+                    (prrr-sync--outbox-drop-pending pr-id))
+                  (prrr-sync--outbox-add pr-id kind
+                                         (prrr-sync--outbox-payload kind payload target))))
       (prrr-sync-retry pr-id))))
+
+(defun prrr-sync--outbox-creator (pr-id comment-id)
+  "Return the queued write of PR-ID creating COMMENT-ID, unless it is being sent."
+  (seq-find (lambda (row)
+              (and (member comment-id (prrr-state-outbox-created-ids row))
+                   (not (equal (prrr-outbox-id row) (prrr-sync--sending-id)))))
+            (prrr-db-outbox-rows pr-id)))
+
+(defun prrr-sync--outbox-drop-pending (pr-id)
+  "Drop PR-ID's queued writes that a discard of its Pending Review makes moot.
+Those are new Threads and replies of the Pending Review, and every
+queued write that needs one of them or a stored pending comment,
+unless it is being sent."
+  (let* ((rows (prrr-db-outbox-rows pr-id))
+         (pending (seq-filter (lambda (row) (memq (prrr-outbox-kind row) '(thread reply)))
+                              rows))
+         (ids (append (mapcar #'prrr-comment-comment-id
+                              (prrr-db-select 'review-comment :pr-id pr-id :state 'pending))
+                      (mapcan #'prrr-state-outbox-created-ids pending))))
+    (dolist (row (append pending (prrr-state-outbox-dependents rows ids)))
+      (unless (equal (prrr-outbox-id row) (prrr-sync--sending-id))
+        (prrr-db-delete 'outbox :id (prrr-outbox-id row))))))
+
+(defun prrr-sync--top-database-id (thread-id)
+  "Return GitHub's database id of the first comment of THREAD-ID, or nil."
+  (let ((comments (sort (prrr-db-select 'review-comment :thread-id thread-id)
+                        (lambda (a b) (string< (or (prrr-comment-created-at a) "")
+                                               (or (prrr-comment-created-at b) ""))))))
+    (prrr-comment-database-id (car comments))))
 
 (defun prrr-sync-retry (&optional pr-id buffer)
   "Send the failed writes of PR-ID again, or those of every PR when nil.
@@ -559,24 +605,122 @@ DONE receives GitHub's answer, a plist or nil; FAIL a classified failure."
            (lambda (result) (funcall done (append (list :review-id review-id) result)))
            fail))
         fail))
+      ('publish
+       (prrr-sync--mutate (lambda (callback errorback)
+                            (prrr-github-publish-comment
+                             host (plist-get target :owner) (plist-get target :name)
+                             (plist-get target :number) commit (plist-get payload :anchor) body
+                             callback errorback))
+                          done fail))
+      ('publish-reply
+       (if-let ((top (prrr-sync--top-database-id (plist-get payload :thread-id))))
+           (prrr-sync--mutate (lambda (callback errorback)
+                                (prrr-github-publish-reply
+                                 host (plist-get target :owner) (plist-get target :name)
+                                 (plist-get target :number) top body callback errorback))
+                              done fail)
+         (funcall fail '(:kind error :message "GitHub's id of this Thread is not known yet: press G"
+                         :reset-at nil))))
+      ('discussion
+       (prrr-sync--mutate (lambda (callback errorback)
+                            (prrr-github-add-discussion-comment host pr-id body callback errorback))
+                          done fail))
+      ('edit
+       (prrr-sync--mutate (lambda (callback errorback)
+                            (prrr-github-edit-comment host (plist-get payload :comment-id) body
+                                                      callback errorback))
+                          done fail))
+      ('delete
+       (prrr-sync--mutate (lambda (callback errorback)
+                            (prrr-github-delete-comment host (plist-get payload :comment-id)
+                                                        callback errorback))
+                          done fail))
+      ('resolve
+       (prrr-sync--mutate (lambda (callback errorback)
+                            (prrr-github-set-resolved host (plist-get payload :thread-id)
+                                                      (plist-get payload :resolved)
+                                                      callback errorback))
+                          done fail))
+      ('submit
+       (prrr-sync--with-review
+        target commit nil
+        (lambda (review-id)
+          (prrr-sync--mutate (lambda (callback errorback)
+                               (prrr-github-submit-review host review-id pr-id commit
+                                                          (plist-get payload :verdict) body
+                                                          callback errorback))
+                             done fail))
+        fail))
+      ('discard
+       (prrr-sync--with-review
+        target nil nil
+        (lambda (review-id)
+          (if review-id
+              (prrr-sync--mutate (lambda (callback errorback)
+                                   (prrr-github-discard-review host review-id callback errorback))
+                                 done fail)
+            (funcall done)))
+        fail))
       (kind (funcall fail (list :kind 'error :message (format "Unknown write %s" kind)
                                 :reset-at nil))))))
 
 (defun prrr-sync--outbox-outcome (row result)
   "Return how the database changes once GitHub accepted the write ROW.
 RESULT is GitHub's answer.  A plist of `prrr-db-outbox-done''s keys."
-  (let ((payload (prrr-outbox-payload row)))
+  (let* ((payload (prrr-outbox-payload row))
+         (pr-id (prrr-outbox-pr-id row))
+         (comment-id (plist-get payload :comment-id))
+         (thread-id (plist-get payload :thread-id)))
     (pcase (prrr-outbox-kind row)
       ((or 'thread 'publish 'reply 'publish-reply)
        (pcase-let ((`(,rows . ,renames) (prrr-state-outbox-created row result)))
          (list :insert rows :renames renames)))
       ('viewed
-       (list :insert (list (prrr-viewed-create :pr-id (prrr-outbox-pr-id row)
-                                               :path (plist-get payload :path)
+       (list :insert (list (prrr-viewed-create :pr-id pr-id :path (plist-get payload :path)
                                                :state (if (plist-get payload :viewed)
                                                           'viewed
                                                         'unviewed)
-                                               :fetched-at (prrr-sync--timestamp))))))))
+                                               :fetched-at (prrr-sync--timestamp)))))
+      ('edit
+       (when-let ((comment (prrr-db-get 'review-comment comment-id)))
+         (setf (prrr-comment-body comment) (plist-get payload :body)
+               (prrr-comment-updated-at comment) (prrr-sync--timestamp))
+         (list :insert (list comment))))
+      ('delete
+       (let* ((comment (prrr-db-get 'review-comment comment-id))
+              (thread (and comment (prrr-comment-thread-id comment))))
+         (list :delete (append (list (list 'review-comment :comment-id comment-id))
+                               (and thread
+                                    (= 1 (length (prrr-db-select 'review-comment
+                                                                 :thread-id thread)))
+                                    (list (list 'thread :thread-id thread)))))))
+      ('resolve
+       (when-let ((thread (prrr-db-get 'thread thread-id)))
+         (setf (prrr-thread-resolved-p thread) (and (plist-get payload :resolved) t))
+         (list :insert (list thread))))
+      ('submit
+       (list :delete (list (list 'pending-review :pr-id pr-id))
+             :insert (append
+                      (mapcar (lambda (comment)
+                                (setf (prrr-comment-state comment) 'submitted)
+                                comment)
+                              (prrr-db-select 'review-comment :pr-id pr-id :state 'pending))
+                      (when-let ((meta (prrr-db-get 'pullreq-meta pr-id)))
+                        (setf (prrr-pr-meta-viewer-latest-review meta)
+                              (list (pcase (plist-get payload :verdict)
+                                      ('approve "APPROVED")
+                                      ('request-changes "CHANGES_REQUESTED")
+                                      (_ "COMMENTED"))
+                                    (prrr-sync--timestamp)
+                                    (plist-get payload :commit)))
+                        (list meta)))))
+      ('discard
+       (let ((pending (prrr-db-select 'review-comment :pr-id pr-id :state 'pending)))
+         (list :delete (cons (list 'pending-review :pr-id pr-id)
+                             (mapcan (lambda (comment)
+                                       (list (list 'review-comment
+                                                   :comment-id (prrr-comment-comment-id comment))))
+                                     pending))))))))
 
 (defun prrr-sync--outbox-succeeded (row token result)
   "Record that GitHub accepted the write ROW, sent as TOKEN, with RESULT.
@@ -588,9 +732,23 @@ when the write is queued and not being sent again: it did happen."
       (setq prrr-sync--outbox-sending nil))
     (when (and (prrr-db-get 'outbox id) (not (equal id (prrr-sync--sending-id))))
       (apply #'prrr-db-outbox-done id (prrr-sync--outbox-outcome row result))
-      (puthash pr-id (plist-get (prrr-outbox-payload row) :target) prrr-sync--outbox-dirty))
+      (puthash pr-id (plist-get (prrr-outbox-payload row) :target) prrr-sync--outbox-dirty)
+      (when (eq (prrr-outbox-kind row) 'discussion)
+        (prrr-sync--pull-topic pr-id)))
     (prrr-sync--outbox-changed pr-id)
     (prrr-sync--outbox-pump)))
+
+(defun prrr-sync--pull-topic (pr-id)
+  "Ask forge to pull the PR of PR-ID, so a new Discussion Comment shows.
+Only when the PR's Review Buffer is live, since forge needs it."
+  (when-let ((buffer (gethash pr-id prrr-sync--outbox-buffers)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when-let ((topic (bound-and-true-p forge-buffer-topic)))
+          (condition-case err
+              (funcall-interactively #'forge-pull-topic topic)
+            (error (message "prrr: forge could not pull the PR: %s"
+                            (error-message-string err)))))))))
 
 (defun prrr-sync--outbox-failed (row token failure)
   "Record that the write ROW, sent as TOKEN, failed with FAILURE.
