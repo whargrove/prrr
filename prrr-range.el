@@ -96,46 +96,51 @@ section 8)."
 
 ;;;; Choosing a Range
 
-(defun prrr-range--fetch (oid callback)
-  "Fetch the commit OID from the remote of the current pull request.
+(defun prrr-range--fetch-sentinel (callback)
+  "Return the sentinel of a fetch: magit's, then CALLBACK once git ended.
+CALLBACK receives non-nil when git succeeded.  It runs even when
+magit's sentinel signals, so the fetch never stays pending."
+  (lambda (process event)
+    (unwind-protect
+        (magit-process-sentinel process event)
+      (when (memq (process-status process) '(exit signal))
+        (funcall callback (zerop (process-exit-status process)))))))
+
+(defun prrr-range--fetch (oid remote callback)
+  "Fetch the commit OID from REMOTE, the current pull request's remote.
 The fetch runs in the background, by sha (SPEC section 8); CALLBACK
 receives non-nil when it succeeded."
-  (let* ((repo (forge-get-repository (prrr-diff-pullreq)))
-         (process (magit-run-git-async "fetch" "--no-tags" (oref repo remote) oid)))
+  (let ((process (magit-run-git-async "fetch" "--no-tags" remote oid)))
     ;; The Range shown changes once the callback ran, not before.
     (process-put process 'inhibit-refresh t)
-    (set-process-sentinel process
-                          (lambda (process event)
-                            (magit-process-sentinel process event)
-                            (when (memq (process-status process) '(exit signal))
-                              (funcall callback (zerop (process-exit-status process))))))))
+    (set-process-sentinel process (prrr-range--fetch-sentinel callback))))
 
 (defun prrr-range--show-from (kind start)
   "Show the Range KIND from the commit START to the head.
 START is pinned (`prrr-sync-pin').  When START is not in the
 repository it is fetched first; when that fails, the default Range is
 shown instead, with a message."
-  (let ((pullreq (prrr-diff-pullreq))
-        (buffer (current-buffer))
-        (show (lambda ()
-                (prrr-sync-pin (oref (prrr-diff-pullreq) number) start)
-                (prrr-range--switch (prrr-range-create :kind kind :start start)))))
+  (let* ((pullreq (prrr-diff-pullreq))
+         (buffer (current-buffer))
+         (show (lambda ()
+                 (prrr-sync-pin (oref pullreq number) start)
+                 (prrr-range--switch (prrr-range-create :kind kind :start start)))))
     (if (magit-commit-p start)
         (funcall show)
-      (setq prrr-range--fetching start)
-      (message "Fetching %s from %s…" (prrr-state-short-oid start)
-               (oref (forge-get-repository pullreq) remote))
-      (prrr-range--fetch
-       start
-       (lambda (fetched)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (equal prrr-range--fetching start)
-               (if (and fetched (magit-commit-p start))
-                   (funcall show)
-                 (prrr-range--switch (prrr-range-create :kind 'default))
-                 (message "Could not fetch %s, so this is the default Range"
-                          (prrr-state-short-oid start)))))))))))
+      (let ((remote (oref (forge-get-repository pullreq) remote)))
+        (setq prrr-range--fetching start)
+        (message "Fetching %s from %s…" (prrr-state-short-oid start) remote)
+        (prrr-range--fetch
+         start remote
+         (lambda (fetched)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (when (equal prrr-range--fetching start)
+                 (if (and fetched (magit-commit-p start))
+                     (funcall show)
+                   (prrr-range--switch (prrr-range-create :kind 'default))
+                   (message "Could not fetch %s, so this is the default Range"
+                            (prrr-state-short-oid start))))))))))))
 
 (defun prrr-show-since-review ()
   "Show what changed since your latest submitted review.
@@ -159,13 +164,21 @@ Buffer, when you submit, and with `prrr-mark-seen'."
     (prrr-range--show-from
      'since-opened
      (or (and bookmark (prrr-bookmark-last-opened-head-oid bookmark))
-         (user-error (concat "No Bookmark yet: prrr records one when you leave this buffer,"
-                             " when you submit, and with m"))))))
+         (user-error "%s" (substitute-command-keys
+                           (concat "No Bookmark yet: prrr records one when you leave this buffer,"
+                                   " when you submit, and with \\[prrr-mark-seen]")))))))
 
-(defun prrr-range--commits ()
-  "Return the PR's commits up to the head shown, oldest first, as (OID . SUBJECT)."
-  (let ((head (or (prrr-diff-head) (user-error "The pull request's head is missing")))
-        (base (or (prrr-diff-merge-base) (user-error "The pull request's base is missing"))))
+(defun prrr-range--merge-base ()
+  "Return the merge base of the PR and the head shown.
+Signal a `user-error' when it is unknown."
+  (unless (prrr-diff-head)
+    (user-error "The pull request's head is missing"))
+  (or (prrr-diff-merge-base) (user-error "The pull request's base is missing")))
+
+(defun prrr-range--commits (base)
+  "Return the PR's commits after BASE up to the head shown, oldest first.
+Each is (OID . SUBJECT).  BASE is the merge base (`prrr-range--merge-base')."
+  (let ((head (or (prrr-diff-head) (user-error "The pull request's head is missing"))))
     (mapcar (lambda (line)
               (if (string-match "\\`\\([0-9a-f]+\\) \\(.*\\)\\'" line)
                   (cons (match-string 1 line) (match-string 2 line))
@@ -191,7 +204,8 @@ nothing: signal a `user-error'."
 (defun prrr-show-commit (oid)
   "Show the PR's commit OID against its parent; the Range is read-only.
 Interactively, read OID among the PR's commits."
-  (interactive (list (prrr-range--read-commit "Show commit: " (prrr-range--commits))))
+  (interactive (list (prrr-range--read-commit
+                      "Show commit: " (prrr-range--commits (prrr-range--merge-base)))))
   (prrr-diff-pullreq)
   (prrr-range--switch
    (prrr-range-create :kind 'commit :end oid
@@ -204,7 +218,8 @@ Interactively, read OID among the PR's commits."
 Interactively, read FROM among the merge base and the PR's commits,
 then TO among the commits after it."
   (interactive
-   (let* ((commits (cons (cons (prrr-diff-merge-base) "(merge base)") (prrr-range--commits)))
+   (let* ((base (prrr-range--merge-base))
+          (commits (cons (cons base "(merge base)") (prrr-range--commits base)))
           (from (prrr-range--read-commit "Diff from: " (butlast commits))))
      (list from (prrr-range--read-commit
                  "Diff to: " (cdr (seq-drop-while (lambda (commit) (not (equal (car commit) from)))

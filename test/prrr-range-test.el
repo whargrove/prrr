@@ -239,7 +239,13 @@ lives inside the fixture's .git, so it goes when the fixture goes."
 
 (ert-deftest prrr-range-test-since-opened ()
   (prrr-diff-test--with-buffer nil
-    (should-error (prrr-show-since-opened) :type 'user-error)
+    ;; The message names the key the buffer binds to `prrr-mark-seen'.
+    (goto-char (point-min))
+    (use-local-map (define-keymap "M" #'prrr-mark-seen))
+    (unwind-protect
+        (should (string-suffix-p "and with M" (cadr (should-error (prrr-show-since-opened)
+                                                                  :type 'user-error))))
+      (use-local-map prrr-diff-mode-map))
     (prrr-db-insert (prrr-bookmark-create :pr-id prrr-diff-test--pr
                                           :last-opened-head-oid
                                           (prrr-diff-test--rev "refs/pullreqs/1~1")))
@@ -275,11 +281,91 @@ lives inside the fixture's .git, so it goes when the fixture goes."
         (should (eq 'default (prrr-range-kind prrr-diff--range)))
         (should (member "Could not fetch 2222222, so this is the default Range" messages))))))
 
+(defmacro prrr-range-test--noting-callbacks (var &rest body)
+  "Run BODY with VAR set to non-nil once a fetch's callback has returned.
+The callback of `prrr-range--fetch' signalling leaves VAR nil."
+  (declare (indent 1))
+  (let ((fetch (make-symbol "fetch")))
+    `(let ((,var nil)
+           (,fetch (symbol-function 'prrr-range--fetch)))
+       (cl-letf (((symbol-function 'prrr-range--fetch)
+                  (lambda (&rest args)
+                    (let ((callback (car (last args))))
+                      (apply ,fetch (append (butlast args)
+                                            (list (lambda (fetched)
+                                                    (funcall callback fetched)
+                                                    (setq ,var t)))))))))
+         ,@body))))
+
+(defun prrr-range-test--wait-for (predicate)
+  "Wait until PREDICATE returns non-nil, at most ten seconds."
+  (with-timeout (10 (ert-fail "waited ten seconds"))
+    (while (not (funcall predicate))
+      (accept-process-output nil 0.05))))
+
+(ert-deftest prrr-range-test-overtaken-fetch-changes-nothing ()
+  "A fetch that ends after another Range was chosen keeps that Range."
+  (prrr-diff-test--with-buffer nil
+    (prrr-range-test--with-remote
+      (let ((extra (prrr-range-test--remote-commit)))
+        (prrr-range-test--store-review extra)
+        (prrr-range-test--noting-callbacks ended
+          (prrr-show-since-review)
+          (prrr-show-commit (prrr-diff-test--rev "refs/pullreqs/1"))
+          (prrr-range-test--wait-for (lambda () ended)))
+        (should (magit-commit-p extra))
+        (should (eq 'commit (prrr-range-kind prrr-diff--range)))))))
+
+(ert-deftest prrr-range-test-fetch-outlives-its-buffer ()
+  "A fetch that ends after its Review Buffer was killed does nothing."
+  (prrr-diff-test--with-buffer nil
+    (prrr-range-test--with-remote
+      (prrr-range-test--store-review (prrr-range-test--remote-commit))
+      (prrr-range-test--noting-callbacks ended
+        (prrr-show-since-review)
+        (kill-buffer (current-buffer))
+        (prrr-range-test--wait-for (lambda () ended))))))
+
+(ert-deftest prrr-range-test-fetch-ends-when-magit-sentinel-fails ()
+  "An error in magit's sentinel does not leave the fetch pending.
+The sentinel is called here, not by Emacs: in batch mode an error in a
+process sentinel kills Emacs."
+  (let ((process (make-process :name "prrr-test" :command '("true") :noquery t
+                               :sentinel #'ignore))
+        (fetched 'never))
+    (while (process-live-p process)
+      (accept-process-output process 0.05))
+    (cl-letf (((symbol-function 'magit-process-sentinel)
+               (lambda (&rest _) (error "Example failure"))))
+      (should-error (funcall (prrr-range--fetch-sentinel (lambda (ok) (setq fetched ok)))
+                             process "finished\n")))
+    (should (eq t fetched))))
+
+(ert-deftest prrr-range-test-fetch-asks-forge-once ()
+  "Starting the fetch of a missing start looks the PR's repository up once.
+forge's own lookups, as when magit's process buffer is set up, do not count."
+  (prrr-diff-test--with-buffer nil
+    (prrr-range-test--with-remote
+      (prrr-range-test--store-review (prrr-range-test--remote-commit))
+      (let ((calls 0)
+            (lookup (symbol-function 'forge-get-repository)))
+        (unwind-protect
+            (cl-letf (((symbol-function 'forge-get-repository)
+                       (lambda (&rest args)
+                         (when (cl-typep (car args) 'forge-pullreq)
+                           (cl-incf calls))
+                         (apply lookup args))))
+              (prrr-show-since-review))
+          ;; The fetch must end before the fixture repository goes.
+          (prrr-range-test--wait-for-fetch))
+        (should (= 1 calls))))))
+
 (ert-deftest prrr-range-test-commit ()
   (prrr-diff-test--with-buffer nil
     (let ((head (prrr-diff-test--rev "refs/pullreqs/1"))
           (first (prrr-diff-test--rev "refs/pullreqs/1~1")))
-      (should (equal (list (cons first "first") (cons head "head")) (prrr-range--commits)))
+      (should (equal (list (cons first "first") (cons head "head"))
+                     (prrr-range--commits (prrr-diff-merge-base))))
       (cl-letf (((symbol-function 'completing-read)
                  (prrr-range-test--choose (substring head 0 7))))
         (call-interactively #'prrr-show-commit))
@@ -290,13 +376,19 @@ lives inside the fixture's .git, so it goes when the fixture goes."
   (prrr-diff-test--with-buffer nil
     (let ((base (prrr-diff-merge-base))
           (first (prrr-diff-test--rev "refs/pullreqs/1~1"))
-          (prompts nil))
+          (prompts nil)
+          (merge-bases 0)
+          (merge-base (symbol-function 'prrr-diff-merge-base)))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (prompt table &rest _)
                    (push (cons prompt (all-completions "" table)) prompts)
-                   (car (all-completions "" table)))))
+                   (car (all-completions "" table))))
+                ((symbol-function 'prrr-diff-merge-base)
+                 (lambda () (cl-incf merge-bases) (funcall merge-base))))
         (call-interactively #'prrr-show-between))
       (should (equal (prrr-range-create :kind 'between :start base :end first) prrr-diff--range))
+      ;; The merge base is found once.
+      (should (= 1 merge-bases))
       ;; From offers the merge base and every commit but the last; To the commits after From.
       (should (equal '(2 2) (mapcar (lambda (prompt) (length (cdr prompt))) prompts)))
       (should (string-match-p "(merge base)" (car (cdr (cadr prompts)))))
@@ -339,6 +431,13 @@ lives inside the fixture's .git, so it goes when the fixture goes."
       (should (equal (list head) (process-lines "git" "-C" repo "rev-parse"
                                                 (format "refs/prrr/1/%s" head)))))))
 
+(ert-deftest prrr-range-test-kill-without-a-head ()
+  "A Review Buffer that shows no head records no Bookmark when killed."
+  (prrr-diff-test--with-buffer (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")
+    (should-not (prrr-diff-head))
+    (kill-buffer (current-buffer))
+    (should-not (prrr-range-test--bookmark))))
+
 (ert-deftest prrr-range-test-bookmark-on-quit ()
   (prrr-diff-test--with-buffer nil
     (let ((head (prrr-diff-head)))
@@ -375,12 +474,15 @@ lives inside the fixture's .git, so it goes when the fixture goes."
 ;;;; Keys
 
 (ert-deftest prrr-range-test-keys-and-menus-agree ()
-  "SPEC section 9: D opens the Range menu; . m > < are keys and in the main menu."
+  "SPEC section 9: D opens the Range menu; . m > < are keys and in the main menu.
+The keys are bound in the file and hunk section maps too, which win
+over the mode's."
   (pcase-dolist (`(,key . ,command) '(("D" . prrr-range) ("." . prrr-goto-default-range)
                                       ("m" . prrr-mark-seen) (">" . prrr-stack-up)
                                       ("<" . prrr-stack-down)))
     (should (eq command (keymap-lookup prrr-diff-mode-map key)))
     (should (eq command (keymap-lookup prrr-diff-hunk-section-map key)))
+    (should (eq command (keymap-lookup prrr-diff-file-section-map key)))
     (let ((suffix (transient-get-suffix 'prrr-menu key)))
       (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))
                                      :command)))))
