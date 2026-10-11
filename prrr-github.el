@@ -606,9 +606,14 @@ failure classified by `prrr-github-error'."
 
 (defun prrr-github--rest-comment (data)
   "Decode the review comment DATA a REST call answered with.
-Return (:comment-id :database-id :created-at)."
+Return (:comment-id :database-id :created-at).  Like the GraphQL
+creations, an answer without GitHub's node id signals
+`prrr-github-failure' (`prrr-github--created'): prrr names every
+comment by that id, so a comment stored without one could be neither
+edited, deleted nor matched by a refetch."
   (let-alist data
-    (list :comment-id .node_id :database-id (prrr-github--database-id .id)
+    (list :comment-id (prrr-github--created .node_id)
+          :database-id (prrr-github--database-id .id)
           :created-at .created_at)))
 
 (defun prrr-github-publish-comment (host owner name number commit anchor body

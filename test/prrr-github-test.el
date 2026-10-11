@@ -518,6 +518,31 @@ CALL is a function of a callback and an errorback that sends the request."
     (lambda (callback errorback)
       (prrr-github-create-pending-review "api.github.com" "PR_1" "1111" callback errorback))))
 
+(defun prrr-github-test--without-node-id (fixture)
+  "Return the REST answer FIXTURE with a null node_id."
+  (mapcar (lambda (pair) (if (eq (car pair) 'node_id) (list 'node_id) pair))
+          (prrr-test-fixture fixture)))
+
+(ert-deftest prrr-github-test-rest-null-node-id-is-a-failure ()
+  "A REST answer without GitHub's node id created nothing prrr can name.
+Immediate Publish then fails as the GraphQL creations do, so the write
+stays queued instead of storing a comment with a nil id."
+  (pcase-dolist (`(,fixture . ,call)
+                 `(("publish-comment"
+                    . ,(lambda (callback errorback)
+                         (prrr-github-publish-comment "api.github.com" "o" "n" 1 "1111"
+                                                      prrr-github-test--anchor "Now."
+                                                      callback errorback)))
+                   ("publish-reply"
+                    . ,(lambda (callback errorback)
+                         (prrr-github-publish-reply "api.github.com" "o" "n" 1 "1001" "Done."
+                                                    callback errorback)))))
+    (prrr-test-with-rest-stub (prrr-github-test--without-node-id fixture) captured
+      (let ((failure nil))
+        (funcall call #'ert-fail (lambda (f) (setq failure f)))
+        (should captured)
+        (should (equal prrr-github-test--created-nothing failure))))))
+
 (ert-deftest prrr-github-test-write-failure-reaches-errorback ()
   (prrr-test-with-ghub-error-stub '(errors ((type . "UNPROCESSABLE") (message . "one pending review"))) nil
     (let ((failure nil))
