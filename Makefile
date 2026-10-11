@@ -32,8 +32,11 @@ lint:
 	$(BATCH) --eval '(progn (require (quote checkdoc)) (setq checkdoc-verb-check-experimental-flag nil) (defvar prrr-checkdoc-failed nil) (setq checkdoc-create-error-function (lambda (text start _end &optional _unfixable) (setq prrr-checkdoc-failed t) (message "%s:%d: %s" (buffer-file-name) (line-number-at-pos start) text) nil)) (dolist (file command-line-args-left) (checkdoc-file file)) (kill-emacs (if prrr-checkdoc-failed 1 0)))' \
 	  $(wildcard $(SRC)) $(wildcard test/*.el) $(wildcard bench/*.el)
 
+# Test files are required, not loaded: one that requires another (as
+# prrr-range-test requires prrr-diff-test) must not define its tests twice.
 test:
-	$(BATCH) -l test/prrr-test-helper.el $(addprefix -l ,$(wildcard $(TESTS))) \
+	$(BATCH) -l test/prrr-test-helper.el \
+	  $(foreach file,$(wildcard $(TESTS)),--eval "(require '$(basename $(notdir $(file))))") \
 	  --eval '(ert-run-tests-batch-and-exit (quote $(SELECTOR)))'
 
 # The budget is for the byte-compiled package, which is what users run.

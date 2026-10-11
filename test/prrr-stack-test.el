@@ -95,6 +95,7 @@ The fixture PR's base is main, its head branch feature."
                            (prrr-db-get 'pr-bookmark prrr-diff-test--pr)))))))
 
 (ert-deftest prrr-stack-test-bottom-of-the-stack ()
+  "Going down from the bottom PR of a Stack signals a `user-error'."
   (prrr-stack-test--with-stack
     (should (equal '(user-error "Bottom of the Stack")
                    (should-error (prrr-stack-down) :type 'user-error)))))

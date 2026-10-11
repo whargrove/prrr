@@ -1118,6 +1118,7 @@ The old head stays as the branch feature."
     (should (member "src/example.el" (prrr-diff-test--files)))))
 
 (ert-deftest prrr-diff-test-range-missing-commit ()
+  "A Range whose start commit is not available locally says so and shows no files."
   (prrr-diff-test--with-buffer nil
     (prrr-diff-show-range (prrr-range-create :kind 'since-review
                                              :start "2222222222222222222222222222222222222222"))

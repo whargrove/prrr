@@ -1188,7 +1188,7 @@ BODY, REPLY-TO and CREATED-AT are its fields."
     (should-not (prrr-state-inline-sides since "h" "g"))))
 
 (ert-deftest prrr-state-test-anchor-problem ()
-  "Review Focus 3: only lines numbered as GitHub numbers them take comments."
+  "Review Focus 2: only lines numbered as GitHub numbers them take comments."
   (let ((right '(:path "a.el" :line 3 :side right :subject-type line))
         (left '(:path "a.el" :line 3 :side left :subject-type line))
         (mixed '(:path "a.el" :line 4 :side right :start-line 2 :start-side left

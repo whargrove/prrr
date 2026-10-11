@@ -1590,7 +1590,7 @@ the comment records it once."
 ;;;; Bookmark and pinned commits
 
 (ert-deftest prrr-sync-test-pin-keeps-a-commit ()
-  "SPEC section 8: a pinned commit survives a force-push and git gc."
+  "SPEC section 8: pinning a commit creates its ref, once however often it is pinned."
   (prrr-test-with-repo
     (let ((first (car (process-lines "git" "rev-parse" "refs/pullreqs/1~1"))))
       (should (prrr-sync-pin 1 first))

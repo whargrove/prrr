@@ -199,12 +199,15 @@ lives inside the fixture's .git, so it goes when the fixture goes."
     (car (process-lines "git" "-C" remote "rev-parse" "extra"))))
 
 (defmacro prrr-range-test--with-remote (&rest body)
-  "Run BODY with forge's repository of the fixture PR on the remote origin."
+  "Run BODY with forge's repository of the fixture PR on the remote origin.
+The fetch's progress messages are not echoed, so they stay out of the
+test run's output."
   (declare (indent 0))
   `(cl-letf (((symbol-function 'forge-get-repository)
               (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
                                                          :name "example-repo" :remote "origin"))))
-     ,@body))
+     (let ((inhibit-message t))
+       ,@body)))
 
 (defun prrr-range-test--wait-for-fetch ()
   "Wait until the Review Buffer's fetch ended, at most ten seconds."
@@ -476,7 +479,8 @@ forge's own lookups, as when magit's process buffer is set up, do not count."
 
 (ert-deftest prrr-range-test-mark-seen ()
   (prrr-diff-test--with-buffer nil
-    (prrr-mark-seen)
+    (let ((inhibit-message t))
+      (prrr-mark-seen))
     (should (equal (prrr-diff-head) (prrr-range-test--bookmark)))))
 
 (ert-deftest prrr-range-test-open-pins-the-review-commit ()
