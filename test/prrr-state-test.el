@@ -828,5 +828,76 @@
       (should (equal '(("local:R" . "PRRC_2")) renames))
       (should (equal "PRRT_1" (prrr-comment-thread-id comment))))))
 
+
+;;;; What the user sees
+
+(defun prrr-state-test--data ()
+  "Stored review data: one Thread with my pending comment, and a Pending Review."
+  (list :threads (list (prrr-test-thread :id "T1"))
+        :comments (list (prrr-comment-create :comment-id "C1" :thread-id "T1" :pr-id "PR_1"
+                                             :author "example-me" :body "Old."
+                                             :state 'pending :local-state 'sent))
+        :pending-review (prrr-pending-review-create :pr-id "PR_1" :review-id "PRR_1")
+        :viewed nil))
+
+(ert-deftest prrr-state-test-outbox-view-applies-writes ()
+  (let* ((data (prrr-state-test--data))
+         (rows (list (prrr-state-test--write "1" "PR_1" 'thread
+                                             '(:thread "local:T" :comment "local:C" :body "New."
+                                               :anchor (:path "b.el" :line 1 :side right)))
+                     (prrr-state-test--write "2" "PR_1" 'edit '(:comment-id "C1" :body "Edited.")
+                                             "offline")
+                     (prrr-state-test--write "3" "PR_1" 'resolve '(:thread-id "T1" :resolved t))
+                     (prrr-state-test--write "4" "PR_1" 'viewed '(:path "a.el" :viewed t))
+                     (prrr-state-test--write "5" "PR_1" 'discussion
+                                             '(:comment "local:D" :body "Thanks!"))
+                     (prrr-state-test--write "6" "PR_1" 'submit '(:verdict approve :body ""))))
+         (view (prrr-state-outbox-view data rows)))
+    (should (equal '("T1" "local:T") (mapcar #'prrr-thread-thread-id (plist-get view :threads))))
+    (should (equal '(("Edited." unsent) ("New." unsent))
+                   (mapcar (lambda (comment) (list (prrr-comment-body comment)
+                                                   (prrr-comment-local-state comment)))
+                           (plist-get view :comments))))
+    (should (prrr-thread-resolved-p (car (plist-get view :threads))))
+    (should (eq 'viewed (prrr-viewed-state (car (plist-get view :viewed)))))
+    (should (equal "Thanks!" (nth 1 (car (plist-get view :discussion)))))
+    (should (equal "6" (prrr-outbox-id (plist-get view :submit))))
+    (should (equal rows (plist-get view :outbox)))
+    (let ((writes (plist-get view :writes)))
+      (should (equal "offline" (prrr-outbox-last-error (gethash "C1" writes))))
+      (should (equal "1" (prrr-outbox-id (gethash "local:C" writes))))
+      (should (equal "3" (prrr-outbox-id (gethash "T1" writes))))
+      (should (equal "4" (prrr-outbox-id (gethash "a.el" writes)))))
+    ;; The stored rows are untouched.
+    (should (equal "Old." (prrr-comment-body (car (plist-get data :comments)))))
+    (should-not (prrr-thread-resolved-p (car (plist-get data :threads))))))
+
+(ert-deftest prrr-state-test-outbox-view-delete ()
+  "Deleting a Thread's last comment hides the Thread; a failed delete hides nothing."
+  (let ((data (prrr-state-test--data)))
+    (let ((view (prrr-state-outbox-view
+                 data (list (prrr-state-test--write "1" "PR_1" 'delete '(:comment-id "C1"))))))
+      (should-not (plist-get view :comments))
+      (should-not (plist-get view :threads)))
+    (let ((view (prrr-state-outbox-view
+                 data (list (prrr-state-test--write "1" "PR_1" 'delete '(:comment-id "C1")
+                                                    "GitHub returned HTTP 502")))))
+      (should (= 1 (length (plist-get view :comments))))
+      (should (gethash "C1" (plist-get view :writes))))))
+
+(ert-deftest prrr-state-test-outbox-view-discard ()
+  (let ((view (prrr-state-outbox-view (prrr-state-test--data)
+                                      (list (prrr-state-test--write "1" "PR_1" 'discard nil)))))
+    (should-not (plist-get view :pending-review))
+    (should-not (plist-get view :comments))
+    (should-not (plist-get view :threads))))
+
+(ert-deftest prrr-state-test-outbox-view-keeps-threads-without-comments ()
+  "A stored Thread whose comments are not stored is not the overlay's to hide."
+  (let ((view (prrr-state-outbox-view (list :threads (list (prrr-test-thread)) :comments nil)
+                                      nil)))
+    (should (= 1 (length (plist-get view :threads))))
+    (should (zerop (hash-table-count (plist-get view :writes))))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

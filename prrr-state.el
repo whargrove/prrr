@@ -623,5 +623,111 @@ name it (see `prrr-state-thread-renames')."
                                (cons local-thread (plist-get result :thread-id)))
                           (cons (plist-get payload :comment) (plist-get result :comment-id)))))))
 
+(defun prrr-state--copy (struct &rest changes)
+  "Return a copy of the row STRUCT with CHANGES, :SLOT VALUE pairs, applied."
+  (let ((copy (copy-sequence struct)))
+    (while changes
+      (setf (cl-struct-slot-value (type-of copy) (intern (substring (symbol-name (pop changes)) 1))
+                                  copy)
+            (pop changes)))
+    copy))
+
+(defun prrr-state-outbox-view (data rows)
+  "Return review DATA as the user sees it with the queued writes ROWS applied.
+DATA is a plist like the one `prrr-db-review-data' returns; ROWS are
+the PR's `prrr-outbox' rows, oldest first.  Threads, comments, the
+Pending Review and Viewed flags change as each write will change them
+on GitHub; created things carry their local ids and a `local-state' of
+`unsent'.  A failed delete or discard changes nothing, so what it was
+meant to remove stays in view.  The result has DATA's keys plus:
+  :outbox      ROWS;
+  :writes      a hash table from each comment id, Thread id and Viewed
+               path a queued write touches to the newest such row;
+  :discussion  the queued Discussion Comments as (ID BODY ROW) lists;
+  :submit      the queued Submit row, or nil.
+DATA's structs are never changed."
+  (let ((threads (plist-get data :threads))
+        (comments (plist-get data :comments))
+        (pending (plist-get data :pending-review))
+        (viewed (plist-get data :viewed))
+        (writes (make-hash-table :test #'equal))
+        (emptied nil) (discussion nil) (submit nil))
+    (dolist (row rows)
+      (let* ((payload (prrr-outbox-payload row))
+             (failed (prrr-outbox-last-error row))
+             (comment-id (plist-get payload :comment-id))
+             (thread-id (plist-get payload :thread-id)))
+        (pcase (prrr-outbox-kind row)
+          ((or 'thread 'publish)
+           (let ((thread (plist-get payload :thread))
+                 (comment (plist-get payload :comment)))
+             (setq threads (append threads (list (prrr-state--outbox-thread row thread)))
+                   comments (append comments
+                                    (list (prrr-state--outbox-comment
+                                           row comment thread (prrr-outbox-created-at row)))))
+             (puthash thread row writes)
+             (puthash comment row writes)))
+          ((or 'reply 'publish-reply)
+           (let ((comment (plist-get payload :comment)))
+             (setq comments (append comments
+                                    (list (prrr-state--outbox-comment
+                                           row comment thread-id (prrr-outbox-created-at row)))))
+             (puthash comment row writes)))
+          ('edit
+           (setq comments (mapcar (lambda (comment)
+                                    (if (equal (prrr-comment-comment-id comment) comment-id)
+                                        (prrr-state--copy comment :body (plist-get payload :body)
+                                                          :local-state 'unsent)
+                                      comment))
+                                  comments))
+           (puthash comment-id row writes))
+          ('delete
+           (if failed
+               (puthash comment-id row writes)
+             (let ((gone (seq-find (lambda (comment)
+                                     (equal (prrr-comment-comment-id comment) comment-id))
+                                   comments)))
+               (when gone
+                 (push (prrr-comment-thread-id gone) emptied)
+                 (setq comments (delq gone (copy-sequence comments)))))))
+          ('resolve
+           (setq threads (mapcar (lambda (thread)
+                                   (if (equal (prrr-thread-thread-id thread) thread-id)
+                                       (prrr-state--copy thread :resolved-p
+                                                         (and (plist-get payload :resolved) t))
+                                     thread))
+                                 threads))
+           (puthash thread-id row writes))
+          ('viewed
+           (let ((path (plist-get payload :path)))
+             (setq viewed (append (seq-remove (lambda (flag) (equal (prrr-viewed-path flag) path))
+                                              viewed)
+                                  (list (prrr-viewed-create
+                                         :pr-id (prrr-outbox-pr-id row) :path path
+                                         :state (if (plist-get payload :viewed) 'viewed 'unviewed)))))
+             (puthash path row writes)))
+          ('discussion
+           (push (list (plist-get payload :comment) (plist-get payload :body) row) discussion))
+          ('discard
+           (unless failed
+             (dolist (comment comments)
+               (when (eq (prrr-comment-state comment) 'pending)
+                 (push (prrr-comment-thread-id comment) emptied)))
+             (setq pending nil
+                   comments (seq-remove (lambda (comment)
+                                          (eq (prrr-comment-state comment) 'pending))
+                                        comments))))
+          ('submit (setq submit row)))))
+    (when emptied
+      (let ((live (make-hash-table :test #'equal)))
+        (dolist (comment comments)
+          (puthash (prrr-comment-thread-id comment) t live))
+        (setq threads (seq-remove (lambda (thread)
+                                    (let ((id (prrr-thread-thread-id thread)))
+                                      (and (member id emptied) (not (gethash id live)))))
+                                  threads))))
+    (list :threads threads :comments comments :pending-review pending :viewed viewed
+          :outbox rows :writes writes :discussion (nreverse discussion) :submit submit)))
+
 (provide 'prrr-state)
 ;;; prrr-state.el ends here
