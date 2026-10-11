@@ -231,6 +231,7 @@ setting timers, so nothing runs later; run one with
          (prrr-sync--outbox-scheduled nil)
          (prrr-sync--outbox-buffers (make-hash-table :test #'equal))
          (prrr-sync--outbox-dirty (make-hash-table :test #'equal))
+         (prrr-sync--renames (make-hash-table :test #'equal))
          (prrr-sync--status (make-hash-table :test #'equal))
          (prrr-sync--mutation-spacing 0)
          (prrr-github-user "example-me")

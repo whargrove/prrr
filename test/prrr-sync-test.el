@@ -695,6 +695,23 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (should-not (prrr-db-outbox-rows))
         (should (prrr-db-get 'viewed prrr-sync-test--pr "a.el"))))))
 
+(ert-deftest prrr-sync-test-outbox-late-answer-to-a-discarded-write-refetches ()
+  "Bead prrr-9tu: GitHub did what a discarded write asked, so the PR is refetched."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((callback nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query _variables &rest args)
+                     (setq callback (plist-get args :callback)))))
+          (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t)))
+        (let ((watchdog (seq-find (lambda (timer) (eql (car timer) prrr-sync-timeout))
+                                  prrr-test-timers)))
+          (apply (nth 1 watchdog) (nth 2 watchdog)))
+        (prrr-sync-discard (prrr-outbox-id (car (prrr-db-outbox-rows))))
+        (should-not (prrr-db-outbox-rows))
+        (funcall callback prrr-sync-test--mark-viewed)
+        (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))))))
+
 (ert-deftest prrr-sync-test-outbox-sends-after-a-restart ()
   "A queued write carries all it needs: no forge object, no buffer."
   (prrr-db-with-test-db
@@ -719,6 +736,12 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
           (should (= 2 (prrr-sync-discard (prrr-outbox-id thread))))
           (should-not (prrr-db-outbox-rows))
           (should-not (plist-get (prrr-sync-review-data prrr-sync-test--pr) :comments)))))))
+
+(ert-deftest prrr-sync-test-outbox-discard-of-an-unknown-write-drops-none ()
+  "A write sent between choosing it and confirming is gone: none dropped, not nil."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (should (eql 0 (prrr-sync-discard "no-such-write"))))))
 
 (ert-deftest prrr-sync-test-outbox-needs-a-login ()
   (prrr-db-with-test-db
@@ -804,6 +827,81 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
           `((repository . ,(prrr-test-fixture "review-data"))
             (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
         (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq))
+        (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
+        (should (equal "PRRT_kwDOexample0000005"
+                       (alist-get 'pullRequestReviewThreadId
+                                  (prrr-sync-test--input 'addPullRequestReviewThreadReply))))))))
+
+;;;; Writes confirmed after their target was sent
+
+(defun prrr-sync-test--sent-thread ()
+  "Comment on the fixture PR and let GitHub accept it.
+Return the local ids it was written under, as (THREAD . COMMENT)."
+  (prrr-sync-test--store-pending-review)
+  (prrr-test-with-ghub-dispatch
+      `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+    (let ((payload (prrr-outbox-payload
+                    (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                         :body "Nit." :commit "1111")))))
+      (should-not (prrr-db-outbox-rows))
+      (cons (plist-get payload :thread) (plist-get payload :comment)))))
+
+(ert-deftest prrr-sync-test-outbox-reply-confirmed-after-its-thread-was-sent ()
+  "Review Focus 3: a reply naming a Thread's local id after its success goes out."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((ids (prrr-sync-test--sent-thread)))
+        (prrr-test-with-ghub-dispatch
+            `((addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+          (prrr-sync-test--write 'reply (list :thread-id (car ids) :body "And this."))
+          (should (equal '(addPullRequestReviewThreadReply) prrr-test-requests))
+          (should (equal "PRRT_kwDOexampleNew01"
+                         (alist-get 'pullRequestReviewThreadId
+                                    (prrr-sync-test--input 'addPullRequestReviewThreadReply))))
+          (should-not (prrr-db-outbox-rows)))))))
+
+(ert-deftest prrr-sync-test-outbox-edit-confirmed-after-its-comment-was-sent ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((ids (prrr-sync-test--sent-thread)))
+        (prrr-test-with-ghub-dispatch
+            '((updatePullRequestReviewComment . ((data (updatePullRequestReviewComment
+                                                        (clientMutationId))))))
+          (prrr-sync-test--write 'edit (list :comment-id (cdr ids) :body "Better."))
+          (should (equal "PRRC_kwDOexampleNew01"
+                         (alist-get 'pullRequestReviewCommentId
+                                    (prrr-sync-test--input 'updatePullRequestReviewComment))))
+          (should-not (prrr-db-outbox-rows))
+          (should (equal "Better." (prrr-comment-body
+                                    (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01")))))))))
+
+(ert-deftest prrr-sync-test-outbox-delete-confirmed-after-its-comment-was-sent ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((ids (prrr-sync-test--sent-thread)))
+        (prrr-test-with-ghub-dispatch
+            '((deletePullRequestReviewComment . ((data (deletePullRequestReviewComment
+                                                        (clientMutationId))))))
+          (prrr-sync-test--write 'delete (list :comment-id (cdr ids)))
+          (should (equal "PRRC_kwDOexampleNew01"
+                         (alist-get 'id (prrr-sync-test--input
+                                         'deletePullRequestReviewComment))))
+          (should-not (prrr-db-outbox-rows))
+          (should-not (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01")))))))
+
+(ert-deftest prrr-sync-test-outbox-reply-confirmed-after-a-refetch-named-its-thread ()
+  "A reply naming a published Thread's local id after the refetch that renamed it goes out."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-db-insert (prrr-comment-create :comment-id "PRRC_kwDOexample0000006"
+                                           :thread-id "local:T" :pr-id prrr-sync-test--pr
+                                           :state 'submitted :local-state 'sent))
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "review-data"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq))
+        (prrr-sync-test--write 'reply '(:thread-id "local:T" :body "More."))
         (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
         (should (equal "PRRT_kwDOexample0000005"
                        (alist-get 'pullRequestReviewThreadId

@@ -330,6 +330,26 @@ GitHub asks for at least a second (SPEC section 4).  Tests set it to 0.")
 A PR is here from a write's success until a refetch of it starts, so
 the Outbox refetches it once it has nothing more to send.")
 
+(defvar prrr-sync--renames (make-hash-table :test #'equal)
+  "Hash table from each local id the Outbox saw renamed to GitHub's id.
+A buffer drawn, or a command started, before the rename still names
+the local id; `prrr-sync-write' translates it through this table.  It
+lives for the session only: after a restart every buffer is drawn
+from the database, where stored rows and queued writes already carry
+GitHub's ids.")
+
+(defun prrr-sync--learn-renames (renames)
+  "Remember RENAMES, an alist from local id to GitHub's id."
+  (pcase-dolist (`(,local . ,github) renames)
+    (puthash local github prrr-sync--renames)))
+
+(defun prrr-sync--renamed (payload)
+  "Return PAYLOAD with its :thread-id and :comment-id as GitHub names them."
+  (let ((renamed (copy-sequence payload)))
+    (dolist (key '(:thread-id :comment-id) renamed)
+      (when-let ((github (gethash (plist-get payload key) prrr-sync--renames)))
+        (setq renamed (plist-put renamed key github))))))
+
 (defvar prrr-sync--id-counter 0
   "Last counter used by `prrr-sync--new-id'.")
 
@@ -390,11 +410,15 @@ the background after the PR's earlier writes, one mutation at a time
 \(SPEC section 4).  Every failed write of the PR is tried again too.
 An edit or delete of a comment whose own write is queued and not being
 sent changes or drops that write instead, and a discard drops the
-queued writes of the Pending Review first.  BUFFER, when live,
-refreshes whenever the PR's writes change.  Return the `prrr-outbox'
-row that carries the write, or nil when it dropped queued writes
-instead.  Signal a `user-error' when the viewer's login is unknown."
-  (let* ((target (prrr-sync--target repo pullreq))
+queued writes of the Pending Review first.  A :thread-id or
+:comment-id that is a local id GitHub has since named is replaced by
+GitHub's id, so a command confirmed after its target was sent still
+reaches it.  BUFFER, when live, refreshes whenever the PR's writes
+change.  Return the `prrr-outbox' row that carries the write, or nil
+when it dropped queued writes instead.  Signal a `user-error' when the
+viewer's login is unknown."
+  (let* ((payload (prrr-sync--renamed payload))
+         (target (prrr-sync--target repo pullreq))
          (pr-id (plist-get target :pr-id))
          (creator (and (memq kind '(edit delete))
                        (prrr-sync--outbox-creator pr-id (plist-get payload :comment-id)))))
@@ -455,19 +479,22 @@ BUFFER, when live, refreshes whenever the PR's writes change."
 
 (defun prrr-sync-discard (id)
   "Drop the queued write ID and every queued write that needs what it creates.
-Return how many writes were dropped.  Signal a `user-error' while ID
-is being sent."
-  (when-let ((row (prrr-db-get 'outbox id)))
-    (when (equal id (prrr-sync--sending-id))
-      (user-error "That write is being sent; try again in a moment"))
-    (let ((drop (cons row (prrr-state-outbox-dependents
-                           (prrr-db-outbox-rows (prrr-outbox-pr-id row))
-                           (prrr-state-outbox-created-ids row)))))
-      (dolist (dropped drop)
-        (prrr-db-delete 'outbox :id (prrr-outbox-id dropped)))
-      (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
-      (prrr-sync--outbox-pump)
-      (length drop))))
+Return how many writes were dropped: 0 when ID is no longer queued,
+as when it was sent meanwhile.  Signal a `user-error' while ID is
+being sent."
+  (if-let ((row (prrr-db-get 'outbox id)))
+      (progn
+        (when (equal id (prrr-sync--sending-id))
+          (user-error "That write is being sent; try again in a moment"))
+        (let ((drop (cons row (prrr-state-outbox-dependents
+                               (prrr-db-outbox-rows (prrr-outbox-pr-id row))
+                               (prrr-state-outbox-created-ids row)))))
+          (dolist (dropped drop)
+            (prrr-db-delete 'outbox :id (prrr-outbox-id dropped)))
+          (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
+          (prrr-sync--outbox-pump)
+          (length drop)))
+    0))
 
 (defun prrr-sync-review-data (pr-id)
   "Return the review data of PR-ID as the user should see it.
@@ -737,16 +764,20 @@ PENDING is the pending comments being deleted."
 (defun prrr-sync--outbox-succeeded (row token result)
   "Record that GitHub accepted the write ROW, sent as TOKEN, with RESULT.
 A late answer, after the send ended as a failure, is still recorded
-when the write is queued and not being sent again: it did happen."
+when the write is queued and not being sent again: it did happen.
+The PR is refetched in any case, so it shows what GitHub has."
   (let ((id (prrr-outbox-id row))
         (pr-id (prrr-outbox-pr-id row)))
     (when (prrr-sync--outbox-current-p token)
       (setq prrr-sync--outbox-sending nil))
     (when (and (prrr-db-get 'outbox id) (not (equal id (prrr-sync--sending-id))))
-      (apply #'prrr-db-outbox-done id (prrr-sync--outbox-outcome row result))
-      (puthash pr-id (plist-get (prrr-outbox-payload row) :target) prrr-sync--outbox-dirty)
+      (let ((outcome (prrr-sync--outbox-outcome row result)))
+        (apply #'prrr-db-outbox-done id outcome)
+        (prrr-sync--learn-renames (plist-get outcome :renames)))
       (when (eq (prrr-outbox-kind row) 'discussion)
         (prrr-sync--pull-topic pr-id)))
+    ;; Even a write discarded meanwhile changed GitHub: refetch to show it.
+    (puthash pr-id (plist-get (prrr-outbox-payload row) :target) prrr-sync--outbox-dirty)
     (prrr-sync--outbox-changed pr-id)
     (prrr-sync--outbox-pump)))
 
@@ -834,11 +865,11 @@ Outbox refetches it once it has nothing more to send."
                      (let ((raced (prrr-sync--outbox-races-p pr-id)))
                        (if raced
                            (puthash pr-id target prrr-sync--outbox-dirty)
-                         (prrr-db-replace-review-data
-                          pr-id data
-                          (prrr-state-thread-renames
-                           (prrr-db-select 'review-comment :pr-id pr-id)
-                           (plist-get data :comments))))
+                         (let ((renames (prrr-state-thread-renames
+                                         (prrr-db-select 'review-comment :pr-id pr-id)
+                                         (plist-get data :comments))))
+                           (prrr-db-replace-review-data pr-id data renames)
+                           (prrr-sync--learn-renames renames)))
                        (prrr-sync--finish key token
                                           (list :kind 'ok :head-oid (plist-get data :head-oid))
                                           buffer)
