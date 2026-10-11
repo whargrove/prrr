@@ -74,6 +74,23 @@
    ["Sync"
     ("G" "pull" prrr-pull)]])
 
+;;;###autoload (autoload 'prrr-submit "prrr-transient" nil t)
+(transient-define-prefix prrr-submit ()
+  "Submit your Pending Review with a Verdict, or discard it (SPEC section 9)."
+  [["Submit"
+    ("a" "approve" prrr-submit-approve)
+    ("r" "request changes" prrr-submit-request-changes)
+    ("c" "comment" prrr-submit-comment)]
+   ["Pending Review"
+    ("k" "discard" prrr-discard-pending)]])
+
+;;;###autoload (autoload 'prrr-outbox "prrr-transient" nil t)
+(transient-define-prefix prrr-outbox ()
+  "Act on this pull request's unsent writes (SPEC section 9)."
+  ["Outbox"
+   ("r" "retry now" prrr-outbox-retry)
+   ("k" "discard one" prrr-outbox-discard)])
+
 ;;;###autoload (autoload 'prrr-menu "prrr-transient" nil t)
 (transient-define-prefix prrr-menu ()
   "Act on the Review Buffer (SPEC section 9).
@@ -87,7 +104,10 @@ Milestones 5 to 7 add the Range, Stack and Agent groups."
     ("k" "delete" prrr-delete-comment)
     ("d" "discussion" prrr-discussion-comment)
     ("R" "resolve or unresolve" prrr-toggle-resolved)
-    ("s" "suggest a change" prrr-comment-suggest)]]
+    ("s" "suggest a change" prrr-comment-suggest)]
+   ["Review"
+    ("S" "submit or discard…" prrr-submit)
+    ("O" "outbox…" prrr-outbox)]]
   [["Navigate"
     ("]" "next Thread" prrr-next-thread)
     ("[" "previous Thread" prrr-previous-thread)

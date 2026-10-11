@@ -956,5 +956,25 @@
   (should (equal '((?- . "x")) (prrr-state-suggestion-diff '("x") nil)))
   (should (equal '((?+ . "y")) (prrr-state-suggestion-diff nil '("y")))))
 
+;;;; Submit
+
+(ert-deftest prrr-state-test-submit-problem ()
+  (should-not (prrr-state-submit-problem 'approve "" 0))
+  (should-not (prrr-state-submit-problem 'request-changes "" 2))
+  (should-not (prrr-state-submit-problem 'comment "Looks fine." 0))
+  (should (prrr-state-submit-problem 'request-changes "  " 0))
+  (should (prrr-state-submit-problem 'comment "" 0)))
+
+(ert-deftest prrr-state-test-outbox-describe ()
+  (should (equal "comment on a.el:3 right: First line (failed: offline)"
+                 (prrr-state-outbox-describe
+                  (prrr-state-test--write "1" "PR_1" 'thread
+                                          '(:body "First line\nsecond"
+                                            :anchor (:path "a.el" :line 3 :side right))
+                                          "offline"))))
+  (should (equal "mark Viewed a.el"
+                 (prrr-state-outbox-describe
+                  (prrr-state-test--write "1" "PR_1" 'viewed '(:path "a.el" :viewed t))))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

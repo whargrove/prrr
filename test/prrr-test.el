@@ -58,7 +58,7 @@
                          "--eval" (concat "(progn (require 'prrr) (let (missing)"
                                          " (dolist (command '(prrr-queue-mode prrr-queue prrr-pull prrr-refresh-teams"
                                          " prrr-stack-up prrr-stack-down prrr-queue-menu"
-                                         " prrr-comment prrr-reply))"
+                                         " prrr-comment prrr-reply prrr-submit prrr-outbox))"
                                          " (unless (and (autoloadp (symbol-function command)) (commandp command))"
                                          " (push command missing)))"
                                          " (prin1 missing)))"))

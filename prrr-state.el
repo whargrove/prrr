@@ -821,5 +821,39 @@ end, ?- for one only OLD has, ?+ for one only NEW has."
             (mapcar (lambda (line) (cons ?+ line)) (seq-subseq new head (- (length new) tail)))
             (mapcar (lambda (line) (cons ?\s line)) (seq-subseq old (- (length old) tail))))))
 
+;;;; Submit
+
+(defun prrr-state-submit-problem (verdict body pending)
+  "Return why a Submit with VERDICT, summary BODY and PENDING comments is refused.
+nil when it may go.  GitHub wants a summary or a comment for a review
+that requests changes or only comments."
+  (when (and (memq verdict '(request-changes comment))
+             (string-empty-p (string-trim body))
+             (zerop pending))
+    (if (eq verdict 'request-changes)
+        "Requesting changes needs a summary or a comment"
+      "A comment review needs a summary or a comment")))
+
+(defun prrr-state-outbox-describe (row)
+  "Describe the queued write ROW in one line, for choosing it."
+  (let* ((payload (prrr-outbox-payload row))
+         (body (car (split-string (or (plist-get payload :body) "") "\n")))
+         (anchor (plist-get payload :anchor)))
+    (concat (pcase (prrr-outbox-kind row)
+              ('thread (format "comment on %s" (prrr-state-anchor-label anchor)))
+              ('publish (format "comment published on %s" (prrr-state-anchor-label anchor)))
+              ((or 'reply 'publish-reply) "reply")
+              ('edit "edit")
+              ('delete "delete a comment")
+              ('resolve (if (plist-get payload :resolved) "resolve a Thread" "unresolve a Thread"))
+              ('viewed (format "%s %s" (if (plist-get payload :viewed) "mark Viewed" "unmark Viewed")
+                               (plist-get payload :path)))
+              ('discussion "Discussion Comment")
+              ('submit (format "submit (%s)" (plist-get payload :verdict)))
+              ('discard "discard the Pending Review")
+              (kind (symbol-name kind)))
+            (and (not (string-empty-p body)) (format ": %s" (truncate-string-to-width body 40 nil nil "…")))
+            (and (prrr-outbox-last-error row) (format " (failed: %s)" (prrr-outbox-last-error row))))))
+
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

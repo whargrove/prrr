@@ -30,7 +30,6 @@
 
 ;;; Code:
 
-(require 'cl-lib)
 (require 'seq)
 (require 'transient)
 (require 'forge)
@@ -167,6 +166,108 @@ The reply joins your Pending Review; IMMEDIATE is as for `prrr-comment'."
                        (if resolved "unresolve" "resolve"))))
     (prrr-review--write pullreq 'resolve (list :thread-id (prrr-thread-thread-id thread)
                                                :resolved (not resolved)))))
+
+;;;; Submit and the Outbox
+
+(defun prrr-review--pending (data)
+  "Return the pending comments of the review DATA."
+  (seq-filter (lambda (comment) (eq (prrr-comment-state comment) 'pending))
+              (plist-get data :comments)))
+
+(defun prrr-review--submit (verdict)
+  "Capture a summary and submit the Pending Review with VERDICT.
+VERDICT is `approve', `request-changes' or `comment'.  The header
+counts the pending comments and those an agent wrote; Submit asks
+again when there are agent comments (SPEC section 7)."
+  (let* ((pullreq (prrr-diff-pullreq))
+         (head (prrr-diff-head))
+         (pending (prrr-review--pending (prrr-sync-review-data (oref pullreq their-id))))
+         (agents (seq-count #'prrr-comment-agent-p pending)))
+    (prrr-comment-capture
+     (format "Submit, %s: %d pending comment%s%s"
+             (pcase verdict
+               ('approve "approve")
+               ('request-changes "request changes")
+               ('comment "comment"))
+             (length pending) (if (= (length pending) 1) "" "s")
+             (if (> agents 0) (format ", %d by an agent" agents) ""))
+     (lambda (text _now)
+       (when-let ((problem (prrr-state-submit-problem verdict text (length pending))))
+         (user-error "%s" problem))
+       (when (and (> agents 0)
+                  (not (yes-or-no-p (format "Submit %d comment%s an agent wrote? "
+                                            agents (if (= agents 1) "" "s")))))
+         (user-error "Not submitted"))
+       (prrr-review--write pullreq 'submit (list :verdict verdict :body text :commit head)))
+     :immediate-allowed nil :allow-empty t)))
+
+;;;###autoload
+(defun prrr-submit-approve ()
+  "Submit your Pending Review, approving the pull request."
+  (interactive)
+  (prrr-review--submit 'approve))
+
+;;;###autoload
+(defun prrr-submit-request-changes ()
+  "Submit your Pending Review, requesting changes."
+  (interactive)
+  (prrr-review--submit 'request-changes))
+
+;;;###autoload
+(defun prrr-submit-comment ()
+  "Submit your Pending Review as comments, without a Verdict for merging."
+  (interactive)
+  (prrr-review--submit 'comment))
+
+;;;###autoload
+(defun prrr-discard-pending ()
+  "Discard your Pending Review and its comments, after confirmation."
+  (interactive)
+  (let* ((pullreq (prrr-diff-pullreq))
+         (data (prrr-sync-review-data (oref pullreq their-id)))
+         (count (length (prrr-review--pending data))))
+    (unless (or (plist-get data :pending-review) (> count 0))
+      (user-error "You have no Pending Review on this pull request"))
+    (when (yes-or-no-p (format "Discard your Pending Review and its %d comment%s? "
+                               count (if (= count 1) "" "s")))
+      (prrr-review--write pullreq 'discard nil))))
+
+;;;###autoload
+(defun prrr-outbox-retry ()
+  "Send this pull request's failed writes again now."
+  (interactive)
+  (let ((pullreq (prrr-diff-pullreq)))
+    (prrr-sync-retry (oref pullreq their-id) (current-buffer))
+    (message "Sending the Outbox again")))
+
+(defun prrr-review--read-write (data)
+  "Return the id of one of the queued writes of the review DATA.
+The write of the comment or Thread at point, else one read with
+completion."
+  (let* ((writes (plist-get data :writes))
+         (at-point (or (let ((comment (prrr-diff-comment-at-point)))
+                         (and comment (gethash (prrr-comment-comment-id comment) writes)))
+                       (let ((thread (prrr-diff-thread-at-point)))
+                         (and thread (gethash (prrr-thread-thread-id thread) writes))))))
+    (if at-point
+        (prrr-outbox-id at-point)
+      (let ((choices (mapcar (lambda (row) (cons (prrr-state-outbox-describe row)
+                                                 (prrr-outbox-id row)))
+                             (or (plist-get data :outbox)
+                                 (user-error "The Outbox of this pull request is empty")))))
+        (cdr (assoc (completing-read "Discard write: " choices nil t) choices))))))
+
+;;;###autoload
+(defun prrr-outbox-discard (id)
+  "Drop the queued write ID of this pull request, after confirmation.
+Interactively, the write of the comment or Thread at point, else one
+read with completion.  Writes that need what it creates go too."
+  (interactive
+   (list (prrr-review--read-write
+          (prrr-sync-review-data (oref (prrr-diff-pullreq) their-id)))))
+  (when (yes-or-no-p "Drop this unsent write? ")
+    (let ((count (prrr-sync-discard id)))
+      (message "Dropped %d write%s" count (if (eql count 1) "" "s")))))
 
 (provide 'prrr-review)
 ;;; prrr-review.el ends here

@@ -64,6 +64,8 @@
 (autoload 'prrr-delete-comment "prrr-review" "Delete your comment at point." t)
 (autoload 'prrr-discussion-comment "prrr-review" "Write a Discussion Comment on the pull request." t)
 (autoload 'prrr-toggle-resolved "prrr-review" "Resolve the Thread at point, or unresolve it." t)
+(autoload 'prrr-submit "prrr-transient" "Submit your Pending Review with a Verdict, or discard it." t)
+(autoload 'prrr-outbox "prrr-transient" "Act on this pull request's unsent writes." t)
 
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))
