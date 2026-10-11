@@ -711,9 +711,20 @@ SETUP runs first, inside the fixture repository and a fresh database.
   (should (eq 'magit-dispatch (keymap-lookup prrr-diff-mode-map "h"))))
 
 (ert-deftest prrr-diff-test-later-keys-do-nothing-yet ()
-  "Magit's commit, stage, discard and friends never run in a Review Buffer."
-  (dolist (key '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L"))
-    (should (eq 'undefined (keymap-lookup prrr-diff-mode-map key)))))
+  "Magit's commit, stage, discard and friends never run in a Review Buffer.
+Checked by the effective binding on a file heading, a hunk line and a
+Thread, where section keymaps apply on top of the mode's."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let* ((file (prrr-diff-test--file-section "src/example.el"))
+           (hunk (car (prrr-diff-test--hunks "src/example.el")))
+           (thread (car (oref hunk children))))
+      (pcase-dolist (`(,where . ,position) `((file-heading . ,(oref file start))
+                                             (hunk-line . ,(oref hunk content))
+                                             (thread . ,(oref thread start))))
+        (goto-char position)
+        (dolist (key '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L"))
+          (should (equal (list where key 'undefined)
+                         (list where key (key-binding (kbd key))))))))))
 
 (ert-deftest prrr-diff-test-previous-thread-washes-files-before-point ()
   "[ reaches Threads in unwashed files above point, whose washing shifts point."
@@ -730,6 +741,53 @@ SETUP runs first, inside the fixture repository and a fresh database.
                          "PRRT_kwDOexample0000002")
                        (nreverse seen))))
       (should-error (prrr-previous-thread) :type 'user-error))))
+
+;;;; Refreshing
+
+(ert-deftest prrr-diff-test-open-shows-refreshing ()
+  "SPEC section 7: the header says \"refreshing…\" while the opening refetch runs."
+  (let ((prrr-sync--status (make-hash-table :test #'equal)))
+    (prrr-db-with-test-db
+      (prrr-test-with-repo
+        (prrr-diff-test--with-open-stubs
+          (cl-letf (((symbol-function 'prrr-sync-refetch)
+                     (lambda (repo pullreq buffer)
+                       (push (list repo pullreq buffer) refetches)
+                       (puthash (cons 'review (oref pullreq their-id))
+                                (list :state 'pulling :attempted-at (prrr-sync--timestamp))
+                                prrr-sync--status)
+                       t)))
+            (let ((buffer (prrr-diff-open (prrr-diff-test--pullreq))))
+              (unwind-protect
+                  (with-current-buffer buffer
+                    (should (equal (list buffer) (mapcar #'caddr refetches)))
+                    (should (string-match-p "refreshing…" (prrr-diff-test--status-line))))
+                (kill-buffer buffer)))))))))
+
+(ert-deftest prrr-diff-test-refresh-keeps-shown-groups ()
+  "A refresh keeps the Description and the Thread groups as the user left them."
+  (prrr-diff-test--with-buffer (progn (prrr-diff-test--store-fixture)
+                                      (prrr-diff-test--store-extra-threads))
+    (let ((not-in-range (lambda ()
+                          (seq-find (lambda (child) (eq (oref child type) 'not-in-range))
+                                    (oref (prrr-diff-test--file-section "src/example.el")
+                                          children)))))
+      (magit-section-show (magit-get-section '((description) (prrr-header) (diffbuf))))
+      (magit-section-show (prrr-diff-test--file-section "src/example.el"))
+      (magit-section-show (funcall not-in-range))
+      (magit-section-show (magit-get-section '((outdated-files) (diffbuf))))
+      (magit-refresh-buffer)
+      (should-not (oref (magit-get-section '((description) (prrr-header) (diffbuf))) hidden))
+      (should-not (oref (funcall not-in-range) hidden))
+      (should-not (oref (magit-get-section '((outdated-files) (diffbuf))) hidden)))))
+
+(ert-deftest prrr-diff-test-failed-refresh-restores-markers ()
+  "A refresh that signals does not leave sections inserted without markers."
+  (prrr-diff-test--with-buffer nil
+    (cl-letf (((symbol-function 'prrr-diff--insert-header)
+               (lambda (&rest _) (error "Example failure"))))
+      (should-error (magit-refresh-buffer)))
+    (should-not magit-section-inhibit-markers)))
 
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

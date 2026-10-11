@@ -196,11 +196,12 @@ there was a hunk."
            (old (car (car ranges)))
            (new (car (car (last ranges)))))
       (magit-delete-line)
-      (magit-insert-section (hunk (cons about ranges) nil
-                                  :combined combined
-                                  :from-range (if combined (butlast ranges) (car ranges))
-                                  :to-range (car (last ranges))
-                                  :about about)
+      (magit-insert-section section (hunk (cons about ranges) nil
+                                          :combined combined
+                                          :from-range (if combined (butlast ranges) (car ranges))
+                                          :to-range (car (last ranges))
+                                          :about about)
+        (oset section keymap 'prrr-diff-hunk-section-map)
         (magit-insert-heading
           (propertize (concat heading "\n") 'font-lock-face 'magit-diff-hunk-heading))
         (while (not (or (eobp) (looking-at "^[^-+\s\\]")))
@@ -368,32 +369,53 @@ Buffer that child may be a File Comment."
 
 ;;;; Mode and refresh
 
-(defvar-keymap prrr-diff-mode-map
-  :doc "Keys of the Review Buffer (SPEC section 9).
-Keys that later milestones give to prrr are `undefined' until then, so
-magit's commit, stage, discard or rebase never run from here."
-  :parent magit-diff-mode-map
-  "]" #'prrr-next-thread
-  "[" #'prrr-previous-thread
-  "}" #'prrr-next-unresolved
-  "{" #'prrr-previous-unresolved
-  "J" #'prrr-next-file
-  "K" #'prrr-previous-file
-  "j" #'prrr-jump-to-file
-  "v" #'prrr-toggle-viewed
-  "z" #'prrr-collapse-all
-  "Z" #'prrr-expand-all
-  "o" #'prrr-open-topic
-  "b" #'prrr-browse
-  "B" #'prrr-checkout
-  "G" #'prrr-refetch
-  "?" #'prrr-menu
-  "C-o" #'prrr-menu
-  "c" #'undefined "C" #'undefined "r" #'undefined "e" #'undefined
-  "k" #'undefined "d" #'undefined "R" #'undefined "s" #'undefined
-  "D" #'undefined "." #'undefined "m" #'undefined ">" #'undefined
-  "<" #'undefined "S" #'undefined "O" #'undefined "@" #'undefined
-  "L" #'undefined)
+(defconst prrr-diff--later-keys
+  '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L")
+  "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
+They are `undefined' until then, so magit's commit, stage, discard or
+rebase never run from a Review Buffer.")
+
+(defun prrr-diff--undefine-later-keys (map)
+  "Bind every key of `prrr-diff--later-keys' in MAP to `undefined'; return MAP."
+  (dolist (key prrr-diff--later-keys)
+    (keymap-set map key #'undefined))
+  map)
+
+(defvar prrr-diff-file-section-map
+  (prrr-diff--undefine-later-keys (define-keymap :parent magit-file-section-map))
+  "Keymap of a Review Buffer's `file' sections.
+A section's keymap is a text property, which wins over
+`prrr-diff-mode-map'; magit's, which applies by type name, binds keys
+of `prrr-diff--later-keys' such as `C'.")
+
+(defvar prrr-diff-hunk-section-map
+  (prrr-diff--undefine-later-keys (define-keymap :parent magit-hunk-section-map))
+  "Keymap of a Review Buffer's `hunk' sections.
+See `prrr-diff-file-section-map' for why it exists.")
+
+(defvar prrr-diff-mode-map
+  (prrr-diff--undefine-later-keys
+   (define-keymap
+     :parent magit-diff-mode-map
+     "]" #'prrr-next-thread
+     "[" #'prrr-previous-thread
+     "}" #'prrr-next-unresolved
+     "{" #'prrr-previous-unresolved
+     "J" #'prrr-next-file
+     "K" #'prrr-previous-file
+     "j" #'prrr-jump-to-file
+     "v" #'prrr-toggle-viewed
+     "z" #'prrr-collapse-all
+     "Z" #'prrr-expand-all
+     "o" #'prrr-open-topic
+     "b" #'prrr-browse
+     "B" #'prrr-checkout
+     "G" #'prrr-refetch
+     "?" #'prrr-menu
+     "C-o" #'prrr-menu))
+  "Keys of the Review Buffer (SPEC section 9).
+The keys of `prrr-diff--later-keys' are `undefined' here and in the
+section keymaps.")
 
 (define-derived-mode prrr-diff-mode magit-diff-mode "prrr"
   "Review one pull request: its diff with Threads inline.
@@ -401,9 +423,14 @@ magit's commit, stage, discard or rebase never run from here."
 \\{prrr-diff-mode-map}"
   :interactive nil
   :group 'prrr
-  ;; Folds survive a refresh only through the visibility cache; hunks
-  ;; are cheap to rebuild and are left out.
-  (setq-local magit-section-cache-visibility '(file thread file-comment))
+  ;; A fold survives a refresh only when the visibility cache records
+  ;; it, and the cache records the user's toggles of these types only.
+  ;; Every open refreshes once its refetch answers.  Hunks are left
+  ;; out: they start shown and are named by line ranges, which change
+  ;; with the diff.
+  (setq-local magit-section-cache-visibility
+              '(file thread file-comment review-comment description discussion
+                     not-in-range outdated outdated-files))
   ;; magit's hunk fontifier walks every line of a hunk, Threads included.
   (setq-local magit-diff-fontify-hunk nil))
 
@@ -441,16 +468,16 @@ A `dismissed' file changed since it was viewed, so it does not count."
             (and viewed-p (propertize "  ✓ viewed" 'font-lock-face 'prrr-diff-viewed))
             "\n")))
 
-(defun prrr-diff--insert-files (base head data)
+(defun prrr-diff--insert-files (base head data comments)
   "Insert one `file' section per file changed from BASE to HEAD.
-DATA is the PR's stored review data (`prrr-db-review-data').  Viewed
-files start hidden; the eager budget decides for the others.  Sets
+DATA is the PR's stored review data (`prrr-db-review-data'); COMMENTS
+maps its Thread ids to their Review Comments.  Viewed files start
+hidden; the eager budget decides for the others.  Sets
 `prrr-diff--threads' and `prrr-diff--file-threads'.  Return the
 Threads whose file is not in the diff."
   (let* ((files (prrr-diff--changes base head))
          (layout (prrr-state-thread-layout (plist-get data :threads)
                                            (mapcar #'prrr-diff-file-path files)))
-         (comments (prrr-diff--comments-table (plist-get data :comments)))
          (viewed (prrr-diff--viewed-paths (plist-get data :viewed)))
          (eager (prrr-diff--eager-paths files viewed)))
     (setq prrr-diff--file-threads (car layout)
@@ -462,9 +489,10 @@ Threads whose file is not in the diff."
       (dolist (file files)
         (let* ((path (prrr-diff-file-path file))
                (threads (gethash path (car layout))))
-          (magit-insert-section (file path (not (member path eager))
-                                      :source (prrr-diff-file-orig file)
-                                      :binary (prrr-diff-file-binary-p file))
+          (magit-insert-section section (file path (not (member path eager))
+                                              :source (prrr-diff-file-orig file)
+                                              :binary (prrr-diff-file-binary-p file))
+            (oset section keymap 'prrr-diff-file-section-map)
             (magit-insert-heading (prrr-diff--file-heading file threads (member path viewed)))
             (magit-insert-section-body
               (prrr-diff--wash-file file threads comments base head))))))
@@ -538,19 +566,24 @@ The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'."
     (setq prrr-diff--base base
           prrr-diff--head head
           magit-buffer-diff-range (and base (concat base ".." head)))
+    ;; magit resets this to nil when the root section finishes; a
+    ;; failed refresh must not leave later insertions without markers.
     (setq magit-section-inhibit-markers 'delay)
-    (magit-insert-section (diffbuf)
-      (prrr-diff--insert-header pullreq base head data)
-      (cond ((not head)
-             (prrr-diff--insert-note
-              (format "%s is missing: run `forge-pull', then g" ref)))
-            ((not base)
-             (prrr-diff--insert-note
-              (format "The base commit %s is not available locally: run `forge-pull', then g"
-                      (or (oref pullreq base-rev) "(unknown)"))))
-            (t (prrr-diff--insert-group 'outdated-files "Threads on files not in this diff"
-                                        (prrr-diff--insert-files base head data)
-                                        (prrr-diff--comments-table (plist-get data :comments))))))
+    (unwind-protect
+        (magit-insert-section (diffbuf)
+          (prrr-diff--insert-header pullreq base head data)
+          (cond ((not head)
+                 (prrr-diff--insert-note
+                  (format "%s is missing: run `forge-pull', then g" ref)))
+                ((not base)
+                 (prrr-diff--insert-note
+                  (format "The base commit %s is not available locally: run `forge-pull', then g"
+                          (or (oref pullreq base-rev) "(unknown)"))))
+                (t (let* ((comments (prrr-diff--comments-table (plist-get data :comments)))
+                          (elsewhere (prrr-diff--insert-files base head data comments)))
+                     (prrr-diff--insert-group 'outdated-files "Threads on files not in this diff"
+                                              elsewhere comments)))))
+      (setq magit-section-inhibit-markers nil))
     (prrr-diff--content-markers)))
 
 (defun prrr-diff--buffer-name (pullreq)
@@ -589,9 +622,12 @@ the buffer."
       (user-error (concat "%s is missing: open the pull request again once forge has fetched it"
                           " (if it stays missing, run `forge-add-pullreq-refspec')")
                   ref)))
-  (let ((buffer (prrr-diff-setup-buffer pullreq)))
+  ;; The refetch starts before the one render, so the header says
+  ;; "refreshing…" from the start; its answer refreshes from a timer,
+  ;; never during the render.
+  (let ((buffer (get-buffer-create (prrr-diff--buffer-name pullreq))))
     (prrr-sync-refetch (forge-get-repository pullreq) pullreq buffer)
-    buffer))
+    (prrr-diff-setup-buffer pullreq)))
 
 (defun prrr-diff--require-pullreq ()
   "Return the current Review Buffer's pull request.
