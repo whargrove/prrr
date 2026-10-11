@@ -1153,6 +1153,13 @@ BODY, REPLY-TO and CREATED-AT are its fields."
                  (prrr-state-range-ends (prrr-state-test--range 'commit "parent" "commit")
                                         "base" "head"))))
 
+(ert-deftest prrr-state-test-range-kind-checked ()
+  "A Range of a kind not in `prrr-state-range-kinds' is never made."
+  (dolist (kind prrr-state-range-kinds)
+    (should (eq kind (prrr-range-kind (prrr-range-create :kind kind)))))
+  (should-error (prrr-range-create :kind 'since-forever))
+  (should-error (prrr-range-create)))
+
 (ert-deftest prrr-state-test-range-github-side ()
   "SPEC section 8: GitHub numbers the right side at head, the left at the merge base."
   (let ((default (prrr-state-test--range 'default))
@@ -1316,7 +1323,8 @@ One line rewritten at 12, two lines added after 20, three removed at 30."
     (should (eq bottom (prrr-state-stack-step middle prs "main" 'down)))
     (should (eq bottom (prrr-state-stack-step later prs "main" 'down)))
     (should-not (prrr-state-stack-step bottom prs "main" 'down))
-    (should-not (prrr-state-stack-step fork prs "main" 'down))))
+    (should-not (prrr-state-stack-step fork prs "main" 'down))
+    (should-error (prrr-state-stack-step bottom prs "main" 'sideways))))
 
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

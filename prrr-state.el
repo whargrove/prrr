@@ -995,12 +995,12 @@ GitHub's answer."
 
 ;;;; Ranges
 
-(cl-defstruct (prrr-range (:constructor prrr-range-create) (:copier nil))
+(cl-defstruct (prrr-range (:constructor prrr-range--make) (:copier nil))
   "A Range: the two commits whose diff the Review Buffer shows.
 KIND is one of `prrr-state-range-kinds'.  START is the commit the diff
 starts at, nil for `default', which starts at the merge base.  END is
 the commit it ends at, nil for the kinds that end at the PR's head:
-the head the buffer shows."
+the head the buffer shows.  Made with `prrr-range-create'."
   kind start end)
 
 (defconst prrr-state-range-kinds '(default since-review since-opened commit between)
@@ -1009,6 +1009,15 @@ the head the buffer shows."
 of my latest submitted review to the head, `since-opened' the
 Bookmark's head to the head, `commit' one PR commit against its
 parent, and `between' one chosen commit to another.")
+
+(cl-defun prrr-range-create (&key kind start end)
+  "Return the `prrr-range' of KIND from START to END.
+Signal an error when KIND is not one of `prrr-state-range-kinds': every
+rule about Ranges dispatches on the kind, and an unknown one would be
+drawn as if it were some other."
+  (unless (memq kind prrr-state-range-kinds)
+    (error "Unknown kind of Range: %S" kind))
+  (prrr-range--make :kind kind :start start :end end))
 
 (defun prrr-state-range-ends (range merge-base head)
   "Return (START . END), the commits RANGE diffs.
@@ -1165,13 +1174,15 @@ find a line again at another commit (SPEC section 8)."
   "Return the PR next to PR in its Stack in DIRECTION, or nil.
 PRS are the repository's open `prrr-pr's, PR among them.  DIRECTION
 `down' is the PR that PR is stacked on (see `prrr-state--parent' for
-DEFAULT-BRANCH), `up' the oldest PR stacked on PR."
-  (if (eq direction 'down)
-      (prrr-state--parent pr prs default-branch)
-    (car (sort (seq-filter (lambda (other)
-                             (eq pr (prrr-state--parent other prs default-branch)))
-                           prs)
-               #'prrr-state--older-p))))
+DEFAULT-BRANCH), `up' the oldest PR stacked on PR.  Any other
+DIRECTION signals an error."
+  (pcase direction
+    ('down (prrr-state--parent pr prs default-branch))
+    ('up (car (sort (seq-filter (lambda (other)
+                                  (eq pr (prrr-state--parent other prs default-branch)))
+                                prs)
+                    #'prrr-state--older-p)))
+    (_ (error "Unknown Stack direction: %S" direction))))
 
 (provide 'prrr-state)
 ;;; prrr-state.el ends here
