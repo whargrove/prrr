@@ -1182,8 +1182,9 @@ BODY, REPLY-TO and CREATED-AT are its fields."
     (should (equal '(right) (prrr-state-inline-sides since "h" "h")))
     (should-not (prrr-state-inline-sides commit "h" "h"))
     ;; The review data was fetched at another head: its right-side
-    ;; numbers are not those of the head shown.
-    (should (equal '(left) (prrr-state-inline-sides default "h" "g")))
+    ;; numbers are not those of the head shown, and its left-side
+    ;; numbers may be at another merge base (after a rebase).
+    (should-not (prrr-state-inline-sides default "h" "g"))
     (should-not (prrr-state-inline-sides since "h" "g"))))
 
 (ert-deftest prrr-state-test-anchor-problem ()

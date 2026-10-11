@@ -453,7 +453,15 @@ commentable as default-Range comments (their numbers are head line numbers).
 default Range. File Comments need a Range that ends at head. Threads
 render inline only on the sides a Range numbers as GitHub does (right
 when it ends at head, left only in `default`); the others go to the
-file's `not-in-range` section.
+file's `not-in-range` section. Both sides also need the review data
+fetched at the head shown: while the last refetch saw another head
+(until `g`), every line Thread folds into `not-in-range`, the left
+side too, because a rebase may have moved the merge base GitHub
+numbers it against and no stored field names that commit. At the
+head shown, prrr takes GitHub's merge base to be the local one (of
+forge's base commit and the head); they differ only if forge's base
+commit is stale in a way that changes the merge base, a limit prrr
+accepts.
 
 **Viewed** is GitHub's flag only, shown and toggled on every Range.
 

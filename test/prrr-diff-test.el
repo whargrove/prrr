@@ -529,7 +529,10 @@ SETUP runs first, inside the fixture repository and a fresh database.
 
 (ert-deftest prrr-diff-test-threads-off-line-when-github-head-differs ()
   "Review Focus 3: Threads numbered at another head are never inline on a wrong line."
-  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+  ;; The left side too: a rebase may have moved the merge base GitHub
+  ;; numbers it at.
+  (prrr-diff-test--with-buffer (progn (prrr-diff-test--store-fixture)
+                                      (prrr-diff-test--store-extra-threads))
     (let ((prrr-sync--status (make-hash-table :test #'equal))
           (first (prrr-diff-test--rev "refs/pullreqs/1~1")))
       ;; forge fetches a new head and a refetch numbers the Threads at it,
@@ -539,7 +542,8 @@ SETUP runs first, inside the fixture repository and a fresh database.
                prrr-sync--status)
       (magit-refresh-buffer)
       (should-not (oref (car (prrr-diff-test--hunks "src/example.el")) children))
-      (should (equal '("PRRT_kwDOexample0000001" "PRRT_kwDOexample0000005")
+      (should-not (oref (cadr (prrr-diff-test--hunks "src/example.el")) children))
+      (should (equal '("PRRT_kwDOexample0000001" "PRRT_kwDOexample0000005" "T_NIR" "T_LEFT")
                      (prrr-diff-test--group "src/example.el" 'not-in-range)))
       ;; Commenting is unchanged: a new Thread is numbered at its own commit.
       (should-not (prrr-state-anchor-problem
