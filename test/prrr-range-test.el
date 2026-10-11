@@ -114,5 +114,141 @@
     (prrr-range--switch (prrr-range-test--commit-range "refs/pullreqs/1~1" "refs/pullreqs/1"))
     (should (equal '("src/example.el") (prrr-diff-test--files)))))
 
+;;;; Choosing a Range
+
+(defun prrr-range-test--store-review (oid)
+  "Store a meta row of the fixture PR whose viewer's latest review is on OID."
+  (prrr-db-insert (prrr-test-meta :pr-id prrr-diff-test--pr
+                                  :viewer-latest-review
+                                  (list "COMMENTED" "2026-09-02T00:00:00Z" oid))))
+
+(defun prrr-range-test--choose (label)
+  "Return a `completing-read' stand-in that picks the choice starting with LABEL."
+  (lambda (_prompt table &rest _)
+    (or (seq-find (lambda (choice) (string-prefix-p label choice))
+                  (all-completions "" table))
+        (ert-fail (list "no choice" label)))))
+
+(defun prrr-range-test--remote-commit ()
+  "Make a commit only the remote origin has; return its oid.
+origin is a clone of the fixture repository with one more commit.  It
+lives inside the fixture's .git, so it goes when the fixture goes."
+  (let ((remote (expand-file-name ".git/prrr-remote")))
+    (call-process "git" nil nil nil "clone" "-q" "--no-local" "." remote)
+    (let ((default-directory (file-name-as-directory remote)))
+      (call-process "git" nil nil nil "checkout" "-q" "-b" "extra")
+      (with-temp-file "extra"
+        (insert "extra\n"))
+      (call-process "git" nil nil nil "add" "extra")
+      (call-process "git" nil nil nil "-c" "user.name=example" "-c" "user.email=example@example.com"
+                    "commit" "-q" "-m" "extra"))
+    (call-process "git" nil nil nil "remote" "add" "origin" remote)
+    (car (process-lines "git" "-C" remote "rev-parse" "extra"))))
+
+(defmacro prrr-range-test--with-remote (&rest body)
+  "Run BODY with forge's repository of the fixture PR on the remote origin."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'forge-get-repository)
+              (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
+                                                         :name "example-repo" :remote "origin"))))
+     ,@body))
+
+(defun prrr-range-test--wait-for-fetch ()
+  "Wait until the Review Buffer's fetch ended, at most ten seconds."
+  (with-timeout (10 (ert-fail "the fetch did not end"))
+    (while prrr-range--fetching
+      (accept-process-output nil 0.05))))
+
+(ert-deftest prrr-range-test-since-review ()
+  (prrr-diff-test--with-buffer nil
+    (let ((first (prrr-diff-test--rev "refs/pullreqs/1~1")))
+      (prrr-range-test--store-review first)
+      (prrr-show-since-review)
+      (should (equal (prrr-range-create :kind 'since-review :start first) prrr-diff--range))
+      (should (equal '("src/example.el") (prrr-diff-test--files)))
+      ;; The review's commit is pinned against a force-push.
+      (should (equal (list first)
+                     (process-lines "git" "rev-parse" (format "refs/prrr/1/%s" first)))))))
+
+(ert-deftest prrr-range-test-since-review-without-a-review ()
+  (prrr-diff-test--with-buffer nil
+    (should-error (prrr-show-since-review) :type 'user-error)
+    (should (eq 'default (prrr-range-kind prrr-diff--range)))))
+
+(ert-deftest prrr-range-test-since-review-at-the-head ()
+  "Review Focus 4: nothing new since the review is an empty diff, not an error."
+  (prrr-diff-test--with-buffer nil
+    (prrr-range-test--store-review (prrr-diff-head))
+    (prrr-show-since-review)
+    (should (eq 'since-review (prrr-range-kind prrr-diff--range)))
+    (should-not (prrr-diff-test--files))
+    (should (string-match-p "^    No changes$" (buffer-string)))))
+
+(ert-deftest prrr-range-test-since-opened ()
+  (prrr-diff-test--with-buffer nil
+    (should-error (prrr-show-since-opened) :type 'user-error)
+    (prrr-db-insert (prrr-bookmark-create :pr-id prrr-diff-test--pr
+                                          :last-opened-head-oid
+                                          (prrr-diff-test--rev "refs/pullreqs/1~1")))
+    (prrr-show-since-opened)
+    (should (eq 'since-opened (prrr-range-kind prrr-diff--range)))
+    (should (equal '("src/example.el") (prrr-diff-test--files)))))
+
+(ert-deftest prrr-range-test-since-review-fetches-a-missing-start ()
+  "SPEC section 8: a start commit missing locally is fetched by sha."
+  (prrr-diff-test--with-buffer nil
+    (prrr-range-test--with-remote
+      (let ((extra (prrr-range-test--remote-commit)))
+        (prrr-range-test--store-review extra)
+        (should-not (magit-commit-p extra))
+        (prrr-show-since-review)
+        (should (eq 'default (prrr-range-kind prrr-diff--range)))
+        (prrr-range-test--wait-for-fetch)
+        (should (equal (prrr-range-create :kind 'since-review :start extra) prrr-diff--range))
+        (should (member "extra" (prrr-diff-test--files)))))))
+
+(ert-deftest prrr-range-test-since-review-falls-back-to-default ()
+  "SPEC section 8: a start that cannot be fetched leaves the default Range, and says so."
+  (prrr-diff-test--with-buffer nil
+    (prrr-range-test--with-remote
+      (prrr-range-test--remote-commit)
+      (prrr-range-test--store-review "2222222222222222222222222222222222222222")
+      (let ((messages nil))
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format &rest args)
+                     (when format (push (apply #'format-message format args) messages)))))
+          (prrr-show-since-review)
+          (prrr-range-test--wait-for-fetch))
+        (should (eq 'default (prrr-range-kind prrr-diff--range)))
+        (should (member "Could not fetch 2222222, so this is the default Range" messages))))))
+
+(ert-deftest prrr-range-test-commit ()
+  (prrr-diff-test--with-buffer nil
+    (let ((head (prrr-diff-test--rev "refs/pullreqs/1"))
+          (first (prrr-diff-test--rev "refs/pullreqs/1~1")))
+      (should (equal (list (cons first "first") (cons head "head")) (prrr-range--commits)))
+      (cl-letf (((symbol-function 'completing-read)
+                 (prrr-range-test--choose (substring head 0 7))))
+        (call-interactively #'prrr-show-commit))
+      (should (equal (prrr-range-create :kind 'commit :start first :end head) prrr-diff--range))
+      (should (equal '("src/example.el") (prrr-diff-test--files))))))
+
+(ert-deftest prrr-range-test-between ()
+  (prrr-diff-test--with-buffer nil
+    (let ((base (prrr-diff-merge-base))
+          (first (prrr-diff-test--rev "refs/pullreqs/1~1"))
+          (prompts nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt table &rest _)
+                   (push (cons prompt (all-completions "" table)) prompts)
+                   (car (all-completions "" table)))))
+        (call-interactively #'prrr-show-between))
+      (should (equal (prrr-range-create :kind 'between :start base :end first) prrr-diff--range))
+      ;; From offers the merge base and every commit but the last; To the commits after From.
+      (should (equal '(2 2) (mapcar (lambda (prompt) (length (cdr prompt))) prompts)))
+      (should (string-match-p "(merge base)" (car (cdr (cadr prompts)))))
+      (should (member "README.md" (prrr-diff-test--files)))
+      (should-not (string-match-p "+line thirty" (buffer-string))))))
+
 (provide 'prrr-range-test)
 ;;; prrr-range-test.el ends here

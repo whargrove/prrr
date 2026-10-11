@@ -926,6 +926,11 @@ Lines of Threads in between are left out."
 Either is nil when the diff could not be drawn."
   (cons prrr-diff--start prrr-diff--end))
 
+(defun prrr-diff-merge-base ()
+  "Return the merge base of the current Review Buffer's PR and its head, or nil.
+The head is the one the buffer shows."
+  (and prrr-diff--head (prrr-diff--merge-base prrr-diff--pullreq prrr-diff--head)))
+
 (defun prrr-diff-position ()
   "Return where point is in the diff, as (PATH SIDE LINE COMMIT), or nil.
 PATH is the file around point.  On a removed line, SIDE is `left' and
