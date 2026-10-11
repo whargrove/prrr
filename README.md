@@ -284,7 +284,9 @@ visit".
 When the author force-pushes, a Range from an older commit compares the
 two trees directly, and the header says `history rewritten`. prrr keeps
 the commits these Ranges start at under `refs/prrr/`, so neither the
-push nor git's garbage collection loses them. A start commit you do not
+push nor git's garbage collection loses them. `prrr-pull` removes the
+pins of pull requests that are no longer open, except those with an open
+Review Buffer. A start commit you do not
 have is fetched from the PR's remote; when that fails, prrr shows the
 default Range and says so.
 

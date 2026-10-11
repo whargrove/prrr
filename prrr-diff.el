@@ -783,6 +783,19 @@ Signal a `user-error' outside a Review Buffer."
   (or (and (derived-mode-p 'prrr-diff-mode) prrr-diff--pullreq)
       (user-error "Not in a Review Buffer")))
 
+(defun prrr-diff-live-numbers (toplevel)
+  "Return the numbers of the PRs shown in live Review Buffers of TOPLEVEL.
+TOPLEVEL is a repository's top-level directory.  A Review Buffer is
+live from its creation until it is killed."
+  (let (numbers)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'prrr-diff-mode)
+                   prrr-diff--pullreq
+                   (equal toplevel (magit-toplevel)))
+          (push (oref prrr-diff--pullreq number) numbers))))
+    numbers))
+
 ;;;###autoload
 (defun prrr-refetch ()
   "Refetch this pull request's Threads, Pending Review and Viewed flags now.

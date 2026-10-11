@@ -28,6 +28,7 @@
 (require 'cl-lib)
 (require 'prrr-test-helper)
 (require 'prrr-sync)
+(require 'prrr-diff)
 
 (defconst prrr-sync-test--now (encode-time '(0 0 12 10 10 2026 nil nil t))
   "2026-10-10T12:00:00Z.")
@@ -1617,6 +1618,59 @@ the comment records it once."
           (should (prrr-bookmark-last-opened-at bookmark)))
         (should (equal (list head)
                        (process-lines "git" "rev-parse" (format "refs/prrr/1/%s" head))))))))
+
+(defun prrr-sync-test--pin-refs ()
+  "Return the sorted names of the pins in the repository of `default-directory'."
+  (sort (process-lines "git" "for-each-ref" "--format=%(refname:strip=2)" "refs/prrr/")
+        #'string<))
+
+(ert-deftest prrr-sync-test-prune-pins-of-closed-pullreqs ()
+  "SPEC section 8: only the pins of PRs that are no longer open go."
+  (prrr-test-with-repo
+    (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+          (first (car (process-lines "git" "rev-parse" "refs/pullreqs/1~1"))))
+      (dolist (number '(1 2 3))
+        (prrr-sync-pin number head))
+      (prrr-sync-pin 3 first)
+      (should (= 3 (prrr-sync-prune-pins '(1))))
+      (should (equal (list (format "1/%s" head)) (prrr-sync-test--pin-refs)))
+      (should (= 0 (prrr-sync-prune-pins '(1)))))))
+
+(ert-deftest prrr-sync-test-prune-pins-keeps-a-live-review-buffer ()
+  "A PR whose Review Buffer is live keeps its pins, closed or not."
+  (prrr-test-with-repo
+    (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1"))))
+      (prrr-sync-pin 2 head)
+      (prrr-sync-pin 3 head)
+      (with-temp-buffer
+        (setq major-mode 'prrr-diff-mode
+              prrr-diff--pullreq (forge-pullreq :id "forge-2" :number 2))
+        (should (= 1 (prrr-sync-prune-pins nil))))
+      (should (equal (list (format "2/%s" head)) (prrr-sync-test--pin-refs)))
+      ;; Once the buffer is gone, so are the pins.
+      (should (= 1 (prrr-sync-prune-pins nil)))
+      (should-not (prrr-sync-test--pin-refs)))))
+
+(ert-deftest prrr-sync-test-prune-pins-without-pins ()
+  (prrr-test-with-repo
+    (should (= 0 (prrr-sync-prune-pins '(1))))))
+
+(ert-deftest prrr-sync-test-pull-prunes-pins-of-closed-pullreqs ()
+  "A pull prunes against the PRs it just stored: the fixture queue has 1, 2 and 3."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-test-with-repo
+        (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1"))))
+          (prrr-test-with-ghub-dispatch `((viewer . ,(prrr-test-fixture "teams"))
+                                          (repository . ,(prrr-test-fixture "queue")))
+            (cl-letf (((symbol-function 'forge-get-worktree)
+                       (lambda (_) default-directory)))
+              (prrr-sync-pin 3 head)
+              (prrr-sync-pin 999 head)
+              (prrr-sync-pull (prrr-sync-test--repo))
+              (should (eq 'ok (plist-get (prrr-sync-status "example-repo-id") :state)))
+              (should (equal (list (format "3/%s" head))
+                             (prrr-sync-test--pin-refs))))))))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

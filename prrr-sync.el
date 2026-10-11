@@ -238,6 +238,20 @@ FAIL runs; THEN must not signal."
        (funcall then)))
    fail))
 
+(defun prrr-sync--prune-pins-after-pull (repo metas)
+  "Prune the pins of REPO's closed PRs, given METAS, its open ones.
+The queue query pages every open PR, so a PR missing from METAS is
+closed.  A failure only shows in the echo area: pins are housekeeping
+and must not fail a pull whose rows are stored."
+  (when-let* ((dir (forge-get-worktree repo))
+              ((file-directory-p dir)))
+    (condition-case err
+        (let ((default-directory dir))
+          (prrr-sync-prune-pins (mapcar #'prrr-pr-meta-number metas)))
+      (error (message "prrr: could not prune pins of %s/%s: %s"
+                      (oref repo owner) (oref repo name)
+                      (error-message-string err))))))
+
 (defun prrr-sync-pull (repo &optional buffer)
   "Pull the Review Queue inputs of REPO in the background.
 REPO is a `forge-github-repository'.  Fetches the viewer's Teams first
@@ -267,6 +281,7 @@ Never signals: every failure becomes the status."
                        (when (prrr-sync--current-p id token)
                          (prrr-sync--guarded fail
                            (prrr-db-replace-pr-metas id metas)
+                           (prrr-sync--prune-pins-after-pull repo metas)
                            (prrr-sync--finish id token (list :kind 'ok :message note)
                                               buffer))))
                      fail id)))))
@@ -1217,6 +1232,36 @@ on `prrr-mark-seen', never on open."
                                         :last-opened-head-oid oid
                                         :last-opened-at (prrr-sync--timestamp)))
   (prrr-sync-pin (oref pullreq number) oid))
+
+(declare-function prrr-diff-live-numbers "prrr-diff" (toplevel))
+
+(defun prrr-sync-prune-pins (open-numbers)
+  "Delete the pins of every PR not in OPEN-NUMBERS; return how many went.
+OPEN-NUMBERS are the numbers of the repository's open PRs.  Works in
+the repository of `default-directory': one `git for-each-ref' lists
+`refs/prrr/', one `git update-ref --stdin' deletes, in a transaction,
+so a failure deletes none.  A PR that has a live Review Buffer keeps
+its pins even when closed, because that buffer's Ranges may still start
+at them.  Bookmarks (table `pr-bookmark') stay: a row is a few bytes,
+and a PR that reopens then still has its since-opened start (the start
+is fetched by sha when the pin is gone).  The git work takes a few
+milliseconds (SPEC section 8), so it runs synchronously."
+  (let* ((keep (append open-numbers
+                       (prrr-diff-live-numbers (magit-toplevel))))
+         (doomed (seq-remove
+                  (lambda (ref)
+                    (and (string-match "\\`refs/prrr/\\([0-9]+\\)/" ref)
+                         (memq (string-to-number (match-string 1 ref)) keep)))
+                  (magit-git-lines "for-each-ref" "--format=%(refname)" "refs/prrr/"))))
+    (when doomed
+      (with-temp-buffer
+        (dolist (ref doomed)
+          (insert "delete " ref "\n"))
+        (unless (zerop (call-process-region (point-min) (point-max)
+                                            (magit-git-executable) nil nil nil
+                                            "update-ref" "--stdin"))
+          (error "Pruning pins failed in %s" default-directory))))
+    (length doomed)))
 
 ;;;; Commands
 

@@ -465,7 +465,13 @@ buffer shows.
 **Force-push and moving heads.** prrr pins each commit it may need later as
 `refs/prrr/<number>/<oid>` when it records a Bookmark (Submit records
 one), opens a PR whose latest review by the viewer it knows, and shows
-a `since-review` or `since-opened` Range. If a Range's start is not an
+a `since-review` or `since-opened` Range. Pins are not written on every
+Review Queue pull (that would cost one git process per PR); they are
+removed on it: after the queue pull stored its rows, `prrr-pull` deletes
+the pins of every PR the pull did not return as open, with one
+`git for-each-ref` and one `git update-ref --stdin` (about 10 ms for
+500 pins, so synchronous), except the pins of a PR with a live Review
+Buffer. Bookmarks are kept. If a Range's start is not an
 ancestor of head, prrr diffs the two trees directly and shows "history
 rewritten" in the header. If the start commit is missing locally it is
 fetched by sha from the PR's remote (forge's `remote` of the
