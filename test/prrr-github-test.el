@@ -85,6 +85,7 @@
     (let (result)
       (prrr-github-fetch-queue "api.github.com" "example-org" "example-repo"
                                (lambda (metas) (setq result metas))
+                               (lambda (err) (ert-fail (list "unexpected errorback" err)))
                                "example-repo-id")
       (should (equal `(query ,prrr-github-queue-query) (nth 0 captured)))
       (should (equal '((owner . "example-org") (name . "example-repo")) (nth 1 captured)))
@@ -120,7 +121,8 @@
   (prrr-test-with-ghub-stub (prrr-test-fixture "teams") captured
     (let (result)
       (prrr-github-fetch-teams "api.github.com" "example-me"
-                               (lambda (teams) (setq result teams)))
+                               (lambda (teams) (setq result teams))
+                               (lambda (err) (ert-fail (list "unexpected errorback" err))))
       (should (equal `(query ,prrr-github-teams-query) (nth 0 captured)))
       (should (equal (list (cons (quote me) ["example-me"])) (nth 1 captured)))
       (should (= 2 (length result)))
@@ -235,7 +237,8 @@
   (prrr-test-with-ghub-stub (prrr-test-fixture "review-data") captured
     (let (result)
       (prrr-github-fetch-review-data "api.github.com" "example-org" "example-repo" 1
-                                     "example-me" (lambda (data) (setq result data)))
+                                     "example-me" (lambda (data) (setq result data))
+                                     (lambda (err) (ert-fail (list "unexpected errorback" err))))
       (should (equal `(query ,prrr-github-review-data-query) (nth 0 captured)))
       (should (equal '((owner . "example-org") (name . "example-repo") (number . 1) (me . "example-me"))
                      (nth 1 captured)))
@@ -243,6 +246,142 @@
       (should (equal "PR_kwDOexample0000001"
                      (prrr-thread-pr-id (car (plist-get result :threads)))))
       (should (stringp (prrr-thread-fetched-at (car (plist-get result :threads))))))))
+
+
+;;;; Errors (prrr-knu.1, prrr-knu.2)
+
+(defconst prrr-github-test--now (encode-time '(0 0 12 10 10 2026 nil nil t))
+  "2026-10-10T12:00:00Z as a Lisp time.")
+
+(ert-deftest prrr-github-test-error-graphql-rate-limited ()
+  (should (equal '(:kind rate-limited :message "API rate limit exceeded"
+                   :reset-at "2026-10-10T12:30:00Z")
+                 (prrr-github-error
+                  '(errors ((type . "RATE_LIMITED") (message . "API rate limit exceeded")))
+                  '(("X-RateLimit-Reset" . "1791635400"))
+                  prrr-github-test--now))))
+
+(ert-deftest prrr-github-test-error-graphql-not-found ()
+  (should (eq 'not-found
+              (plist-get (prrr-github-error
+                          '(errors ((type . "NOT_FOUND")
+                                    (message . "Could not resolve to a PullRequest with the number of 9."))))
+                         :kind))))
+
+(ert-deftest prrr-github-test-error-graphql-other-keeps-first-message ()
+  (should (equal '(:kind error :message "Something broke" :reset-at nil)
+                 (prrr-github-error '(errors ((message . "Something broke")) ((message . "And more")))))))
+
+(ert-deftest prrr-github-test-error-http-401-is-auth ()
+  (should (eq 'auth (plist-get (prrr-github-error '(error http 401)) :kind))))
+
+(ert-deftest prrr-github-test-error-http-403-without-limit-headers-is-auth ()
+  (should (eq 'auth (plist-get (prrr-github-error '(error http 403) nil) :kind))))
+
+(ert-deftest prrr-github-test-error-http-403-with-quota-left-is-secondary-limit ()
+  "M5: GitHub's secondary limit is a 403 with quota left; wait a minute.
+x-ratelimit-reset belongs to the primary limit and must not set the wait."
+  (should (equal '(:kind rate-limited :message "GitHub secondary rate limit (HTTP 403)"
+                   :reset-at "2026-10-10T12:01:00Z")
+                 (prrr-github-error '(error http 403)
+                                    '(("x-ratelimit-remaining" . "12")
+                                      ("x-ratelimit-reset" . "1791633600"))
+                                    prrr-github-test--now))))
+
+(ert-deftest prrr-github-test-error-http-403-secondary-limit-uses-retry-after ()
+  (should (equal '(:kind rate-limited :message "GitHub rate limit (HTTP 403)"
+                   :reset-at "2026-10-10T12:01:30Z")
+                 (prrr-github-error '(error http 403) '(("retry-after" . "90"))
+                                    prrr-github-test--now))))
+
+(ert-deftest prrr-github-test-error-rate-limit-without-headers-waits-a-minute ()
+  (should (equal "2026-10-10T12:01:00Z"
+                 (plist-get (prrr-github-error '(errors ((type . "RATE_LIMITED") (message . "slow down")))
+                                               nil prrr-github-test--now)
+                            :reset-at))))
+
+(ert-deftest prrr-github-test-error-http-502-is-offline ()
+  (should (eq 'offline (plist-get (prrr-github-error '(error http 502)) :kind))))
+
+(ert-deftest prrr-github-test-error-connection-failed-is-offline ()
+  (let ((classified (prrr-github-error '(error connection-failed "failed with code 111\n"
+                                               :host "api.github.com" :service 443))))
+    (should (eq 'offline (plist-get classified :kind)))
+    (should (string-match-p "connection-failed" (plist-get classified :message)))))
+
+(ert-deftest prrr-github-test-error-unknown-shape-is-error ()
+  (should (eq 'error (plist-get (prrr-github-error 'surprise) :kind))))
+
+(ert-deftest prrr-github-test-fetch-queue-failure-reaches-errorback ()
+  (prrr-test-with-ghub-error-stub '(error http 502) nil
+    (let (failure)
+      (prrr-github-fetch-queue "api.github.com" "example-org" "example-repo"
+                               (lambda (_) (ert-fail "callback on failure"))
+                               (lambda (err) (setq failure err)))
+      (should (eq 'offline (plist-get failure :kind))))))
+
+(ert-deftest prrr-github-test-fetch-teams-failure-reaches-errorback ()
+  (prrr-test-with-ghub-error-stub '(error http 401) nil
+    (let (failure)
+      (prrr-github-fetch-teams "api.github.com" "example-me"
+                               (lambda (_) (ert-fail "callback on failure"))
+                               (lambda (err) (setq failure err)))
+      (should (eq 'auth (plist-get failure :kind))))))
+
+(ert-deftest prrr-github-test-fetch-queue-decode-error-reaches-errorback ()
+  "An answer of an unexpected shape fails the request instead of signalling (C1)."
+  (prrr-test-with-ghub-stub '(data (repository (pullRequests . 5))) captured
+    (ignore captured)
+    (let (failure)
+      (prrr-github-fetch-queue "api.github.com" "example-org" "example-repo"
+                               (lambda (_) (ert-fail "callback on a decode error"))
+                               (lambda (err) (setq failure err)))
+      (should (eq 'error (plist-get failure :kind)))
+      (should (string-match-p "decode" (plist-get failure :message))))))
+
+(ert-deftest prrr-github-test-fetch-teams-decode-error-reaches-errorback ()
+  (prrr-test-with-ghub-stub '(data (viewer (organizations . 5))) captured
+    (ignore captured)
+    (let (failure)
+      (prrr-github-fetch-teams "api.github.com" "example-me"
+                               (lambda (_) (ert-fail "callback on a decode error"))
+                               (lambda (err) (setq failure err)))
+      (should (eq 'error (plist-get failure :kind))))))
+
+(ert-deftest prrr-github-test-fetch-callback-error-is-not-an-errorback ()
+  "Only decoding is guarded: an error in CALLBACK itself is the caller's."
+  (prrr-test-with-ghub-stub (prrr-test-fixture "teams") captured
+    (ignore captured)
+    (should-error (prrr-github-fetch-teams "api.github.com" "example-me"
+                                           (lambda (_) (error "Caller bug"))
+                                           (lambda (_) (ert-fail "errorback on a caller error"))))))
+
+(ert-deftest prrr-github-test-decode-review-data-null-pull-request ()
+  (should (null (prrr-github-decode-review-data '(data (repository (pullRequest))) nil))))
+
+(ert-deftest prrr-github-test-fetch-review-data-null-pull-request-is-not-found ()
+  "GitHub answered without errors but with a null pullRequest (prrr-knu.2)."
+  (prrr-test-with-ghub-stub '(data (repository (pullRequest))) captured
+    (ignore captured)
+    (let (failure)
+      (prrr-github-fetch-review-data "api.github.com" "example-org" "example-repo" 9 "example-me"
+                                     (lambda (_) (ert-fail "null PR reached the callback"))
+                                     (lambda (err) (setq failure err)))
+      (should (eq 'not-found (plist-get failure :kind)))
+      (should (string-match-p "example-org/example-repo#9" (plist-get failure :message))))))
+
+;;;; Viewer
+
+(ert-deftest prrr-github-test-viewer-option-wins ()
+  (let ((prrr-github-user "example-me"))
+    (cl-letf (((symbol-function 'magit-get) (lambda (&rest _) "example-other")))
+      (should (equal "example-me" (prrr-github-viewer))))))
+
+(ert-deftest prrr-github-test-viewer-falls-back-to-git-config ()
+  (let ((prrr-github-user nil))
+    (cl-letf (((symbol-function 'magit-get)
+               (lambda (&rest keys) (and (equal keys '("github.user")) "example-me"))))
+      (should (equal "example-me" (prrr-github-viewer))))))
 
 (provide 'prrr-github-test)
 ;;; prrr-github-test.el ends here

@@ -23,7 +23,12 @@
 ;; `prrr-test-root' (the repository root), `prrr-test-fixture' (path to
 ;; a file under test/fixtures), `prrr-db-with-test-db' (run BODY against
 ;; a fresh temporary database) and `prrr-test-with-ghub-stub' (run BODY
-;; with ghub's GraphQL entry point stubbed).
+;; with ghub's GraphQL entry point stubbed) and
+;; `prrr-test-with-ghub-error-stub' (the same,
+;; failing every request).  The builders `prrr-test-pr' and
+;; `prrr-test-meta' and the constants `prrr-test-me',
+;; `prrr-test-teams', `prrr-test-head' and `prrr-test-old' serve the
+;; tests of the pure rules.
 
 ;;; Code:
 
@@ -31,6 +36,7 @@
 (require 'cl-lib)
 (require 'prrr)
 (require 'prrr-db)
+(require 'prrr-state)
 
 (defmacro prrr-db-with-test-db (&rest body)
   "Run BODY with `prrr-db' returning a fresh in-memory database."
@@ -52,6 +58,20 @@ inspect what `forge-query' sent.  The callback runs synchronously."
                   (funcall (plist-get args :callback) ,fixture))))
        ,@body)))
 
+(defmacro prrr-test-with-ghub-error-stub (err headers &rest body)
+  "Run BODY with `ghub-query' failing every request with ERR and HEADERS.
+The errorback runs synchronously, as ghub calls it: with ERR, HEADERS,
+a nil status and a nil request.  A request without an errorback fails
+the test, because ghub would signal."
+  (declare (indent 2) (debug (form form body)))
+  `(cl-letf (((symbol-function 'ghub-query)
+              (lambda (_query _variables &rest args)
+                (let ((errorback (plist-get args :errorback)))
+                  (unless errorback
+                    (ert-fail "request sent without an errorback"))
+                  (funcall errorback ,err ,headers nil nil)))))
+     ,@body))
+
 (defconst prrr-test-root
   (file-name-directory
    (directory-file-name
@@ -65,6 +85,60 @@ inspect what `forge-query' sent.  The callback runs synchronously."
      (expand-file-name (format "test/fixtures/github/%s.eld" name)
                        prrr-test-root))
     (read (current-buffer))))
+
+(defconst prrr-test-me "example-me")
+(defconst prrr-test-teams '("example-org/reviewers"))
+(defconst prrr-test-head "1111111111111111111111111111111111111111")
+(defconst prrr-test-old "0000000000000000000000000000000000000000")
+
+(cl-defun prrr-test-pr (&key (id "PR_1") (number 1) (title "Example")
+                                    (author "example-alice") draft-p assignees
+                                    (created-at "2026-09-01T00:00:00Z")
+                                    (updated-at "2026-09-05T00:00:00Z")
+                                    (head-oid prrr-test-head)
+                                    (base-ref "main") (head-ref "feature-1")
+                                    cross-repo-p)
+  "Build a `prrr-pr' with sensible defaults.
+Keyword arguments: ID, NUMBER, TITLE, AUTHOR, DRAFT-P, ASSIGNEES,
+CREATED-AT, UPDATED-AT, HEAD-OID, BASE-REF, HEAD-REF and CROSS-REPO-P."
+  (prrr-pr-create :id id :number number :title title :author author
+                  :draft-p draft-p :assignees assignees :created-at created-at
+                  :updated-at updated-at :head-oid head-oid :base-ref base-ref
+                  :head-ref head-ref :cross-repo-p cross-repo-p))
+
+(cl-defun prrr-test-meta (&key (pr-id "PR_1") (number 1) (head-oid prrr-test-head)
+                                      review-requests latest-reviews
+                                      viewer-latest-review viewer-latest-review-request
+                                      (created-at "2026-09-01T00:00:00Z"))
+  "Build a `prrr-pr-meta' with sensible defaults.
+Keyword arguments: PR-ID, NUMBER, HEAD-OID, REVIEW-REQUESTS, LATEST-REVIEWS,
+VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
+  (prrr-pr-meta-create :pr-id pr-id :forge-repo-id "example-repo-id" :number number
+                       :head-oid head-oid :review-requests review-requests
+                       :latest-reviews latest-reviews
+                       :viewer-latest-review viewer-latest-review
+                       :viewer-latest-review-request viewer-latest-review-request
+                       :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
+
+(defvar prrr-test-requests nil
+  "Top-level fields of the requests seen by `prrr-test-with-ghub-dispatch'.")
+
+(defmacro prrr-test-with-ghub-dispatch (alist &rest body)
+  "Run BODY with `ghub-query' answering each request from ALIST.
+ALIST maps the query's top-level field (`repository' or `viewer') to
+the fixture datum to answer with.  Callbacks run synchronously.  The
+variable `prrr-test-requests' collects the top-level field of every
+request, oldest first."
+  (declare (indent 1) (debug (form body)))
+  `(let ((prrr-test-requests nil))
+     (cl-letf (((symbol-function 'ghub-query)
+                (lambda (query _variables &rest args)
+                  (let ((field (car (cadr query))))
+                    (setq prrr-test-requests (append prrr-test-requests (list field)))
+                    (funcall (plist-get args :callback)
+                             (or (alist-get field ,alist)
+                                 (ert-fail (list "unexpected request" field))))))))
+       ,@body)))
 
 (provide 'prrr-test-helper)
 ;;; prrr-test-helper.el ends here

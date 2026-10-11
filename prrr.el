@@ -29,24 +29,60 @@
 ;; forge: a Review Queue in magit-status, a Review Buffer with Threads
 ;; inline, and a server-side Pending Review with batched Submit.
 ;;
-;; This file holds the customization group and the user options.  The
-;; database lives in `prrr-db', GitHub access in `prrr-github', and the
-;; pure Review Queue rules in `prrr-state'.
+;; This file is the entry point.  It holds the customization group and
+;; the commands shared by the Review Queue and the Review Buffer, and
+;; loads nothing else: every other command is reached through an
+;; autoload, so `(require 'prrr)' at startup costs no forge, magit or
+;; database load.  Turn the Review Queue on with `prrr-queue-mode'.
 
 ;;; Code:
-
-(require 'prrr-db)
-(require 'prrr-github)
-(require 'prrr-state)
 
 (defgroup prrr nil
   "Review GitHub pull requests with magit and forge."
   :group 'tools
   :prefix "prrr-")
 
-(defcustom prrr-queue-stale-after 300
-  "Seconds after which the Review Queue inputs are pulled again."
-  :type 'natnum)
+;; Explicit autoloads, so a plain clone on `load-path' works without a
+;; generated autoloads file.  Each costs nothing until its command runs.
+(autoload 'prrr-queue-mode "prrr-queue"
+  "Show the Review Queue in the `magit-status' buffer of GitHub repositories." t)
+(autoload 'prrr-queue "prrr-queue" "Show the Review Queue of the current repository." t)
+(autoload 'prrr-pull "prrr-sync"
+  "Pull the current repository's pull requests and Review Queue inputs." t)
+(autoload 'prrr-refresh-teams "prrr-sync" "Fetch the viewer's Teams again." t)
+(autoload 'prrr-stack-up "prrr-stack" "Move to the next PR up the current Stack." t)
+(autoload 'prrr-stack-down "prrr-stack" "Move to the next PR down the current Stack." t)
+(autoload 'prrr-queue-menu "prrr-transient" "Show the Review Queue commands." t)
+
+(declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
+(declare-function forge-visit-topic "forge-commands" (topic))
+(declare-function forge-browse-pullreq "forge-commands" (pull-request))
+(declare-function forge-checkout-pullreq "forge-commands" (pullreq))
+
+(defun prrr-current-pullreq ()
+  "Return forge's pull request at point or being visited.
+Signal a `user-error' when there is none."
+  (require 'forge)
+  (or (forge-current-pullreq)
+      (user-error "No pull request here")))
+
+;;;###autoload
+(defun prrr-open-topic ()
+  "Show the current pull request in forge's topic buffer."
+  (interactive)
+  (forge-visit-topic (prrr-current-pullreq)))
+
+;;;###autoload
+(defun prrr-browse ()
+  "Open the current pull request on GitHub."
+  (interactive)
+  (forge-browse-pullreq (prrr-current-pullreq)))
+
+;;;###autoload
+(defun prrr-checkout ()
+  "Check out the current pull request's branch with forge."
+  (interactive)
+  (forge-checkout-pullreq (prrr-current-pullreq)))
 
 (provide 'prrr)
 ;;; prrr.el ends here

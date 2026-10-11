@@ -54,12 +54,12 @@ depends only on the files above it.
 
 | File                | Purpose                                                                                                                      | Depends on                             |
 |---------------------|------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
-| `prrr.el`           | Package entry: `defgroup`, package-level options, autoloads, `prrr-review` and `prrr-queue` commands. Options that belong to one file are defined in that file.| everything below                       |
+| `prrr.el`           | Package entry: `defgroup`, the commands shared by the Review Queue and Review Buffer (`prrr-open-topic`, `prrr-browse`, `prrr-checkout`; `prrr-review` arrives with the Review Buffer). Loads nothing else; every command is autoloaded. Options that belong to one file are defined in that file. | nothing at load time |
 | `prrr-db.el`        | SQLite schema, connection, struct types, CRUD.                                                                               | emacsql                                |
 | `prrr-github.el`    | Every GitHub call: GraphQL queries and mutations, REST calls, pagination, rate-limit pauses, response decoding into structs. | forge-query, forge-rest, ghub, prrr-db |
-| `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, magit-git        |
+| `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, forge, magit-mode |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
-| `prrr-queue.el`     | The Review Queue section in magit-status and its keymap.                                                                     | prrr-state, prrr-sync, forge objects   |
+| `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
 | `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state  |
 | `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | prrr-diff                              |
 | `prrr-range.el`     | Range kinds, switching, since-review and since-opened computation, force-push handling.                                      | prrr-sync, prrr-diff                   |
@@ -168,14 +168,23 @@ and waits at least one second between them. Content creation is limited to
 ## 5. Review Queue (prrr-t9q.6)
 
 A section inserted into `magit-status-sections-hook` before
-`forge-insert-pullreqs` with `magit-add-section-hook`. It renders only from
+`forge-insert-pullreqs` with `magit-add-section-hook`. The section is turned on by the global minor mode `prrr-queue-mode`. `prrr-queue` turns it on when needed. It renders only from
 `pullreq-meta`, `team`, and forge's PR objects, never from the network, and
 triggers `prrr-pull` in the background when the newest `fetched-at` is older
 than `prrr-queue-stale-after` (default 300 seconds). Expanded by default when
 non-empty; when both groups are empty it shows collapsed headers with counts.
 
+**Which PRs.** The queue's PRs come from the repository's `pullreq-meta`
+rows: each row's `number` is looked up with `forge-get-pullreq`, and only
+PRs forge has and lists as `open` are kept. A refresh therefore costs in
+proportion to the open PRs, never to the repository's whole history. A PR
+forge knows but prrr has not pulled yet appears after the next prrr pull,
+at most `prrr-queue-stale-after` later.
+
 **Review State** (first match wins), For Me group: `new-commits` (the
-viewer's latest submitted review commit differs from head), `requested`
+viewer's latest submitted review commit differs from the head oid stored
+with it in `pullreq-meta`; forge's head is used only for a PR prrr has
+not pulled yet, prrr-knu.3), `requested`
 (a review request to me is in the current `reviewRequests`, or
 `viewerLatestReviewRequest` is set and I have no submitted review yet;
 GitHub keeps the latter after I review), `team-requested` (a Team in
@@ -409,7 +418,7 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 
 | Key       | Command                                                             |
 |-----------|---------------------------------------------------------------------|
-| `RET`     | `prrr-review` (open Review Buffer at default Range)                 |
+| `RET`     | `prrr-review` (open Review Buffer at default Range; until milestone 3, `prrr-open-topic`)                 |
 | `o`       | `prrr-open-topic`                                                   |
 | `b`       | `prrr-browse`                                                       |
 | `B`       | `prrr-checkout`                                                     |
@@ -465,10 +474,19 @@ bodies; nothing else is added.
 
 ## 11. Errors, auth, and offline
 
-- Authentication failures surface forge's own message and leave the buffer
-  usable for reading local diffs.
+- Authentication failures (HTTP 401, or 403 without rate-limit headers)
+  show prrr's classified message, "GitHub rejected the token (HTTP N)",
+  and leave the buffer usable for reading local diffs. A missing token that
+  forge reports before sending shows forge's own message.
 - Rate-limit responses (primary or secondary) pause the Outbox and the
-  background refetch until the reset time and say so in the header.
+  background refetch until the reset time and say so in the header. An HTTP
+  403 with quota left is GitHub's secondary limit and waits one minute.
+- A pull that gets no answer within `prrr-sync-timeout` (default 60
+  seconds), as when the connection fails, ends as offline; a later answer
+  is ignored.
+- A failed Teams fetch does not stop the queue pull: the stored Teams stay,
+  Teams are not retried before their daily cadence, and the header says
+  "Teams unavailable: ...".
 - Network failures on refetch keep the database copy and show "offline" in
   the header; writes go to the Outbox.
 - A missing PR ref (`refs/pullreqs/N` absent) prompts to run `forge-pull`.
@@ -489,6 +507,10 @@ within these on the test fixtures in CI:
 | Expand one file (300 lines, highlighted) | 25 ms                                            |
 | Refresh with 3 files expanded, 417 files | 250 ms                                           |
 | Per-PR refetch                           | 1 GraphQL point, 1 request for up to 100 Threads |
+
+The Review Queue budget covers what a magit-status refresh pays: gathering
+the inputs from forge's and prrr's databases plus inserting the section,
+measured on a repository with 3000 PRs of which 200 are open.
 
 ## 13. Testing
 
@@ -541,4 +563,4 @@ implementation plan.
 6. **Highlighting.** `prrr-treesit.el`.
 7. **Agent API.** `prrr-api.el`, hooks, JSON export and import,
    `prrr-agent.el` with the agent-shell default.
-8. **Release.** README, screenshots, CHANGELOG, MELPA recipe.
+8. **Release.** README polish (the README grows with each milestone), screenshots, CHANGELOG, MELPA recipe.

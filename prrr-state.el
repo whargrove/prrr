@@ -21,11 +21,11 @@
 
 ;; Pure functions implementing SPEC.md section 5: the Review State of a
 ;; PR for the viewer, Queue Group membership, the Awaiting me / Served
-;; partitions and their FIFO ordering, Stack detection, and the final
-;; ordered Review Queue.  Inputs are `prrr-pr' (built by the caller from
-;; forge's object) and `prrr-pr-meta' rows; there is no buffer, network
-;; or forge-object access, so every rule is unit-tested with constructed
-;; structs.
+;; partitions and their FIFO ordering, Stack detection, the final ordered
+;; Review Queue, the display filters, and Stack neighbours.  Inputs are
+;; `prrr-pr' (built by the caller from forge's object) and
+;; `prrr-pr-meta' rows; there is no buffer, network or forge-object
+;; access, so every rule is unit-tested with constructed structs.
 ;;
 ;; Line mapping across Ranges is milestone 5 and is not here yet.
 
@@ -42,7 +42,9 @@
 ID is the GitHub node id (forge's `their-id'), which joins to
 `prrr-pr-meta-pr-id'.  ASSIGNEES is a list of logins.  BASE-REF and
 HEAD-REF are branch names, nil when the branch is gone.  CROSS-REPO-P
-is non-nil for a PR from a fork."
+is non-nil for a PR from a fork.  HEAD-OID is forge's head-rev; the
+Review State prefers the head stored in the PR's `prrr-pr-meta' (see
+`prrr-state--head-oid')."
   id number title author draft-p assignees created-at updated-at
   head-oid base-ref head-ref cross-repo-p)
 
@@ -53,9 +55,11 @@ PR is the `prrr-pr'.  STATE is the Review State (For Me) or Mine state,
 nil for a dimmed context row.  GROUP is `for-me' or `mine'.  PARTITION
 is `awaiting' or `served' in For Me, nil in Mine.  STACK-POS is the
 1-based position of PR in its Stack, bottom first, and STACK-SIZE the
-Stack's length (1 for a lone PR).  DIMMED-P marks a row shown only for
-context: a non-qualifying Stack member or a draft requested from me."
-  pr state group partition stack-pos stack-size dimmed-p)
+Stack's length (1 for a lone PR).  STACK-ID is the `id' of the Stack's
+bottom PR, shared by every row of one Stack.  DIMMED-P marks a row
+shown only for context: a non-qualifying Stack member or a draft
+requested from me."
+  pr state group partition stack-pos stack-size stack-id dimmed-p)
 
 ;;;; Helpers over meta rows
 
@@ -97,6 +101,15 @@ or someone requested ME and ME has not reviewed yet."
     changes-requested approved commented assigned)
   "Review States of the For Me group in the order they are tried.")
 
+(defun prrr-state--head-oid (pr meta)
+  "Return the head commit PR's Review State is judged against.
+That is META's head-oid when META has one: it was fetched by the same
+query as the viewer's latest review, so the two are one snapshot and
+forge's separate fetch cadence cannot fake `new-commits'.  Without it,
+PR's head-oid from forge."
+  (or (and meta (prrr-pr-meta-head-oid meta))
+      (prrr-pr-head-oid pr)))
+
 (defun prrr-state-review-state (pr meta me teams)
   "Return the Review State of PR for the viewer ME, or nil.
 META is PR's `prrr-pr-meta' or nil; TEAMS the viewer's Team slugs.
@@ -104,7 +117,7 @@ First match wins, in the order of `prrr-state-for-me-order'."
   (let ((review (prrr-state--viewer-review meta)))
     (cond
      ((and review (nth 2 review)
-           (not (equal (nth 2 review) (prrr-pr-head-oid pr))))
+           (not (equal (nth 2 review) (prrr-state--head-oid pr meta))))
       'new-commits)
      ((prrr-state--requested-p meta me)
       'requested)
@@ -172,19 +185,34 @@ earlier state).  Drafts are always Served."
 
 ;;;; Stacks
 
+(defun prrr-state--older-p (a b)
+  "Non-nil when PR A was opened before PR B.
+Creation time decides, a PR without one counting as the newest; the
+lower PR number breaks a tie."
+  (let ((created-a (prrr-pr-created-at a))
+        (created-b (prrr-pr-created-at b)))
+    (cond ((and created-a created-b (not (equal created-a created-b)))
+           (string< created-a created-b))
+          ((and created-a (not created-b)) t)
+          ((and created-b (not created-a)) nil)
+          (t (< (or (prrr-pr-number a) 0) (or (prrr-pr-number b) 0))))))
+
 (defun prrr-state--parent (pr prs default-branch)
   "Return the PR in PRS that PR is stacked on, or nil.
-The parent is the PR whose `head-ref' equals PR's `base-ref' and that
-is not from a fork.  A PR based on DEFAULT-BRANCH, or on a branch no
-open PR has as its head, has no parent."
+The parent is a PR whose `head-ref' equals PR's `base-ref' and that is
+not from a fork.  When several open PRs have that head branch, the
+oldest one is the parent (see `prrr-state--older-p'), so the answer
+does not depend on the order of PRS.  A PR based on DEFAULT-BRANCH, or
+on a branch no open PR has as its head, has no parent."
   (let ((base (prrr-pr-base-ref pr)))
     (and base
          (not (equal base default-branch))
-         (seq-find (lambda (candidate)
-                     (and (not (eq candidate pr))
-                          (not (prrr-pr-cross-repo-p candidate))
-                          (equal (prrr-pr-head-ref candidate) base)))
-                   prs))))
+         (car (sort (seq-filter (lambda (candidate)
+                                  (and (not (eq candidate pr))
+                                       (not (prrr-pr-cross-repo-p candidate))
+                                       (equal (prrr-pr-head-ref candidate) base)))
+                                prs)
+                    #'prrr-state--older-p)))))
 
 (defun prrr-state--descend (pr parents seen)
   "Return PR followed by its descendants in PARENTS, depth first.
@@ -285,6 +313,9 @@ and keep their members together, bottom first."
                                        for pos from 1
                                        collect (funcall make pr pos size))))
              (keys (delq nil (mapcar #'car pairs))))
+        ;; Every entry carries the id of its Stack's bottom PR.
+        (dolist (pair pairs)
+          (setf (prrr-queue-entry-stack-id (cdr pair)) (prrr-pr-id (car stack))))
         (when keys
           (push (cons (car (sort keys #'string<)) (mapcar #'cdr pairs)) listed))))
     (apply #'append
@@ -312,6 +343,49 @@ describes."
                  (lambda (pr pos size)
                    (prrr-state--mine-pair pr (gethash (prrr-pr-id pr) meta-table)
                                           me pos size))))))
+
+;;;; Display
+
+(cl-defun prrr-state-filter-queue (entries &key (show-drafts t) (show-served t))
+  "Return ENTRIES without the rows the viewer chose to hide.
+ENTRIES is one Queue Group from `prrr-state-queue'.  Unless
+SHOW-DRAFTS, rows of draft PRs are dropped; unless SHOW-SERVED, rows in
+the Served partition are dropped.  A Stack left with only context rows
+\(rows without a state) is dropped entirely, so no row is shown without
+a reason.  Kept rows keep their order, STACK-POS and STACK-SIZE: a
+Stack's visible rows need not be contiguous positions."
+  (let* ((kept (seq-remove
+                (lambda (entry)
+                  (or (and (not show-drafts)
+                           (prrr-pr-draft-p (prrr-queue-entry-pr entry)))
+                      (and (not show-served)
+                           (eq (prrr-queue-entry-partition entry) 'served))))
+                entries))
+         (live (mapcar #'prrr-queue-entry-stack-id
+                       (seq-filter #'prrr-queue-entry-state kept))))
+    (seq-filter (lambda (entry) (member (prrr-queue-entry-stack-id entry) live))
+                kept)))
+
+(defun prrr-state-stack-neighbour (entries entry direction)
+  "Return the row of ENTRIES next to ENTRY in its Stack, or nil.
+DIRECTION `up' finds the nearest row above ENTRY (higher STACK-POS),
+`down' the nearest below.  ENTRIES are the rows of one displayed Queue
+Group, so rows the viewer hid are skipped."
+  (let* ((pos (prrr-queue-entry-stack-pos entry))
+         (up (eq direction 'up))
+         (candidates
+          (seq-filter (lambda (other)
+                        (and (equal (prrr-queue-entry-stack-id other)
+                                    (prrr-queue-entry-stack-id entry))
+                             (if up
+                                 (> (prrr-queue-entry-stack-pos other) pos)
+                               (< (prrr-queue-entry-stack-pos other) pos))))
+                      entries)))
+    (car (sort candidates
+               (lambda (a b)
+                 (funcall (if up #'< #'>)
+                          (prrr-queue-entry-stack-pos a)
+                          (prrr-queue-entry-stack-pos b)))))))
 
 (provide 'prrr-state)
 ;;; prrr-state.el ends here
