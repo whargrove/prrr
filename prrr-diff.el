@@ -494,10 +494,10 @@ here and in the section keymaps.")
 (defun prrr-diff-record-bookmark ()
   "Record the head this Review Buffer shows as its pull request's Bookmark.
 Run when the user leaves it: when the buffer is killed, its window
-quit, or another PR of its Stack replaces it, and when opening the buffer
-again moves its head (SPEC section 8).  Does
-nothing when no head is shown.  A failure is reported, not raised, so
-leaving still works."
+quit, or another PR of its Stack replaces it, and when opening the
+buffer again moves its head (SPEC section 8).  Does nothing when no
+head is shown.  A failure is reported, not raised, so leaving still
+works."
   (when (and prrr-diff--pullreq prrr-diff--head)
     (condition-case err
         (prrr-sync-record-bookmark prrr-diff--pullreq prrr-diff--head)

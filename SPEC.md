@@ -481,7 +481,10 @@ removed on it: after the queue pull stored its rows, `prrr-pull` deletes
 the pins of every PR the pull did not return as open, with one
 `git for-each-ref` and one `git update-ref --stdin` (about 10 ms for
 500 pins, so synchronous), except the pins of a PR with a live Review
-Buffer. Bookmarks are kept. If a Range's start is not an
+Buffer. Bookmarks are kept. Pins are keyed by PR number only, so two
+forge repositories sharing one worktree (a fork and its upstream)
+prune each other's pins; a start that is missing then is fetched by
+sha. If a Range's start is not an
 ancestor of head, prrr diffs the two trees directly and shows "history
 rewritten" in the header. If the start commit is missing locally it is
 fetched by sha from the PR's remote (forge's `remote` of the

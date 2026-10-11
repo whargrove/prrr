@@ -255,9 +255,9 @@ instead, drop it with `O k` and write the comment again without `C-u`.
 
 The Review Buffer shows a Range: the two commits it diffs. It opens at
 the default Range, the PR's merge base to its head, and the header
-names the Range shown.  `D` opens a menu to choose another; the keys
-below belong to that menu only (in the buffer itself `r`, `c` and `d`
-mean other things):
+names the Range shown. `D` opens a menu to choose another; the keys
+below belong to that menu only (in the buffer itself `r`, `c` and
+`d` mean other things):
 
 | Key | Command                   | Range                                                  |
 |-----|---------------------------|--------------------------------------------------------|

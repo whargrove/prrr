@@ -1271,6 +1271,92 @@ The Pending Review is the review-data fixture's.  Return the row of the write."
       (should-not (prrr-db-outbox-rows))
       (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty)))))
 
+(defvar prrr-sync-test--held nil
+  "Requests `prrr-sync-test--with-held-answers' held, newest first.")
+
+(defmacro prrr-sync-test--with-held-answers (answers &rest body)
+  "Run BODY with `ghub-query' answering `repository' requests from ANSWERS.
+ANSWERS is a function of no argument returning the review data to
+answer with.  Every other request is held: its field, callback and
+errorback are pushed onto `prrr-sync-test--held', newest first."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'ghub-query)
+              (lambda (query _variables &rest args)
+                (let ((field (car (cadr query))))
+                  (if (and (eq field 'repository) ,answers)
+                      (funcall (plist-get args :callback) (funcall ,answers))
+                    (push (list field (plist-get args :callback) (plist-get args :errorback))
+                          prrr-sync-test--held))))))
+     ,@body))
+
+(ert-deftest prrr-sync-test-outbox-late-setup-starts-no-mutation ()
+  "A Pending Review found after the watchdog ended the send adds no Thread."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-sync-test--held nil))
+        (prrr-sync-test--with-held-answers nil
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit prrr-test-head))
+          (should (equal '(repository) (mapcar #'car prrr-sync-test--held)))
+          (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+          (funcall (nth 1 (car prrr-sync-test--held)) (prrr-test-fixture "pending-review"))
+          (should (equal '(repository) (mapcar #'car prrr-sync-test--held)))
+          (should-not prrr-sync--outbox-creations)
+          (should (prrr-state-outbox-unconfirmed-p (car (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-outbox-late-success-records-the-stored-row ()
+  "An edit made after a refetch judged the write missing is not lost to a late success."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-sync-test--held nil))
+        (prrr-db-insert (prrr-pending-review-create :pr-id prrr-sync-test--pr
+                                                    :review-id "PRR_kwDOexamplePending1"
+                                                    :commit-oid prrr-test-head))
+        (prrr-sync-test--with-held-answers
+            (lambda () (prrr-sync-test--landed-data "Something else."))
+          (let* ((row (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                           :body "Nit." :commit prrr-test-head)))
+                 (comment (plist-get (prrr-outbox-payload row) :comment))
+                 (first (car prrr-sync-test--held)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            ;; The refetch says missing; a rate limit keeps it from going out again.
+            (setq prrr-sync--outbox-paused-until "2999-01-01T00:00:00Z")
+            (prrr-test-run-timers 'prrr-sync--refetch)
+            (should-not (prrr-state-outbox-unconfirmed-p (car (prrr-db-outbox-rows))))
+            (prrr-sync-test--write 'edit (list :comment-id comment :body "Better."))
+            (should (= 1 (length (prrr-db-outbox-rows))))
+            (funcall (nth 1 first) (prrr-test-fixture "add-thread"))
+            (should (equal "Better." (prrr-comment-body
+                                      (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01"))))
+            ;; GitHub has the old body: an edit carries the new one there.
+            (let ((edit (car (prrr-db-outbox-rows))))
+              (should (eq 'edit (prrr-outbox-kind edit)))
+              (should (equal '("PRRC_kwDOexampleNew01" "Better.")
+                             (list (plist-get (prrr-outbox-payload edit) :comment-id)
+                                   (plist-get (prrr-outbox-payload edit) :body)))))))))))
+
+(ert-deftest prrr-sync-test-outbox-late-failure-of-an-earlier-send-is-ignored ()
+  "A failure answering the first send leaves the marker of the second alone."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-sync-test--held nil))
+        (prrr-sync-test--with-held-answers (lambda () (prrr-test-fixture "review-data"))
+          (prrr-sync-test--write 'viewed '(:path "docs/notes.md" :viewed t))
+          (let ((first (car prrr-sync-test--held)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            ;; The refetch says missing and the write goes out again, a second later.
+            (cl-letf (((symbol-function 'prrr-sync--timestamp)
+                       (lambda (&optional _time) "2099-01-01T00:00:00Z")))
+              (prrr-test-run-timers 'prrr-sync--refetch))
+            (should (= 2 (length prrr-sync-test--held)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            (funcall (nth 2 first) '(error http 502) nil nil nil)
+            (let ((row (car (prrr-db-outbox-rows))))
+              (should (equal "2099-01-01T00:00:00Z"
+                             (plist-get (prrr-outbox-payload row) :sent-at)))
+              (should-not (prrr-outbox-last-error row))
+              (should (= 0 (prrr-outbox-attempts row))))))))))
+
 (ert-deftest prrr-sync-test-outbox-late-failure-is-recorded ()
   "A failure that answers after the watchdog counts, without touching the next send."
   (prrr-db-with-test-db
