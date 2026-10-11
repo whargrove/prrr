@@ -45,7 +45,8 @@ support stands).
 built-in `treesit` is required for syntax highlighting and absent on 28),
 magit 4.7 or later, forge 0.5 or later (any 2026 build; forge itself
 requires emacsql 4.4, ghub 5.3, transient 0.13, compat 31), emacsql 4.4,
-transient 0.13 or later, compat 31. ghub is reached only through forge.
+transient 0.13 or later, compat 31. ghub is reached through forge, except that the three mutations whose
+answer prrr reads use `ghub-query` with forge's token (section 4).
 
 ## 2. Architecture
 
@@ -57,13 +58,13 @@ depends only on the files above it.
 | `prrr.el`           | Package entry: `defgroup`, the commands shared by the Review Queue and Review Buffer (`prrr-open-topic`, `prrr-browse`, `prrr-checkout`, `prrr-review`). Loads nothing else; every command is autoloaded. Options that belong to one file are defined in that file. | nothing at load time |
 | `prrr-db.el`        | SQLite schema, connection, struct types, CRUD.                                                                               | emacsql                                |
 | `prrr-github.el`    | Every GitHub call: GraphQL queries and mutations, REST calls, pagination, rate-limit pauses, response decoding into structs. | forge-query, forge-rest, ghub, prrr-db |
-| `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, forge, magit-mode |
+| `prrr-sync.el`      | Freshness rules and the Outbox: pull queue inputs, refetch per PR, every write to GitHub with its order, spacing, retry and reconciliation, Bookmark and ref pinning. | prrr-db, prrr-github, prrr-state, forge, magit-mode |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
 | `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
 | `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync |
-| `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | magit-section, magit-diff, prrr-db     |
+| `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, unsent and failed writes and suggestions; the comment capture buffer. | magit-section, magit-diff, prrr-db, prrr-state |
 | `prrr-range.el`     | Range kinds, switching, since-review and since-opened computation, force-push handling.                                      | prrr-sync, prrr-diff                   |
-| `prrr-review.el`    | Pending Review lifecycle: add, edit, delete, reply, Immediate Publish, Submit with Verdict, discard.                         | prrr-github, prrr-sync, prrr-thread    |
+| `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
 | `prrr-stack.el`     | Stack chain computation and navigation.                                                                                      | prrr-state, prrr-diff                  |
 | `prrr-treesit.el`   | Deferred per-file tree-sitter highlighting.                                                                                  | prrr-diff, treesit                     |
 | `prrr-api.el`       | The public `prrr-api-*` functions, hooks, JSON export and import.                                                            | prrr-review, prrr-range                |
@@ -77,6 +78,8 @@ Rules:
   against fixtures.
 - Nothing outside `prrr-github.el` builds a query or touches ghub.
 - Nothing outside `prrr-db.el` writes SQL.
+- Every write to GitHub goes through the Outbox (`prrr-sync-write`): a command
+  describes the write, the Outbox sends it.
 - Buffers never hold state that the database does not: a Review Buffer is a
   view over database rows plus local git.
 - `prrr-thread.el` renders and `prrr-diff.el` places: a Thread's look does
@@ -95,14 +98,14 @@ forge objects (forge's own `id` is a composite, not the node id; its
 | Table            | Columns (PK first)                                                                                                                                  | Notes                                                                                                                                                                                                                                                     |
 |------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `pullreq-meta`   | pr-id, forge-repo-id, number, head-oid, review-requests, latest-reviews, viewer-latest-review, viewer-latest-review-request, created-at, fetched-at | `review-requests`: list of `(kind name)` with kind `user` or `team`. `latest-reviews`: list of `(login state submitted-at commit-oid on-behalf-of-slugs)`. `viewer-latest-review`: `(state submitted-at commit-oid)` or nil. Everything the Review Queue needs. |
-| `thread`         | thread-id, pr-id, path, line, start-line, side, start-side, subject-type, outdated-p, resolved-p, original-line, original-commit, fetched-at        | `subject-type` is `line` or `file`.                                                                                                                                                                                                                       |
-| `review-comment` | comment-id, thread-id, pr-id, author, body, created-at, updated-at, reply-to, review-id, state, local-state, agent-p                                | `state`: `pending` or `submitted` (GitHub's). `local-state`: `sent`, `unsent`, or `proposed`.                                                                                                                                                             |
+| `thread`         | thread-id, pr-id, path, line, start-line, side, start-side, subject-type, outdated-p, resolved-p, resolvable-p, original-line, original-commit, fetched-at        | `subject-type` is `line` or `file`. `resolvable-p`: GitHub lets the viewer resolve it, or unresolve it when resolved.                                                                                                                                                                                                                       |
+| `review-comment` | comment-id, thread-id, pr-id, author, body, created-at, updated-at, reply-to, review-id, state, local-state, agent-p, database-id                                | `state`: `pending` or `submitted` (GitHub's). `local-state`: `sent`, or `proposed` (milestone 7). `database-id`: GitHub's numeric id, which REST replies need.                                                                                                                                                             |
 | `pending-review` | pr-id, review-id, commit-oid, body, created-at                                                                                                      | At most one per PR for the viewer.                                                                                                                                                                                                                        |
 | `viewed`         | (pr-id, path), state, fetched-at                                                                                                                    | `state`: `viewed`, `unviewed`, `dismissed`. Default Range only.                                                                                                                                                                                           |
 | `team`           | combined-slug, org, slug, fetched-at                                                                                                                | The viewer's Teams.                                                                                                                                                                                                                                       |
 | `pr-bookmark`    | pr-id, last-opened-head-oid, last-opened-at                                                                                                         | Local "since I last looked".                                                                                                                                                                                                                              |
-| `outbox`         | id, pr-id, kind, payload, created-at, attempts, last-error                                                                                          | Failed writes awaiting retry.                                                                                                                                                                                                                             |
-| `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first.                                                                                                                                           |
+| `outbox`         | id, pr-id, kind, payload, created-at, attempts, last-error                                                                                          | Writes GitHub has not accepted, in id order; `kind` and `payload` as `prrr-state-outbox-kinds` describes. The review tables above hold only what GitHub sent or accepted.                                                                                                                                                                                                                             |
+| `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first. Version 2 since milestone 4.                                                                                                                                           |
 
 Rows are plain structs (`prrr-thread`, `prrr-comment`, and so on) and are
 the values the API returns.
@@ -148,24 +151,32 @@ comments page through `node(id:)`.
 
 | Action                                  | Call                                                                                                                                               |
 |-----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
-| Create Pending Review                   | `addPullRequestReview(pullRequestId)` with no event; first query for an existing PENDING review and reuse it                                       |
+| Create Pending Review                   | `addPullRequestReview(pullRequestId, commitOID)` with no event, `commitOID` being the head the user commented on; first query for an existing PENDING review and reuse it                                       |
 | Add Thread (line, range, file)          | `addPullRequestReviewThread(pullRequestReviewId, path, body, line, side[, startLine, startSide][, subjectType: FILE])`                             |
 | Reply inside Pending Review             | `addPullRequestReviewThreadReply(pullRequestReviewThreadId, pullRequestReviewId, body)`                                                            |
 | Immediate Publish of one Review Comment | REST `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` = head, `path`, `line`, `side`, optional `start_line`, `start_side`, `subject_type` |
 | Immediate reply                         | REST `POST /repos/{o}/{r}/pulls/{n}/comments/{id}/replies`                                                                                         |
 | Discussion Comment                      | `addComment(subjectId: <PR node id>, body)`                                                                                                        |
 | Edit / delete a comment                 | `updatePullRequestReviewComment` / `deletePullRequestReviewComment`                                                                                |
-| Submit                                  | `submitPullRequestReview(pullRequestReviewId, event: APPROVE \| REQUEST_CHANGES \| COMMENT, body)`                                                 |
+| Submit                                  | `submitPullRequestReview(pullRequestReviewId, event: APPROVE \| REQUEST_CHANGES \| COMMENT, body)`; without a Pending Review, `addPullRequestReview` with the event                                                 |
 | Discard Pending Review                  | `deletePullRequestReview`                                                                                                                          |
 | Resolve / unresolve Thread              | `resolveReviewThread` / `unresolveReviewThread`                                                                                                    |
 | Viewed                                  | `markFileAsViewed` / `unmarkFileAsViewed` (`pullRequestId, path`)                                                                                  |
+
+**Answers prrr reads.** `forge-mutate` selects only `clientMutationId`,
+so creating the Pending Review, a Thread and a reply goes through
+`ghub-query` with forge's token, selecting the new ids. GitHub's answer
+to Immediate Publish names the comment but not its Thread; the next
+refetch does. An HTTP 422 is GitHub refusing a write and is an error,
+not `offline`. Whether GitHub accepts Immediate Publish while the
+viewer has a Pending Review is unverified.
 
 Line numbers are file line numbers at the review's commit: `RIGHT` is the
 new-file number for added and context lines, `LEFT` the old-file number for
 deleted lines. Diff positions are never used.
 
 **Limits.** Mutations cost 5 secondary points; prrr serialises mutations
-and waits at least one second between them. Content creation is limited to
+and waits at least one second between them (the Outbox, section 7). Content creation is limited to
 80 per minute; the Outbox retry honours that. `first` is capped at 100.
 
 ## 5. Review Queue (prrr-t9q.6)
@@ -321,19 +332,31 @@ last line; a region that spans hunks is refused with a message. A comment
 with point on a deleted line is `LEFT`; otherwise `RIGHT`. A File Comment
 has `subjectType: FILE`.
 
-**Write path (optimistic).** Every new comment, reply, edit, delete, resolve,
-and Viewed change writes a local row with `local-state` `unsent` and renders
-immediately with the `prrr-unsent` face, then performs the server call in
-the background. Success replaces the row with the server's ids. Failure
-keeps it in `outbox` with the error, shown with the `prrr-failed` face and in
-the header count; the Outbox is retried on the next write or refetch and
-through `prrr-outbox-retry` / `prrr-outbox-discard`.
+**Write path (optimistic).** Every new comment, reply, edit, delete,
+resolve, Submit, discard and Viewed change is a write handed to the
+Outbox (`prrr-sync-write`), stored at once in `outbox`. The Review
+Buffer shows the stored rows with the queued writes applied
+(`prrr-state-outbox-view`): unsent ones with the `prrr-unsent` face,
+failed ones with the `prrr-failed` face and GitHub's message, and the
+header counts both. The Outbox sends one mutation at a time, at least a
+second apart, at most 80 content creations a minute, each PR's writes
+in order; a failed write holds back its PR's later writes and is
+retried on the PR's next write or refetch and through
+`prrr-outbox-retry`, or dropped with `prrr-outbox-discard`, which also
+drops the writes that need it. A rate limit pauses the Outbox until it
+resets. Success stores GitHub's rows and renames the write's local ids
+in the PR's queued writes, so a reply to a Thread not yet sent goes
+out once the Thread has GitHub's id. Edit or delete of a comment whose
+own write is still queued changes or drops that write.
 
-**Reconciliation.** On refetch, server rows replace local rows for every
-submitted comment, Thread, and Viewed flag. For the Pending Review the server
-is authoritative for comments it has accepted; unsent Outbox rows survive and
-are re-attempted against the current pending review id. Comments added from
-the web appear like any other.
+**Reconciliation.** On refetch, GitHub's rows replace every stored
+Thread, comment, Pending Review and Viewed flag of the PR; queued
+writes, which live only in `outbox`, survive and are re-attempted
+against the current pending review id. An answer that a write of the
+PR may have raced (one succeeded since the refetch started, or one is
+being sent) is not stored; the Outbox refetches the PR once it has
+nothing more to send to it. Comments added from the web appear like
+any other.
 
 **Pending Review lifecycle.** The first pending comment on a PR creates the
 Pending Review (after checking for an existing one). Edit and delete of my
@@ -342,7 +365,7 @@ capture buffer for the summary body with the Verdict chosen from the
 transient (approve, request changes, comment); it shows the counts of
 pending and agent-authored comments and asks for confirmation when any
 agent comments exist. `prrr-discard-pending` deletes the Pending Review after
-confirmation. Submitting or discarding touches the PR (moves it to Served).
+confirmation. Submitting touches the PR (moves it to Served); discarding does not, since GitHub then records no review.
 
 **Immediate Publish.** A prefix argument (`C-u`) on any comment or reply
 command, or the capture-buffer toggle, publishes that one comment now

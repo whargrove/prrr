@@ -7,13 +7,14 @@ prrr puts the pull requests that need you in your magit-status buffer,
 oldest first, with Stacks of dependent PRs kept together. Press `RET` on
 one to open its Review Buffer: the diff from the PR's merge base to its
 head, with existing threads inline, files folding away once viewed, and
-one key to jump between files and threads. Upcoming milestones add line
-and range comments, a pending review submitted in one batch, and "what
-changed since my last review".
+one key to jump between files and threads. Comment on lines, ranges and
+files, reply, suggest changes, and submit your pending review with a
+verdict; what you write shows at once and is never lost to a dropped
+connection. The next milestone adds "what changed since my last review".
 
-> **Status:** early development. The Review Queue and a read-only Review
-> Buffer work. Commenting and submitting are next. See the milestones in
-> [`SPEC.md`](SPEC.md#15-milestones).
+> **Status:** early development. The Review Queue, the Review Buffer,
+> commenting and submitting work. Ranges and Stacks inside the Review
+> Buffer are next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
 
 ## Requirements
 
@@ -116,7 +117,7 @@ forge's own pull request keys, such as `C-c C-c`, also work on a row.
 |--------------------------|---------|-------------------------------------------------|
 | `prrr-github-user`       | `nil`   | Your login; `nil` reads `github.user`           |
 | `prrr-queue-stale-after` | `300`   | Seconds before the queue's data is pulled again |
-| `prrr-sync-timeout`      | `60`    | Seconds a pull waits for GitHub before `offline` |
+| `prrr-sync-timeout`      | `60`    | Seconds a pull, refetch or change waits for GitHub before `offline` |
 | `prrr-queue-show-drafts` | `t`     | Show draft PRs                                  |
 | `prrr-queue-show-served` | `t`     | Show the Served partition                       |
 | `prrr-eager-files`       | `30`    | Files expanded when a Review Buffer opens       |
@@ -124,7 +125,8 @@ forge's own pull request keys, such as `C-c C-c`, also work on a row.
 | `prrr-database-file`     | `prrr-database.sqlite` in `user-emacs-directory` | prrr's own database |
 
 prrr keeps its data in its own SQLite file and never writes to forge's
-database.
+database. Upgrading prrr may drop that data, which prrr fetches again;
+unsent comments are always kept.
 
 ## The Review Buffer
 
@@ -164,6 +166,15 @@ viewed`. `g` redraws and keeps what you expanded and folded.
 | `J` / `K` | `prrr-next-file` / `prrr-previous-file`             | Next or previous file                      |
 | `j`       | `prrr-jump-to-file`                                 | Jump to a file, with completion            |
 | `v`       | `prrr-toggle-viewed`                                | Mark the file Viewed on GitHub and fold it |
+| `c`       | `prrr-comment`                                      | Comment on the line or the region's lines  |
+| `C`       | `prrr-comment-file`                                 | Comment on the whole file                  |
+| `r`       | `prrr-reply`                                        | Reply to the thread at point               |
+| `e` / `k` | `prrr-edit-comment` / `prrr-delete-comment`         | Edit or delete your comment at point       |
+| `d`       | `prrr-discussion-comment`                           | Comment on the pull request itself         |
+| `R`       | `prrr-toggle-resolved`                              | Resolve or unresolve the thread at point   |
+| `s`       | `prrr-comment-suggest`                              | Suggest a change to the line or region     |
+| `S`       | `prrr-submit`                                       | Submit your review, or discard it          |
+| `O`       | `prrr-outbox`                                       | Retry or drop what has not reached GitHub  |
 | `z` / `Z` | `prrr-collapse-all` / `prrr-expand-all`             | Fold or expand every file                  |
 | `o`       | `prrr-open-topic`                                   | forge's topic buffer                       |
 | `b`       | `prrr-browse`                                       | Open the PR on GitHub                      |
@@ -173,8 +184,52 @@ viewed`. `g` redraws and keeps what you expanded and folded.
 | `?`, `C-o`| `prrr-menu`                                         | Menu with the same keys                    |
 
 magit's `TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`, `1`-`4`, `E` (ediff), `h`
-and `q` work as in any magit diff. Keys that later milestones use for
-commenting and reviewing (`c`, `r`, `e`, `k`, `s`, `S`, …) do nothing yet.
+and `q` work as in any magit diff. Keys that later milestones use
+(`D`, `.`, `m`, `>`, `<`, `@`, `L`) do nothing yet.
+
+## Commenting and reviewing
+
+Put point on a line of the diff and press `c`, or mark lines of one hunk
+first to comment on all of them. A removed line is commented on as the
+old file's line, any other line as the new file's. `C` comments on the
+file at point as a whole, `r` replies to the thread at point, and `s`
+starts a comment with a GitHub suggestion block holding the lines, to
+edit into what they should say. A suggestion shows in the thread as a
+small diff against those lines.
+
+Each opens a buffer to write in, at the bottom of the frame. `C-c C-c`
+sends, `C-c C-k` cancels, and `C-c C-i` switches between your pending
+review and publishing this one comment at once. Comments go to your
+pending review, which only you see until you submit it; with `C-u`
+before `c`, `C`, `r` or `s`, or the `-i` switch in the `?` menu, the
+comment is published at once. `d` writes a comment on the pull request
+itself, which is always published at once.
+
+`e` and `k` edit and delete your own comments, pending or published.
+`R` resolves or unresolves the thread at point, when GitHub lets you.
+
+`S` opens the submit menu: `a` approve, `r` request changes, `c`
+comment, each asking for an optional summary first, or `k` to discard
+the pending review and its comments. Requesting changes or commenting
+needs a summary or at least one comment. Submitting moves the pull
+request to Served in the Review Queue.
+
+Everything you write shows at once, marked `unsent` until GitHub has
+it. prrr sends one change at a time, a second apart, in the order you
+made them, and never more than 80 new comments a minute, as GitHub
+asks. When GitHub cannot be reached or refuses, the change stays,
+marked `failed:` with GitHub's reason, and the header counts it. prrr
+tries it again with your next change on that pull request, when the
+buffer refetches, or when you press `O r`; `O k` drops one, along with
+any reply that needs it. Until a failed change goes through, the later
+changes to that pull request wait behind it. When GitHub rate-limits
+you, the header says until when, and prrr waits. Unsent changes are
+kept in prrr's database, so they survive restarting Emacs.
+
+Publishing a single comment at once while you have a pending review
+depends on GitHub accepting it; if GitHub refuses, the comment stays
+in the Outbox with GitHub's reason, and you can add it to your pending
+review instead.
 
 ## Development
 
