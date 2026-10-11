@@ -283,6 +283,13 @@ Immediate Publish.
 (defvar-local prrr-comment--origin nil
   "Marker where the capture was started.")
 
+(defvar-local prrr-comment--section-position nil
+  "Where in its magit section the capture was started, or nil.
+A list (SECTION LINE CHAR) as `magit-section-goto-successor' takes.
+The origin marker alone would not do: the Outbox redraws the Review
+Buffer while the user writes, and a redraw erases the buffer, which
+moves every marker in it to the top.")
+
 (defvar-local prrr-comment--windows nil
   "The window configuration to restore when the capture ends.")
 
@@ -309,9 +316,12 @@ non-nil lets an empty text be confirmed.
 On confirm, ON-CONFIRM is called with the trimmed text and the
 immediate choice, in the buffer the capture started from; then the
 capture buffer closes and the windows, with point where it was, come
-back.  When ON-CONFIRM signals, the capture buffer stays, so no text is
-lost."
+back.  Point returns to the same place in the same magit section,
+even when the buffer was redrawn meanwhile.  When ON-CONFIRM
+signals, the capture buffer stays, so no text is lost."
   (let ((origin (point-marker))
+        (section-position (when-let ((section (magit-section-at)))
+                            (cons section (magit-section-get-relative-position section))))
         (windows (current-window-configuration))
         (buffer (generate-new-buffer "*prrr comment*")))
     (with-current-buffer buffer
@@ -322,6 +332,7 @@ lost."
             prrr-comment--immediate-allowed immediate-allowed
             prrr-comment--allow-empty allow-empty
             prrr-comment--origin origin
+            prrr-comment--section-position section-position
             prrr-comment--windows windows)
       (when body
         (insert body)))
@@ -332,13 +343,16 @@ lost."
 (defun prrr-comment--close ()
   "Kill the current capture buffer and bring the windows back."
   (let ((windows prrr-comment--windows)
-        (origin prrr-comment--origin))
+        (origin prrr-comment--origin)
+        (section-position prrr-comment--section-position))
     (kill-buffer (current-buffer))
     (when windows
       (set-window-configuration windows))
     (when (and origin (buffer-live-p (marker-buffer origin)))
       (set-buffer (marker-buffer origin))
-      (goto-char origin))))
+      (unless (and section-position
+                   (apply #'magit-section-goto-successor section-position))
+        (goto-char origin)))))
 
 (defun prrr-comment-confirm ()
   "Send the comment of this buffer and close it."

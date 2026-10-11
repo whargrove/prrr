@@ -270,6 +270,46 @@ ARGS follow the label and the confirm function of `prrr-comment-capture'.
             (kill-buffer)))
       (kill-buffer origin))))
 
+(defun prrr-thread-test--draw (extra)
+  "Draw two file sections in the current buffer, after an EXTRA one when non-nil.
+Like a redraw of the Review Buffer: everything is erased first."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (magit-insert-section (prrr-thread-test-root)
+      (when extra
+        (magit-insert-section (note 'extra) (insert "a new section\n")))
+      (magit-insert-section (file "a.el") (insert "a heading\na one\na two\n"))
+      (magit-insert-section (file "b.el") (insert "b heading\nb one\nb two\n")))))
+
+(defmacro prrr-thread-test--with-redrawn-capture (finish)
+  "Capture from line \"b one\", redraw the origin, then run FINISH.
+FINISH is the command that ends the capture; point must come back."
+  `(let ((origin (generate-new-buffer "prrr-test-origin")))
+     (unwind-protect
+         (progn
+           (switch-to-buffer origin)
+           (magit-section-mode)
+           (prrr-thread-test--draw nil)
+           (goto-char (point-min))
+           (search-forward "b one")
+           (backward-char 2)
+           (with-current-buffer (prrr-comment-capture "b.el" #'ignore)
+             (insert "Text.")
+             (with-current-buffer origin (prrr-thread-test--draw t))
+             (,finish))
+           (should (eq (current-buffer) origin))
+           (should (equal "b one" (buffer-substring (line-beginning-position)
+                                                    (line-end-position))))
+           (should (= 3 (current-column))))
+       (kill-buffer origin))))
+
+(ert-deftest prrr-thread-test-capture-confirm-survives-a-redraw ()
+  "SPEC 7: confirm returns point to the anchor, even after the Outbox redrew the buffer."
+  (prrr-thread-test--with-redrawn-capture prrr-comment-confirm))
+
+(ert-deftest prrr-thread-test-capture-abort-survives-a-redraw ()
+  (prrr-thread-test--with-redrawn-capture prrr-comment-abort))
+
 (ert-deftest prrr-thread-test-capture-origin-killed ()
   "Review Focus 5: confirming after the Review Buffer is gone still sends."
   (let ((confirmed nil)
