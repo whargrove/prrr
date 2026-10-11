@@ -496,5 +496,27 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
   (should-not (prrr-sync-describe '(:state ok)))
   (should-not (prrr-sync-describe nil)))
 
+;;;; Viewed
+
+(ert-deftest prrr-sync-test-set-viewed-writes-then-sends ()
+  (prrr-db-with-test-db
+    (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
+      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" t)
+      (should (eq 'markFileAsViewed (car (cadr (car captured))))))
+    (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "a.el"))))))
+
+(ert-deftest prrr-sync-test-set-viewed-failure-restores-row ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-viewed-create :pr-id "PR_1" :path "a.el" :state 'viewed))
+    (prrr-test-with-ghub-error-stub '(error http 502) nil
+      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" nil))
+    (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "a.el"))))))
+
+(ert-deftest prrr-sync-test-set-viewed-failure-removes-new-row ()
+  (prrr-db-with-test-db
+    (prrr-test-with-ghub-error-stub '(error http 502) nil
+      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" t))
+    (should-not (prrr-db-get 'viewed "PR_1" "a.el"))))
+
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

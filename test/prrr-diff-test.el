@@ -31,6 +31,7 @@
 (require 'prrr-test-helper)
 (require 'prrr-diff)
 (require 'prrr-github)
+(require 'prrr-transient)
 
 ;;;; Changed files
 
@@ -606,6 +607,113 @@ SETUP runs first, inside the fixture repository and a fresh database.
 (ert-deftest prrr-diff-test-refetch-outside-review-buffer ()
   (with-temp-buffer
     (should-error (prrr-refetch) :type 'user-error)))
+
+;;;; Commands
+
+(defun prrr-diff-test--at ()
+  "Return (TYPE . VALUE) of the section at point."
+  (let ((section (magit-current-section)))
+    (cons (oref section type) (oref section value))))
+
+(ert-deftest prrr-diff-test-next-and-previous-file ()
+  (prrr-diff-test--with-buffer nil
+    (goto-char (point-min))
+    (prrr-next-file)
+    (should (equal '(file . "README.md") (prrr-diff-test--at)))
+    (prrr-next-file)
+    (should (equal '(file . "data.bin") (prrr-diff-test--at)))
+    (prrr-previous-file)
+    (should (equal '(file . "README.md") (prrr-diff-test--at)))
+    (should-error (prrr-previous-file) :type 'user-error)
+    (prrr-jump-to-file "src/old.el")
+    (should (equal '(file . "src/old.el") (prrr-diff-test--at)))
+    (should-error (prrr-next-file) :type 'user-error)))
+
+(ert-deftest prrr-diff-test-jump-to-file-expands-it ()
+  (let ((prrr-eager-files 0))
+    (prrr-diff-test--with-buffer nil
+      (prrr-jump-to-file "docs/notes.md")
+      (should-not (oref (prrr-diff-test--file-section "docs/notes.md") hidden)))))
+
+(ert-deftest prrr-diff-test-next-thread-washes-and-reveals ()
+  "] reaches Threads in files not washed yet and inside folded groups."
+  (let ((prrr-eager-files 0))
+    (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+      (goto-char (point-min))
+      (let ((seen nil))
+        (dotimes (_ 5)
+          (prrr-next-thread)
+          (should-not (invisible-p (point)))
+          (push (cdr (prrr-diff-test--at)) seen))
+        (should (equal '("PRRT_kwDOexample0000002" "PRRT_kwDOexample0000004"
+                         "PRRT_kwDOexample0000001" "PRRT_kwDOexample0000005"
+                         "PRRT_kwDOexample0000003")
+                       (nreverse seen))))
+      (should-error (prrr-next-thread) :type 'user-error)
+      (prrr-previous-thread)
+      (should (equal "PRRT_kwDOexample0000005" (cdr (prrr-diff-test--at)))))))
+
+(ert-deftest prrr-diff-test-next-unresolved-skips-resolved ()
+  (let ((prrr-eager-files 0))
+    (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+      (goto-char (point-min))
+      (prrr-next-unresolved)
+      (should (equal "PRRT_kwDOexample0000004" (cdr (prrr-diff-test--at))))
+      ;; The only Thread before it, on README.md, is resolved.
+      (should-error (prrr-previous-unresolved) :type 'user-error))))
+
+(ert-deftest prrr-diff-test-collapse-and-expand-all ()
+  (let ((prrr-eager-files 1))
+    (prrr-diff-test--with-buffer nil
+      (prrr-expand-all)
+      (dolist (path (prrr-diff-test--files))
+        (should-not (oref (prrr-diff-test--file-section path) hidden)))
+      (prrr-collapse-all)
+      (dolist (path (prrr-diff-test--files))
+        (should (oref (prrr-diff-test--file-section path) hidden))))))
+
+(ert-deftest prrr-diff-test-toggle-viewed ()
+  (prrr-diff-test--with-buffer nil
+    (cl-letf (((symbol-function 'forge-get-repository)
+               (lambda (&rest _) (forge-github-repository :id "r" :apihost "api.github.com"))))
+      (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
+        (prrr-jump-to-file "README.md")
+        (prrr-toggle-viewed)
+        (should (eq 'markFileAsViewed (car (cadr (car captured)))))
+        (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+        (let ((readme (prrr-diff-test--file-section "README.md")))
+          (should (oref readme hidden))
+          (should (string-match-p "✓ viewed" (prrr-diff-test--text readme))))
+        (should (equal '(file . "data.bin") (prrr-diff-test--at)))
+        (prrr-jump-to-file "README.md")
+        (prrr-toggle-viewed)
+        (should (eq 'unviewed (prrr-viewed-state
+                               (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+        (should-not (oref (prrr-diff-test--file-section "README.md") hidden))
+        (should (equal '(file . "README.md") (prrr-diff-test--at)))))))
+
+(ert-deftest prrr-diff-test-keys-and-menu-agree ()
+  "SPEC section 9: every key of this milestone, in the buffer and the menu."
+  (pcase-dolist (`(,key . ,command)
+                 '(("]" . prrr-next-thread) ("[" . prrr-previous-thread)
+                   ("}" . prrr-next-unresolved) ("{" . prrr-previous-unresolved)
+                   ("J" . prrr-next-file) ("K" . prrr-previous-file)
+                   ("j" . prrr-jump-to-file) ("v" . prrr-toggle-viewed)
+                   ("z" . prrr-collapse-all) ("Z" . prrr-expand-all)
+                   ("o" . prrr-open-topic) ("b" . prrr-browse) ("B" . prrr-checkout)
+                   ("g" . magit-refresh) ("G" . prrr-refetch)))
+    (should (eq command (keymap-lookup prrr-diff-mode-map key)))
+    (let ((suffix (transient-get-suffix 'prrr-menu key)))
+      (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))
+                                     :command)))))
+  (should (eq 'prrr-menu (keymap-lookup prrr-diff-mode-map "?")))
+  (should (eq 'prrr-menu (keymap-lookup prrr-diff-mode-map "C-o")))
+  (should (eq 'magit-dispatch (keymap-lookup prrr-diff-mode-map "h"))))
+
+(ert-deftest prrr-diff-test-later-keys-do-nothing-yet ()
+  "Magit's commit, stage, discard and friends never run in a Review Buffer."
+  (dolist (key '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L"))
+    (should (eq 'undefined (keymap-lookup prrr-diff-mode-map key)))))
 
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

@@ -45,7 +45,11 @@
 (require 'prrr-db)
 (require 'prrr-state)
 (require 'prrr-thread)
+(require 'prrr)
 (require 'prrr-sync)
+(require 'prrr-github)
+
+(declare-function prrr-menu "prrr-transient" ())
 
 (defcustom prrr-eager-files 30
   "Most files washed when a Review Buffer opens.
@@ -366,8 +370,31 @@ Buffer that child may be a File Comment."
 ;;;; Mode and refresh
 
 (defvar-keymap prrr-diff-mode-map
-  :doc "Keys of the Review Buffer (SPEC section 9)."
-  :parent magit-diff-mode-map)
+  :doc "Keys of the Review Buffer (SPEC section 9).
+Keys that later milestones give to prrr are `undefined' until then, so
+magit's commit, stage, discard or rebase never run from here."
+  :parent magit-diff-mode-map
+  "]" #'prrr-next-thread
+  "[" #'prrr-previous-thread
+  "}" #'prrr-next-unresolved
+  "{" #'prrr-previous-unresolved
+  "J" #'prrr-next-file
+  "K" #'prrr-previous-file
+  "j" #'prrr-jump-to-file
+  "v" #'prrr-toggle-viewed
+  "z" #'prrr-collapse-all
+  "Z" #'prrr-expand-all
+  "o" #'prrr-open-topic
+  "b" #'prrr-browse
+  "B" #'prrr-checkout
+  "G" #'prrr-refetch
+  "?" #'prrr-menu
+  "C-o" #'prrr-menu
+  "c" #'undefined "C" #'undefined "r" #'undefined "e" #'undefined
+  "k" #'undefined "d" #'undefined "R" #'undefined "s" #'undefined
+  "D" #'undefined "." #'undefined "m" #'undefined ">" #'undefined
+  "<" #'undefined "S" #'undefined "O" #'undefined "@" #'undefined
+  "L" #'undefined)
 
 (define-derived-mode prrr-diff-mode magit-diff-mode "prrr"
   "Review one pull request: its diff with Threads inline.
@@ -586,6 +613,186 @@ The buffer shows \"refreshing…\" until the answer arrives, then redraws.
                (or (prrr-sync-describe (prrr-sync-review-status (oref pullreq their-id))
                                        "a refetch is running")
                    "try again shortly")))))
+
+;;;; Commands
+
+(defun prrr-diff--files ()
+  "Return the `file' sections of the buffer, in order."
+  (seq-filter (lambda (section) (eq (oref section type) 'file))
+              (oref magit-root-section children)))
+
+(defun prrr-diff--file-at-point ()
+  "Return the `file' section around point, or nil."
+  (let ((section (magit-current-section)))
+    (while (and section (not (eq (oref section type) 'file)))
+      (setq section (oref section parent)))
+    section))
+
+(defun prrr-diff--file-near-point (offset)
+  "Return the file OFFSET files after the one around point, or nil.
+A negative OFFSET counts backwards.  Before the first file, the first
+file is one after point; after the last, the last is one before it."
+  (let* ((files (prrr-diff--files))
+         (current (prrr-diff--file-at-point))
+         (index (cond (current (+ (seq-position files current) offset))
+                      ((and files (< (point) (oref (car files) start)))
+                       (if (> offset 0) (1- offset) -1))
+                      (t (if (< offset 0) (+ (length files) offset) (length files))))))
+    (and (<= 0 index) (nth index files))))
+
+(defun prrr-next-file ()
+  "Move to the next file of the diff."
+  (interactive)
+  (prrr-diff--require-pullreq)
+  (magit-section-goto (or (prrr-diff--file-near-point 1) (user-error "No next file"))))
+
+(defun prrr-previous-file ()
+  "Move to the previous file of the diff."
+  (interactive)
+  (prrr-diff--require-pullreq)
+  (magit-section-goto (or (prrr-diff--file-near-point -1) (user-error "No previous file"))))
+
+(defun prrr-jump-to-file (path)
+  "Move to the file PATH of the diff and expand it.
+Interactively, read PATH with completion over the diff's files."
+  (interactive
+   (progn (prrr-diff--require-pullreq)
+          (list (completing-read "Jump to file: "
+                                 (mapcar (lambda (file) (oref file value)) (prrr-diff--files))
+                                 nil t))))
+  (let ((file (or (seq-find (lambda (file) (equal (oref file value) path)) (prrr-diff--files))
+                  (user-error "No file %s in this diff" path))))
+    (magit-section-show file)
+    (magit-section-goto file)))
+
+(defun prrr-diff--thread-sections (container)
+  "Return the `thread' and `file-comment' sections in CONTAINER, in order."
+  (let ((sections nil))
+    (magit-map-sections (lambda (section)
+                          (when (memq (oref section type) '(thread file-comment))
+                            (push section sections)))
+                        container)
+    (nreverse sections)))
+
+(defun prrr-diff--threads-of (path)
+  "Return every Thread the buffer shows in the file PATH."
+  (when-let ((entry (and prrr-diff--file-threads (gethash path prrr-diff--file-threads))))
+    (append (prrr-file-threads-file-comments entry)
+            (prrr-file-threads-lines entry)
+            (prrr-file-threads-outdated entry))))
+
+(defun prrr-diff--reveal (section)
+  "Show SECTION and every section around it."
+  (let ((chain nil))
+    (while section
+      (push section chain)
+      (setq section (oref section parent)))
+    (dolist (outer chain)
+      (when (oref outer hidden)
+        (magit-section-show outer)))))
+
+(defun prrr-diff--goto-thread (forward wanted)
+  "Move to the next Thread after point, or before it unless FORWARD.
+Only Threads whose `prrr-thread' satisfies WANTED count.  A file not
+washed yet is expanded when it holds such a Thread, and the target is
+revealed wherever it is folded.  Signal a `user-error' when there is
+none."
+  (prrr-diff--require-pullreq)
+  (let* ((here (line-beginning-position))
+         (containers (append (prrr-diff--files)
+                             (seq-filter (lambda (section)
+                                           (eq (oref section type) 'outdated-files))
+                                         (oref magit-root-section children))))
+         (found
+          (catch 'found
+            (dolist (container (if forward containers (reverse containers)))
+              (when (if forward (> (oref container end) here) (< (oref container start) here))
+                (when (and (oref container washer)
+                           (seq-some wanted (prrr-diff--threads-of (oref container value))))
+                  (magit-section-show container))
+                (let ((candidates
+                       (seq-filter (lambda (section)
+                                     (and (funcall wanted
+                                                   (gethash (oref section value) prrr-diff--threads))
+                                          (if forward
+                                              (> (oref section start) here)
+                                            (< (oref section start) here))))
+                                   (prrr-diff--thread-sections container))))
+                  (when candidates
+                    (throw 'found (if forward (car candidates) (car (last candidates))))))))
+            nil)))
+    (unless found
+      (user-error (if forward "No next Thread" "No previous Thread")))
+    (prrr-diff--reveal found)
+    (magit-section-goto found)))
+
+(defun prrr-diff--unresolved-p (thread)
+  "Non-nil when THREAD is not resolved."
+  (and thread (not (prrr-thread-resolved-p thread))))
+
+(defun prrr-next-thread ()
+  "Move to the next Thread or File Comment."
+  (interactive)
+  (prrr-diff--goto-thread t #'identity))
+
+(defun prrr-previous-thread ()
+  "Move to the previous Thread or File Comment."
+  (interactive)
+  (prrr-diff--goto-thread nil #'identity))
+
+(defun prrr-next-unresolved ()
+  "Move to the next unresolved Thread or File Comment."
+  (interactive)
+  (prrr-diff--goto-thread t #'prrr-diff--unresolved-p))
+
+(defun prrr-previous-unresolved ()
+  "Move to the previous unresolved Thread or File Comment."
+  (interactive)
+  (prrr-diff--goto-thread nil #'prrr-diff--unresolved-p))
+
+(defun prrr-collapse-all ()
+  "Fold every file of the diff."
+  (interactive)
+  (prrr-diff--require-pullreq)
+  (mapc #'magit-section-hide (prrr-diff--files)))
+
+(defconst prrr-diff--expand-all-quietly 100
+  "Most files `prrr-expand-all' washes without asking first.")
+
+(defun prrr-expand-all ()
+  "Expand every file of the diff, washing the files not washed yet.
+Asks first when that means washing more than
+`prrr-diff--expand-all-quietly' files, which takes seconds."
+  (interactive)
+  (prrr-diff--require-pullreq)
+  (let* ((files (prrr-diff--files))
+         (unwashed (seq-count (lambda (file) (oref file washer)) files)))
+    (when (or (<= unwashed prrr-diff--expand-all-quietly)
+              (y-or-n-p (format "Wash %d more files? " unwashed)))
+      (mapc #'magit-section-show files))))
+
+(defun prrr-diff--viewed-p (pr-id path)
+  "Non-nil when PATH of PR-ID is stored as Viewed."
+  (let ((row (prrr-db-get 'viewed pr-id path)))
+    (and row (eq (prrr-viewed-state row) 'viewed))))
+
+(defun prrr-toggle-viewed ()
+  "Mark the file at point Viewed on GitHub and fold it, or unmark it.
+Marking moves to the next file, as GitHub does."
+  (interactive)
+  (let* ((pullreq (prrr-diff--require-pullreq))
+         (file (or (prrr-diff--file-at-point) (user-error "No file here")))
+         (path (oref file value))
+         (pr-id (oref pullreq their-id))
+         (viewed (not (prrr-diff--viewed-p pr-id path))))
+    ;; Folding first records the fold in the visibility cache, so the
+    ;; refresh below agrees with the Viewed flag.
+    (if viewed (magit-section-hide file) (magit-section-show file))
+    (magit-section-goto file)
+    (prrr-sync-set-viewed (forge-get-repository pullreq) pr-id path viewed (current-buffer))
+    (magit-refresh-buffer)
+    (when-let ((next (and viewed (prrr-diff--file-near-point 1))))
+      (magit-section-goto next))))
 
 (provide 'prrr-diff)
 ;;; prrr-diff.el ends here

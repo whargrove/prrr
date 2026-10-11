@@ -321,6 +321,27 @@ BUSY describes a job that is running; it defaults to \"pulling…\"."
                                           (plist-get status :reset-at)))))
     ((or 'ok 'auth 'not-found 'error) (plist-get status :message))))
 
+(defun prrr-sync-set-viewed (repo pr-id path viewed &optional buffer)
+  "Mark PATH of the PR with node id PR-ID Viewed in REPO, or unmark it.
+VIEWED nil unmarks.  The local row is written first, so the Review
+Buffer shows the change at once; the mutation runs in the background.
+When GitHub refuses, the previous row comes back, a message says why,
+and BUFFER, when live, refreshes.  Milestone 4 keeps the failed change
+in the Outbox instead."
+  (let* ((old (prrr-db-get 'viewed pr-id path))
+         (fail (lambda (failure)
+                 (if old
+                     (prrr-db-insert old)
+                   (prrr-db-delete 'viewed :pr-id pr-id :path path))
+                 (message "Viewed of %s not changed on GitHub: %s"
+                          path (plist-get failure :message))
+                 (prrr-sync--schedule-refresh buffer))))
+    (prrr-db-insert (prrr-viewed-create :pr-id pr-id :path path
+                                        :state (if viewed 'viewed 'unviewed)
+                                        :fetched-at (prrr-sync--timestamp)))
+    (prrr-sync--guarded fail
+      (prrr-github-set-viewed (oref repo apihost) pr-id path viewed #'ignore fail))))
+
 ;;;; Commands
 
 (defun prrr-sync-current-repository ()

@@ -55,6 +55,7 @@
 (autoload 'prrr-stack-down "prrr-stack" "Move to the next PR down the current Stack." t)
 (autoload 'prrr-refetch "prrr-diff" "Refetch this pull request's review data now." t)
 (autoload 'prrr-queue-menu "prrr-transient" "Show the Review Queue commands." t)
+(autoload 'prrr-menu "prrr-transient" "Show the Review Buffer commands." t)
 
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))

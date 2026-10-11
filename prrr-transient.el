@@ -21,8 +21,8 @@
 
 ;; Every transient prefix (SPEC section 9).  Each menu mirrors the keys
 ;; of the buffer or section it belongs to, so a key works the same with
-;; and without the menu.  The Review Buffer's `prrr-menu' arrives in
-;; milestone 3.
+;; and without the menu.  `prrr-menu' is the Review Buffer's; later
+;; milestones add its groups.
 
 ;;; Code:
 
@@ -31,6 +31,7 @@
 (require 'prrr)
 (require 'prrr-queue)
 (require 'prrr-stack)
+(require 'prrr-diff)
 (require 'prrr-sync)
 
 (defun prrr-transient--shown (what value)
@@ -71,6 +72,30 @@
     ("<" "down" prrr-stack-down)]
    ["Sync"
     ("G" "pull" prrr-pull)]])
+
+;;;###autoload (autoload 'prrr-menu "prrr-transient" nil t)
+(transient-define-prefix prrr-menu ()
+  "Act on the Review Buffer (SPEC section 9).
+Milestones 4 to 7 add the Comment, Range, Stack, Review and Agent groups."
+  [["Navigate"
+    ("]" "next Thread" prrr-next-thread)
+    ("[" "previous Thread" prrr-previous-thread)
+    ("}" "next unresolved" prrr-next-unresolved)
+    ("{" "previous unresolved" prrr-previous-unresolved)
+    ("J" "next file" prrr-next-file)
+    ("K" "previous file" prrr-previous-file)
+    ("j" "jump to file" prrr-jump-to-file)]
+   ["View"
+    ("v" "toggle Viewed" prrr-toggle-viewed)
+    ("z" "collapse all" prrr-collapse-all)
+    ("Z" "expand all" prrr-expand-all)]
+   ["Open"
+    ("o" "topic" prrr-open-topic)
+    ("b" "browse on GitHub" prrr-browse)
+    ("B" "checkout" prrr-checkout)]
+   ["Sync"
+    ("g" "refresh" magit-refresh)
+    ("G" "refetch" prrr-refetch)]])
 
 (provide 'prrr-transient)
 ;;; prrr-transient.el ends here
