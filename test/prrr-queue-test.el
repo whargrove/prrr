@@ -428,7 +428,7 @@ prrr's keys win where both bind a key."
     (should (keymap-lookup forge-pullreq-section-map key))
     (should (eq (keymap-lookup forge-pullreq-section-map key)
                 (keymap-lookup prrr-queue-row-map key))))
-  (should (eq 'prrr-open-topic (keymap-lookup prrr-queue-row-map "RET"))))
+  (should (eq 'prrr-review (keymap-lookup prrr-queue-row-map "RET"))))
 
 (ert-deftest prrr-queue-test-menu-mirrors-row-keys ()
   "SPEC section 9: every row key has the same key and command in the menu."

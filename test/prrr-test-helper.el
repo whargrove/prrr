@@ -25,10 +25,12 @@
 ;; a fresh temporary database) and `prrr-test-with-ghub-stub' (run BODY
 ;; with ghub's GraphQL entry point stubbed) and
 ;; `prrr-test-with-ghub-error-stub' (the same,
-;; failing every request).  The builders `prrr-test-pr' and
-;; `prrr-test-meta' and the constants `prrr-test-me',
+;; failing every request).  The builders `prrr-test-pr',
+;; `prrr-test-meta' and `prrr-test-thread', and the constants `prrr-test-me',
 ;; `prrr-test-teams', `prrr-test-head' and `prrr-test-old' serve the
-;; tests of the pure rules.
+;; tests of the pure rules.  `prrr-test-with-repo' runs BODY in a fresh
+;; copy of the git fixture repository built by test/fixtures/make-repo.sh,
+;; and `prrr-test-repo-base' is its main's tip, the PR's base-rev.
 
 ;;; Code:
 
@@ -120,6 +122,17 @@ VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
                        :viewer-latest-review-request viewer-latest-review-request
                        :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
 
+(cl-defun prrr-test-thread (&key (id "T_1") (path "src/example.el") (line 12) start-line
+                                 (side 'right) (subject-type 'line) outdated-p resolved-p)
+  "Build a `prrr-thread' of PR_1 with sensible defaults.
+Keyword arguments: ID, PATH, LINE, START-LINE, SIDE, SUBJECT-TYPE,
+OUTDATED-P and RESOLVED-P."
+  (prrr-thread-create :thread-id id :pr-id "PR_1" :path path :line line
+                      :start-line start-line :side side
+                      :start-side (and start-line side)
+                      :subject-type subject-type :outdated-p outdated-p
+                      :resolved-p resolved-p :original-line line))
+
 (defvar prrr-test-requests nil
   "Top-level fields of the requests seen by `prrr-test-with-ghub-dispatch'.")
 
@@ -139,6 +152,34 @@ request, oldest first."
                              (or (alist-get field ,alist)
                                  (ert-fail (list "unexpected request" field))))))))
        ,@body)))
+
+(defvar prrr-test-repo-base nil
+  "Inside `prrr-test-with-repo': the oid of main's tip, the PR's base-rev.")
+
+(defmacro prrr-test-with-repo (&rest body)
+  "Run BODY in a fresh copy of the Review Buffer fixture repository.
+`default-directory' is the repository, built by
+test/fixtures/make-repo.sh: refs/pullreqs/1 is the PR's head and
+`prrr-test-repo-base' main's tip.  The copy is deleted afterwards."
+  (declare (indent 0) (debug t))
+  (let ((dir (make-symbol "dir")))
+    `(let ((,dir (make-temp-file "prrr-repo" t)))
+       (unwind-protect
+           (progn
+             (unless (zerop (call-process "sh" nil nil nil
+                                          (expand-file-name "test/fixtures/make-repo.sh"
+                                                            prrr-test-root)
+                                          ,dir))
+               (error "Building the fixture repository failed"))
+             (let* ((default-directory (file-name-as-directory ,dir))
+                    ;; The developer's git configuration (diff.context, say)
+                    ;; must not change what the tests see.
+                    (process-environment (append (list "GIT_CONFIG_GLOBAL=/dev/null"
+                                                       "GIT_CONFIG_NOSYSTEM=1")
+                                                 process-environment))
+                    (prrr-test-repo-base (car (process-lines "git" "rev-parse" "main"))))
+               ,@body))
+         (delete-directory ,dir t)))))
 
 (provide 'prrr-test-helper)
 ;;; prrr-test-helper.el ends here

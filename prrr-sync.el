@@ -26,13 +26,14 @@
 ;; shows (SPEC sections 5 and 11).  A pull never signals: every failure,
 ;; including a missing login or token, becomes the status.
 ;;
-;; The Outbox retry and per-PR refetch arrive with the Review Buffer
-;; (milestones 3 and 4).
+;; Per-PR refetches of review data live here too.  The Outbox retry
+;; arrives in milestone 4.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
+(require 'parse-time)
 (require 'eieio)
 (require 'magit-mode)
 (require 'forge)
@@ -62,7 +63,9 @@ that arrives later is ignored."
   "Seconds after which the viewer's Teams are fetched again (SPEC section 4).")
 
 (defvar prrr-sync--status (make-hash-table :test #'equal)
-  "Sync status of each repository this session, keyed by forge repository id.")
+  "Sync status of each background job this session.
+Keyed by forge repository id for Review Queue pulls and by the
+cons (review . PR-ID) for per-PR refetches.")
 
 (defvar prrr-sync--teams-tried-at nil
   "When the viewer's Teams were last fetched or tried this session, or nil.
@@ -72,6 +75,10 @@ a fetch that failed, so neither is repeated before
 
 (defvar prrr-sync--last-token 0
   "The token of the most recently started pull; tokens count up.")
+
+(defconst prrr-sync-no-login
+  "no GitHub login: set github.user or `prrr-github-user'"
+  "Failure message when the viewer's login is unknown.")
 
 (defun prrr-sync--timestamp (&optional time)
   "Return TIME (default now) as a GitHub-style UTC timestamp."
@@ -151,23 +158,24 @@ buffer that is still being drawn."
   (when buffer
     (run-at-time 0 nil #'prrr-sync--refresh buffer)))
 
-(defun prrr-sync--current-p (repo-id token)
-  "Non-nil when the pull of REPO-ID identified by TOKEN has not ended."
-  (let ((status (prrr-sync-status repo-id)))
+(defun prrr-sync--current-p (key token)
+  "Non-nil when the job KEY identified by TOKEN has not ended."
+  (let ((status (gethash key prrr-sync--status)))
     (and (eq (plist-get status :state) 'pulling)
          (eql (plist-get status :token) token))))
 
-(defun prrr-sync--finish (repo-id token outcome buffer)
-  "End the pull of REPO-ID identified by TOKEN and refresh BUFFER.
-OUTCOME is a `prrr-github-error' plist, or (:kind ok) on success.  An
-answer for a pull that already ended, by its watchdog or because a
-newer pull replaced it, changes nothing."
-  (when (prrr-sync--current-p repo-id token)
-    (puthash repo-id
+(defun prrr-sync--finish (key token outcome buffer)
+  "End the job KEY identified by TOKEN and refresh BUFFER.
+OUTCOME is a `prrr-github-error' plist, or (:kind ok) on success,
+optionally with :head-oid.  An answer for a job that already ended, by
+its watchdog or because a newer job replaced it, changes nothing."
+  (when (prrr-sync--current-p key token)
+    (puthash key
              (list :state (plist-get outcome :kind)
                    :message (plist-get outcome :message)
                    :reset-at (plist-get outcome :reset-at)
-                   :attempted-at (plist-get (prrr-sync-status repo-id) :attempted-at)
+                   :head-oid (plist-get outcome :head-oid)
+                   :attempted-at (plist-get (gethash key prrr-sync--status) :attempted-at)
                    :token token)
              prrr-sync--status)
     (prrr-sync--schedule-refresh buffer)))
@@ -181,6 +189,18 @@ Return BODY's value, or nil after calling FAIL."
      (error (funcall ,fail (list :kind 'error :message (error-message-string err)
                                  :reset-at nil))
             nil)))
+
+(defun prrr-sync--start (key buffer)
+  "Record a job KEY as running and return its token.
+The job ends as `offline' when it has no answer after
+`prrr-sync-timeout' seconds; BUFFER is refreshed then."
+  (let ((token (cl-incf prrr-sync--last-token)))
+    (puthash key (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
+             prrr-sync--status)
+    (run-at-time prrr-sync-timeout nil #'prrr-sync--finish key token
+                 '(:kind offline :message "No answer from GitHub" :reset-at nil)
+                 buffer)
+    token))
 
 (defun prrr-sync--fetch-teams (host me then fail)
   "Fetch and store the viewer ME's Teams on HOST, then call THEN.
@@ -211,7 +231,7 @@ started; do nothing and return nil while a pull of REPO runs.
 Never signals: every failure becomes the status."
   (let ((id (oref repo id)))
     (unless (prrr-sync--running-p (prrr-sync-status id))
-      (let* ((token (cl-incf prrr-sync--last-token))
+      (let* ((token (prrr-sync--start id buffer))
              (host (oref repo apihost))
              (fail (lambda (failure) (prrr-sync--finish id token failure buffer)))
              (fetch-queue
@@ -233,22 +253,94 @@ Never signals: every failure becomes the status."
                 (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
                 (funcall fetch-queue
                          (format "Teams unavailable: %s" (plist-get failure :message))))))
-        (puthash id (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
-                 prrr-sync--status)
-        (run-at-time prrr-sync-timeout nil #'prrr-sync--finish id token
-                     '(:kind offline :message "No answer from GitHub" :reset-at nil)
-                     buffer)
         (prrr-sync--guarded fail
           (let ((me (prrr-github-viewer)))
             (cond ((null me)
-                   (funcall fail
-                            (list :kind 'error
-                                  :message "no GitHub login: set github.user or `prrr-github-user'"
-                                  :reset-at nil)))
+                   (funcall fail (list :kind 'error :message prrr-sync-no-login :reset-at nil)))
                   ((prrr-sync--teams-due-p)
                    (prrr-sync--fetch-teams host me fetch-queue teams-failed))
                   (t (funcall fetch-queue)))))
         t))))
+
+;;;; Per-PR refetch
+
+(defun prrr-sync-review-status (pr-id)
+  "Return the status of the last refetch of the PR with node id PR-ID, or nil.
+A plist like `prrr-sync-status'.  An `ok' status also has :head-oid,
+the PR's head on GitHub when the refetch answered."
+  (gethash (cons 'review pr-id) prrr-sync--status))
+
+(defun prrr-sync-refetch-due-p (pr-id &optional now)
+  "Non-nil when a refetch of PR-ID may start at NOW.
+Not while one runs (`prrr-sync--running-p') nor before a rate limit
+resets.  NOW is a Lisp time, the current time by default."
+  (let ((status (prrr-sync-review-status pr-id)))
+    (and (not (prrr-sync--running-p status now))
+         (let ((reset-at (plist-get status :reset-at)))
+           (not (and reset-at (string< (prrr-sync--timestamp now) reset-at)))))))
+
+(defun prrr-sync-refetch (repo pullreq &optional buffer)
+  "Refetch the review data of PULLREQ in the background.
+The review data is its Threads, Pending Review and Viewed flags.
+REPO is PULLREQ's `forge-github-repository'.  Stores the answer with
+`prrr-db-replace-review-data', records the outcome in
+`prrr-sync-review-status' and refreshes BUFFER, when live, once the
+refetch ends either way.  Return non-nil when a refetch started; return
+nil and do nothing when `prrr-sync-refetch-due-p' says no.  Never
+signals: every failure becomes the status."
+  (let ((pr-id (oref pullreq their-id)))
+    (when (prrr-sync-refetch-due-p pr-id)
+      (let* ((key (cons 'review pr-id))
+             (token (prrr-sync--start key buffer))
+             (fail (lambda (failure) (prrr-sync--finish key token failure buffer))))
+        (prrr-sync--guarded fail
+          (let ((me (prrr-github-viewer)))
+            (if (null me)
+                (funcall fail (list :kind 'error :message prrr-sync-no-login :reset-at nil))
+              (prrr-github-fetch-review-data
+               (oref repo apihost) (oref repo owner) (oref repo name) (oref pullreq number) me
+               (lambda (data)
+                 (when (prrr-sync--current-p key token)
+                   (prrr-sync--guarded fail
+                     (prrr-db-replace-review-data pr-id data)
+                     (prrr-sync--finish key token
+                                        (list :kind 'ok :head-oid (plist-get data :head-oid))
+                                        buffer))))
+               fail))))
+        t))))
+
+(defun prrr-sync-describe (status &optional busy)
+  "Return a few words describing sync STATUS, or nil when all is well.
+BUSY describes a job that is running; it defaults to \"pulling…\"."
+  (pcase (plist-get status :state)
+    ('pulling (or busy "pulling…"))
+    ('offline "offline")
+    ('rate-limited
+     (format "rate limited until %s"
+             (format-time-string "%H:%M" (parse-iso8601-time-string
+                                          (plist-get status :reset-at)))))
+    ((or 'ok 'auth 'not-found 'error) (plist-get status :message))))
+
+(defun prrr-sync-set-viewed (repo pr-id path viewed &optional buffer)
+  "Mark PATH of the PR with node id PR-ID Viewed in REPO, or unmark it.
+VIEWED nil unmarks.  The local row is written first, so the Review
+Buffer shows the change at once; the mutation runs in the background.
+When GitHub refuses, the previous row comes back, a message says why,
+and BUFFER, when live, refreshes.  Milestone 4 keeps the failed change
+in the Outbox instead."
+  (let* ((old (prrr-db-get 'viewed pr-id path))
+         (fail (lambda (failure)
+                 (if old
+                     (prrr-db-insert old)
+                   (prrr-db-delete 'viewed :pr-id pr-id :path path))
+                 (message "Viewed of %s not changed on GitHub: %s"
+                          path (plist-get failure :message))
+                 (prrr-sync--schedule-refresh buffer))))
+    (prrr-db-insert (prrr-viewed-create :pr-id pr-id :path path
+                                        :state (if viewed 'viewed 'unviewed)
+                                        :fetched-at (prrr-sync--timestamp)))
+    (prrr-sync--guarded fail
+      (prrr-github-set-viewed (oref repo apihost) pr-id path viewed #'ignore fail))))
 
 ;;;; Commands
 

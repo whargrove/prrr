@@ -27,6 +27,8 @@
 (require 'ert)
 (require 'prrr-test-helper)
 (require 'prrr-db)
+(require 'prrr-github)
+(require 'seq)
 
 (ert-deftest prrr-db-test-struct-slots-match-columns ()
   "Every table's struct has exactly the table's columns, in order."
@@ -232,6 +234,64 @@
       (should (null (gethash "P2" counts)))
       (should (null (gethash "P3" counts))))
     (should (zerop (hash-table-count (prrr-db-unresolved-thread-counts nil))))))
+
+;;;; Review data
+
+(defconst prrr-db-test--pr "PR_kwDOexample0000001"
+  "The PR of the review-data fixture.")
+
+(defun prrr-db-test--review-data ()
+  "The review-data fixture, decoded."
+  (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-db-test--pr
+                                  "2026-10-10T12:00:00Z"))
+
+(ert-deftest prrr-db-test-review-data-round-trip ()
+  (prrr-db-with-test-db
+    (prrr-db-replace-review-data prrr-db-test--pr (prrr-db-test--review-data))
+    (let ((data (prrr-db-review-data prrr-db-test--pr)))
+      (should (equal '("PRRT_kwDOexample0000001" "PRRT_kwDOexample0000002"
+                       "PRRT_kwDOexample0000003" "PRRT_kwDOexample0000004"
+                       "PRRT_kwDOexample0000005")
+                     (mapcar #'prrr-thread-thread-id (plist-get data :threads))))
+      (should (equal '("PRRC_kwDOexample0000004" "PRRC_kwDOexample0000001"
+                       "PRRC_kwDOexample0000002" "PRRC_kwDOexample0000003"
+                       "PRRC_kwDOexample0000005" "PRRC_kwDOexample0000006")
+                     (mapcar #'prrr-comment-comment-id (plist-get data :comments))))
+      (should (equal "PRR_kwDOexamplePending1"
+                     (prrr-pending-review-review-id (plist-get data :pending-review))))
+      (should (= 3 (length (plist-get data :viewed)))))))
+
+(ert-deftest prrr-db-test-review-data-replaces-old-rows ()
+  "A Thread deleted on GitHub disappears; the Pending Review too once submitted."
+  (prrr-db-with-test-db
+    (prrr-db-replace-review-data prrr-db-test--pr (prrr-db-test--review-data))
+    (let ((data (prrr-db-test--review-data)))
+      (prrr-db-replace-review-data
+       prrr-db-test--pr
+       (list :threads (cdr (plist-get data :threads))
+             :comments (seq-remove (lambda (comment)
+                                     (equal (prrr-comment-thread-id comment)
+                                            "PRRT_kwDOexample0000001"))
+                                   (plist-get data :comments))
+             :pending-review nil
+             :viewed nil)))
+    (let ((data (prrr-db-review-data prrr-db-test--pr)))
+      (should (= 4 (length (plist-get data :threads))))
+      (should (= 4 (length (plist-get data :comments))))
+      (should-not (plist-get data :pending-review))
+      (should-not (plist-get data :viewed)))))
+
+(ert-deftest prrr-db-test-review-data-other-pr-untouched ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-test-thread :id "OTHER"))
+    (prrr-db-replace-review-data prrr-db-test--pr (prrr-db-test--review-data))
+    (prrr-db-replace-review-data prrr-db-test--pr nil)
+    (should (equal '("OTHER") (mapcar #'prrr-thread-thread-id (prrr-db-select 'thread))))))
+
+(ert-deftest prrr-db-test-review-data-never-fetched ()
+  (prrr-db-with-test-db
+    (should (equal '(:threads nil :comments nil :pending-review nil :viewed nil)
+                   (prrr-db-review-data "PR_never")))))
 
 (provide 'prrr-db-test)
 ;;; prrr-db-test.el ends here

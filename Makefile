@@ -1,7 +1,7 @@
 EMACS    ?= emacs
 DEPS_DIR := $(CURDIR)/.deps
-SRC      := prrr-db.el prrr-github.el prrr-state.el prrr-sync.el prrr-queue.el prrr-stack.el prrr-transient.el prrr.el
-TESTS    ?= test/prrr-db-test.el test/prrr-github-test.el test/prrr-state-test.el test/prrr-sync-test.el test/prrr-queue-test.el test/prrr-test.el
+SRC      := prrr-db.el prrr-github.el prrr-state.el prrr-sync.el prrr-queue.el prrr-thread.el prrr-diff.el prrr-stack.el prrr-transient.el prrr.el
+TESTS    ?= test/prrr-db-test.el test/prrr-github-test.el test/prrr-state-test.el test/prrr-sync-test.el test/prrr-queue-test.el test/prrr-diff-test.el test/prrr-thread-test.el test/prrr-test.el
 SELECTOR ?= t
 
 BATCH := $(EMACS) -Q --batch \
@@ -40,9 +40,13 @@ test:
 # Build a throwaway compiled copy so the working tree stays free of .elc.
 bench:
 	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT && \
-	  cp $(SRC) bench/*.el "$$dir" && \
-	  $(BENCH) -L "$$dir" -f batch-byte-compile $(addprefix "$$dir"/,$(SRC)) "$$dir"/prrr-queue-bench.el && \
-	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-queue-bench.elc -f prrr-queue-bench-run
+	  cp $(SRC) bench/*.el bench/*.sh "$$dir" && \
+	  $(BENCH) -L "$$dir" -f batch-byte-compile $(addprefix "$$dir"/,$(SRC)) \
+	    "$$dir"/prrr-queue-bench.el "$$dir"/prrr-diff-bench.el && \
+	  status=0; \
+	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-queue-bench.elc -f prrr-queue-bench-run || status=1; \
+	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-diff-bench.elc -f prrr-diff-bench-run || status=1; \
+	  exit $$status
 
 clean:
 	rm -f *.elc test/*.elc bench/*.elc

@@ -104,10 +104,9 @@
   "C-o" #'prrr-queue-menu)
 
 (defvar-keymap prrr-queue-section-map
-  :doc "Keys on a Review Queue row (SPEC section 9).
-RET opens forge's topic buffer until the Review Buffer arrives."
+  :doc "Keys on a Review Queue row (SPEC section 9)."
   :parent prrr-queue-heading-map
-  "RET" #'prrr-open-topic
+  "RET" #'prrr-review
   "o" #'prrr-open-topic
   "b" #'prrr-browse
   "B" #'prrr-checkout
@@ -147,17 +146,7 @@ TIMESTAMP after NOW is \"now\"."
   "Return the heading suffix for sync STATUS and viewer ME.
 STATUS is a `prrr-sync-status' plist or nil.  The empty string when
 there is nothing to say."
-  (let ((text
-         (if (null me)
-             "no GitHub login: set github.user or `prrr-github-user'"
-           (pcase (plist-get status :state)
-             ('pulling "pulling…")
-             ('offline "offline")
-             ('rate-limited
-              (format "rate limited until %s"
-                      (format-time-string "%H:%M" (parse-iso8601-time-string
-                                                   (plist-get status :reset-at)))))
-             ((or 'ok 'auth 'not-found 'error) (plist-get status :message))))))
+  (let ((text (if (null me) prrr-sync-no-login (prrr-sync-describe status))))
     (if text
         (propertize (format " (%s)" text) 'font-lock-face 'magit-dimmed)
       "")))

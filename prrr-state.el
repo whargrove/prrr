@@ -27,7 +27,9 @@
 ;; `prrr-pr-meta' rows; there is no buffer, network or forge-object
 ;; access, so every rule is unit-tested with constructed structs.
 ;;
-;; Line mapping across Ranges is milestone 5 and is not here yet.
+;; Where the Review Buffer shows each Thread is decided here too
+;; (`prrr-state-thread-layout').  Line mapping across Ranges is
+;; milestone 5 and is not here yet.
 
 ;;; Code:
 
@@ -386,6 +388,56 @@ Group, so rows the viewer hid are skipped."
                  (funcall (if up #'< #'>)
                           (prrr-queue-entry-stack-pos a)
                           (prrr-queue-entry-stack-pos b)))))))
+
+;;;; Threads in the Review Buffer
+
+(cl-defstruct (prrr-file-threads (:constructor prrr-file-threads-create)
+                                 (:copier nil))
+  "The Threads of one file of a diff, by where the Review Buffer shows them.
+FILE-COMMENTS are File Comments, shown first.  LINES are Threads
+anchored to lines, shown after their line, or in the file's
+`not-in-range' section when that line is not in the diff.  OUTDATED
+are the Threads GitHub marks outdated, and line Threads without a line.
+Each list keeps the input order."
+  file-comments lines outdated)
+
+(defun prrr-state-thread-layout (threads paths)
+  "Sort THREADS by where the Review Buffer shows them.
+PATHS are the files of the diff.  Return (TABLE . ELSEWHERE): TABLE is
+a hash table from each path in PATHS that has Threads to its
+`prrr-file-threads'; ELSEWHERE lists, in input order, the Threads whose
+file is not in PATHS, which the buffer shows in `outdated-files'."
+  (let ((known (make-hash-table :test #'equal))
+        (table (make-hash-table :test #'equal))
+        (elsewhere nil))
+    (dolist (path paths)
+      (puthash path t known))
+    (dolist (thread threads)
+      (let ((path (prrr-thread-path thread)))
+        (if (not (gethash path known))
+            (push thread elsewhere)
+          (let ((entry (or (gethash path table)
+                           (puthash path (prrr-file-threads-create) table))))
+            (cond ((eq (prrr-thread-subject-type thread) 'file)
+                   (push thread (prrr-file-threads-file-comments entry)))
+                  ((or (prrr-thread-outdated-p thread) (null (prrr-thread-line thread)))
+                   (push thread (prrr-file-threads-outdated entry)))
+                  (t (push thread (prrr-file-threads-lines entry))))))))
+    (maphash (lambda (_path entry)
+               (setf (prrr-file-threads-file-comments entry)
+                     (nreverse (prrr-file-threads-file-comments entry))
+                     (prrr-file-threads-lines entry)
+                     (nreverse (prrr-file-threads-lines entry))
+                     (prrr-file-threads-outdated entry)
+                     (nreverse (prrr-file-threads-outdated entry))))
+             table)
+    (cons table (nreverse elsewhere))))
+
+(defun prrr-state-thread-anchor (thread)
+  "Return (SIDE . LINE): the Review Buffer shows THREAD after LINE of SIDE.
+SIDE is `left' for the old file and `right' for the new one, also when
+GitHub sent no side.  A range Thread is shown after its last line."
+  (cons (or (prrr-thread-side thread) 'right) (prrr-thread-line thread)))
 
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

@@ -397,6 +397,126 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
       (cl-letf (((symbol-function 'magit-get) #'ignore)
                 ((symbol-function 'forge-get-repository) (lambda (&rest _) repo)))
         (should-error (prrr-refresh-teams) :type 'user-error)))))
+;;;; Refetch
+
+(defconst prrr-sync-test--pr "PR_kwDOexample0000001"
+  "The PR of the review-data fixture.")
+
+(defun prrr-sync-test--pullreq ()
+  "The fixture's pull request as a forge object, without a database."
+  (forge-pullreq :id "forge-1" :number 1 :their-id prrr-sync-test--pr))
+
+(ert-deftest prrr-sync-test-refetch-stores-review-data ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (should (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+        (should (= 5 (length (plist-get (prrr-db-review-data prrr-sync-test--pr) :threads))))
+        (let ((status (prrr-sync-review-status prrr-sync-test--pr)))
+          (should (eq 'ok (plist-get status :state)))
+          (should (equal "1111111111111111111111111111111111111111"
+                         (plist-get status :head-oid))))))))
+
+(ert-deftest prrr-sync-test-refetch-not-while-running ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (puthash (cons 'review prrr-sync-test--pr)
+               (list :state 'pulling :attempted-at (prrr-sync--timestamp))
+               prrr-sync--status)
+      (prrr-test-with-ghub-dispatch nil
+        (should-not (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+        (should-not prrr-test-requests)))))
+
+(ert-deftest prrr-sync-test-refetch-waits-for-rate-limit ()
+  (prrr-sync-test--with-clean-status
+    (puthash (cons 'review prrr-sync-test--pr)
+             '(:state rate-limited :attempted-at "2026-10-10T11:00:00Z"
+               :reset-at "2026-10-10T12:30:00Z")
+             prrr-sync--status)
+    (should-not (prrr-sync-refetch-due-p prrr-sync-test--pr prrr-sync-test--now))
+    (should (prrr-sync-refetch-due-p prrr-sync-test--pr
+                                     (encode-time '(0 31 12 10 10 2026 nil nil t))))))
+
+(ert-deftest prrr-sync-test-refetch-failure-keeps-stored-rows ()
+  "Review Focus 5: offline keeps the database copy and says so."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-db-insert (prrr-test-thread :id "KEPT"))
+      (prrr-test-with-ghub-error-stub '(error http 502) nil
+        (prrr-sync-refetch (prrr-sync-test--repo)
+                           (forge-pullreq :id "forge-1" :number 1 :their-id "PR_1")))
+      (should (eq 'offline (plist-get (prrr-sync-review-status "PR_1") :state)))
+      (should (equal '("KEPT") (mapcar #'prrr-thread-thread-id (prrr-db-select 'thread)))))))
+
+(ert-deftest prrr-sync-test-refetch-without-login-is-an-error-status ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (let ((prrr-github-user nil))
+        (cl-letf (((symbol-function 'magit-get) #'ignore))
+          (prrr-test-with-ghub-dispatch nil
+            (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq))
+            (should-not prrr-test-requests))))
+      (should (eq 'error (plist-get (prrr-sync-review-status prrr-sync-test--pr) :state))))))
+
+(ert-deftest prrr-sync-test-refetch-late-answer-ignored ()
+  "An answer after the watchdog ended the refetch changes nothing."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (let ((callback nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query _variables &rest args)
+                     (setq callback (plist-get args :callback)))))
+          (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+        (let ((token (plist-get (prrr-sync-review-status prrr-sync-test--pr) :token)))
+          (prrr-sync--finish (cons 'review prrr-sync-test--pr) token
+                             '(:kind offline :message "No answer from GitHub" :reset-at nil)
+                             nil))
+        (funcall callback (prrr-test-fixture "review-data"))
+        (should-not (prrr-db-select 'thread))
+        (should (eq 'offline (plist-get (prrr-sync-review-status prrr-sync-test--pr) :state)))))))
+
+(ert-deftest prrr-sync-test-refetch-and-pull-keep-separate-status ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+      (should-not (prrr-sync-status "example-repo-id")))))
+
+;;;; Describe
+
+(ert-deftest prrr-sync-test-describe ()
+  (should (equal "pulling…" (prrr-sync-describe '(:state pulling))))
+  (should (equal "refreshing…" (prrr-sync-describe '(:state pulling) "refreshing…")))
+  (should (equal "offline" (prrr-sync-describe '(:state offline :message "No answer"))))
+  (should (equal "GitHub rejected the token (HTTP 401)"
+                 (prrr-sync-describe '(:state auth :message "GitHub rejected the token (HTTP 401)"))))
+  (should (string-prefix-p "rate limited until "
+                           (prrr-sync-describe '(:state rate-limited
+                                                 :reset-at "2026-10-10T12:30:00Z"))))
+  (should-not (prrr-sync-describe '(:state ok)))
+  (should-not (prrr-sync-describe nil)))
+
+;;;; Viewed
+
+(ert-deftest prrr-sync-test-set-viewed-writes-then-sends ()
+  (prrr-db-with-test-db
+    (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
+      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" t)
+      (should (eq 'markFileAsViewed (car (cadr (car captured))))))
+    (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "a.el"))))))
+
+(ert-deftest prrr-sync-test-set-viewed-failure-restores-row ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-viewed-create :pr-id "PR_1" :path "a.el" :state 'viewed))
+    (prrr-test-with-ghub-error-stub '(error http 502) nil
+      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" nil))
+    (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed "PR_1" "a.el"))))))
+
+(ert-deftest prrr-sync-test-set-viewed-failure-removes-new-row ()
+  (prrr-db-with-test-db
+    (prrr-test-with-ghub-error-stub '(error http 502) nil
+      (prrr-sync-set-viewed (prrr-sync-test--repo) "PR_1" "a.el" t))
+    (should-not (prrr-db-get 'viewed "PR_1" "a.el"))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

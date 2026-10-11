@@ -382,5 +382,41 @@ absent from the table."
         (puthash pr-id count counts)))
     counts))
 
+;;;; Review data
+
+(defun prrr-db-replace-review-data (pr-id data)
+  "Make DATA the only stored review data of PR-ID.
+DATA is the plist `prrr-github-decode-review-data' returns, or nil: its
+:threads, :comments, :pending-review and :viewed replace every
+`thread', `review-comment', `pending-review' and `viewed' row of PR-ID.
+One transaction.  Today every such row is replaced; milestone 4 will
+keep the Outbox's unsent rows here (bead prrr-8ok)."
+  (let ((db (prrr-db)))
+    (emacsql-with-transaction db
+      (dolist (table '(thread review-comment pending-review viewed))
+        (prrr-db-delete table :pr-id pr-id))
+      (dolist (rows (list (plist-get data :threads)
+                          (plist-get data :comments)
+                          (delq nil (list (plist-get data :pending-review)))
+                          (plist-get data :viewed)))
+        (when rows
+          (emacsql db (vector :insert-or-replace :into (prrr-db--table-of (car rows))
+                              :values '$v1)
+                   (mapcar #'prrr-db--struct-to-row rows)))))
+    nil))
+
+(defun prrr-db-review-data (pr-id)
+  "Return the stored review data of PR-ID.
+A plist like the DATA of `prrr-db-replace-review-data': :threads in the
+order they were stored, :comments oldest first, :pending-review or nil,
+and :viewed.  A PR never fetched has nil for each."
+  (list :threads (prrr-db-select 'thread :pr-id pr-id)
+        :comments (sort (prrr-db-select 'review-comment :pr-id pr-id)
+                        (lambda (a b)
+                          (string< (or (prrr-comment-created-at a) "")
+                                   (or (prrr-comment-created-at b) ""))))
+        :pending-review (prrr-db-get 'pending-review pr-id)
+        :viewed (prrr-db-select 'viewed :pr-id pr-id)))
+
 (provide 'prrr-db)
 ;;; prrr-db.el ends here

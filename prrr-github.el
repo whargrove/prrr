@@ -32,7 +32,7 @@
 ;;
 ;; Every request takes an ERRORBACK that receives a failure classified by
 ;; `prrr-github-error'; ghub's own error shapes never leave this file.
-;; Mutations arrive in milestone 4.
+;; The Viewed mutations are here; the others arrive in milestone 4.
 
 ;;; Code:
 
@@ -419,6 +419,21 @@ the two is called."
                            :reset-at nil)))))
      callback errorback)
     :errorback (prrr-github--errorback errorback)))
+
+;;;; Mutations
+
+(defun prrr-github-set-viewed (host pr-id path viewed callback errorback)
+  "Mark PATH of the pull request with node id PR-ID as Viewed on HOST.
+With VIEWED nil, unmark it.  CALLBACK receives no argument once GitHub
+accepts.  ERRORBACK receives a failure classified by
+`prrr-github-error'.  Exactly one of the two is called."
+  (let ((callback (prrr-github--callback #'ignore (lambda (_) (funcall callback)) errorback))
+        (errorback (prrr-github--errorback errorback)))
+    (if viewed
+        (forge-mutate host markFileAsViewed ((pullRequestId pr-id) (path path))
+          :callback callback :errorback errorback)
+      (forge-mutate host unmarkFileAsViewed ((pullRequestId pr-id) (path path))
+        :callback callback :errorback errorback))))
 
 (provide 'prrr-github)
 ;;; prrr-github.el ends here
