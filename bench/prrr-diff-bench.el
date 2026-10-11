@@ -110,6 +110,8 @@ expanded."
 (defun prrr-diff-bench-run ()
   "Measure the Review Buffer budgets of SPEC section 12; exit 1 over budget."
   (let* ((prrr-database-file (make-temp-file "prrr-bench" nil ".sqlite"))
+         ;; The Outbox stays out of the measurements.
+         (prrr-db-open-hook nil)
          ;; The bench has no forge database; the PR has no Discussion Comments.
          (_ (advice-add (quote prrr-diff--posts) :override #'ignore))
          (small (prrr-diff-bench--measure 417))

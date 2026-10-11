@@ -34,13 +34,16 @@
 ;; Stack.
 ;;
 ;; The Outbox's rules are here as well: which queued write goes next,
-;; which writes depend on which, and what a write leaves behind once
-;; GitHub accepts it.  prrr-sync.el carries them out.
+;; which writes depend on which, what a write leaves behind once
+;; GitHub accepts it, and whether an unconfirmed write landed.
+;; prrr-sync.el carries them out.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
+(require 'subr-x)
+(require 'parse-time)
 (require 'prrr-db)
 
 ;;;; Structs
@@ -502,6 +505,15 @@ GitHub allows 80 content creations a minute (SPEC section 4).")
 A write that acts on something still known by a local id waits."
   (not (seq-some #'prrr-state-local-id-p (prrr-state-outbox-references row))))
 
+(defun prrr-state-outbox-unconfirmed-p (row)
+  "Non-nil when the send of the write ROW started and got no answer yet.
+Such a write is unconfirmed: it may or may not have reached GitHub.
+Its payload's :sent-at, stored before the request goes out and removed
+by any answer, marks it, because the `outbox' layout is frozen.  It is
+never sent again blindly; a refetch of its PR decides
+\(`prrr-state-outbox-landed')."
+  (and (plist-get (prrr-outbox-payload row) :sent-at) t))
+
 (defun prrr-state--outbox-heads (rows)
   "Return the first row of each PR among ROWS, in the order of ROWS."
   (let ((seen nil) (heads nil))
@@ -512,13 +524,17 @@ A write that acts on something still known by a local id waits."
     (nreverse heads)))
 
 (defun prrr-state--sendable-p (row)
-  "Non-nil when the write ROW, the first of its PR, may be sent."
-  (and (null (prrr-outbox-last-error row)) (prrr-state-outbox-ready-p row)))
+  "Non-nil when the write ROW, the first of its PR, may be sent.
+Not when it failed, waits for an id, or is unconfirmed: clearing its
+error, as a retry does, does not make an unconfirmed write sendable."
+  (and (null (prrr-outbox-last-error row))
+       (not (prrr-state-outbox-unconfirmed-p row))
+       (prrr-state-outbox-ready-p row)))
 
 (defun prrr-state-outbox-busy-prs (rows)
   "Return the ids of the PRs among ROWS whose first write may be sent.
-The writes of one PR go out in order, so a failed or waiting first
-write holds back the rest of its PR."
+The writes of one PR go out in order, so a failed, waiting or
+unconfirmed first write holds back the rest of its PR."
   (mapcar #'prrr-outbox-pr-id
           (seq-filter #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
 
@@ -527,8 +543,9 @@ write holds back the rest of its PR."
 ROWS are every queued `prrr-outbox' row, oldest first; CREATIONS the
 times, as floats, at which content creations were sent; NOW the
 current float time.  Each PR's writes go out in order: only its first
-write is a candidate, and only when it has not failed and acts on no
-local id.  The oldest candidate wins.  Return nil when there is none,
+write is a candidate, and only when it has not failed, is not
+unconfirmed (`prrr-state-outbox-unconfirmed-p') and acts on no local
+id.  The oldest candidate wins.  Return nil when there is none,
 else (ROW . WAIT): send ROW after WAIT seconds, which is 0 unless ROW
 creates content and `prrr-state-creations-per-minute' were sent in the
 last minute."
@@ -641,7 +658,8 @@ the PR's `prrr-outbox' rows, oldest first.  Threads, comments, the
 Pending Review and Viewed flags change as each write will change them
 on GitHub; created things carry their local ids and a `local-state' of
 `unsent'.  A failed delete or discard changes nothing, so what it was
-meant to remove stays in view.  The result has DATA's keys plus:
+meant to remove stays in view; an unconfirmed write shows as unsent,
+like any write that has not failed.  The result has DATA's keys plus:
   :outbox      ROWS;
   :writes      a hash table from each comment id, Thread id and Viewed
                path a queued write touches to the newest such row;
@@ -730,6 +748,111 @@ DATA's structs are never changed."
                                   threads))))
     (list :threads threads :comments comments :pending-review pending :viewed viewed
           :outbox rows :writes writes :discussion (nreverse discussion) :submit submit)))
+
+;;;; Unconfirmed writes
+
+(defconst prrr-state-clock-skew 300
+  "Seconds GitHub's clock may run behind ours.
+A comment that an unconfirmed write may have created is looked for
+from this long before the write was queued.")
+
+(defun prrr-state--same-body-p (a b)
+  "Non-nil when the comment bodies A and B are the same text.
+Surrounding whitespace does not count: GitHub may trim it."
+  (and a b (equal (string-trim a) (string-trim b))))
+
+(defun prrr-state--landed-comment (row data taken thread-p)
+  "Return the comment in DATA that the creating write ROW may have made, or nil.
+It is by ROW's viewer, has ROW's body, was created no earlier than
+`prrr-state-clock-skew' seconds before ROW was queued, and is not one
+of TAKEN.  When THREAD-P, it starts a Thread on the path of ROW's
+anchor; otherwise it is in ROW's :thread-id Thread."
+  (let* ((payload (prrr-outbox-payload row))
+         (path (plist-get (plist-get payload :anchor) :path))
+         (since (- (float-time (parse-iso8601-time-string (prrr-outbox-created-at row)))
+                   prrr-state-clock-skew))
+         (paths (make-hash-table :test #'equal)))
+    (dolist (thread (plist-get data :threads))
+      (puthash (prrr-thread-thread-id thread) (prrr-thread-path thread) paths))
+    (seq-find (lambda (comment)
+                (and (equal (prrr-comment-author comment)
+                            (plist-get (plist-get payload :target) :me))
+                     (prrr-state--same-body-p (prrr-comment-body comment)
+                                              (plist-get payload :body))
+                     (prrr-comment-created-at comment)
+                     (<= since (float-time (parse-iso8601-time-string
+                                            (prrr-comment-created-at comment))))
+                     (not (member (prrr-comment-comment-id comment) taken))
+                     (if thread-p
+                         (and (null (prrr-comment-reply-to comment))
+                              (equal path (gethash (prrr-comment-thread-id comment) paths)))
+                       (equal (prrr-comment-thread-id comment) (plist-get payload :thread-id)))))
+              (plist-get data :comments))))
+
+(defun prrr-state-outbox-landed (row data taken)
+  "Decide from fresh review DATA whether the unconfirmed write ROW landed.
+DATA is a plist like the one `prrr-github-decode-review-data' returns,
+fetched after ROW's send started.  TAKEN are the ids of the comments
+stored before that refetch replaced them: such a comment came from
+another write or from the web, never from ROW, so it is never matched,
+even when it has the same body.  Return one of:
+  (landed . RESULT)  GitHub carried ROW out.  RESULT is shaped like
+                     GitHub's answer to ROW's kind: for a new Thread
+                     or reply the plist `prrr-state-outbox-created'
+                     reads, with :thread-id and :review-id; nil for
+                     the other kinds.
+  `missing'          it did not land: send it again.
+  `unknown'          review DATA cannot tell: Discussion Comments and
+                     a submitted review are not in it.
+A new Thread or reply landed when DATA has a comment by ROW's viewer
+with ROW's body, made no earlier than `prrr-state-clock-skew' seconds
+before ROW was queued, that starts a Thread on the anchor's path or,
+for a reply, is in ROW's Thread.  An edit landed when the comment has
+ROW's body, and a delete when the comment is gone; an edit of a comment
+that is gone landed too, since nothing is left to do.  A resolve landed
+when the Thread's resolved flag matches (or the Thread is gone), a
+Viewed change when the path's flag matches, and a discard when there
+is no Pending Review."
+  (let* ((payload (prrr-outbox-payload row))
+         (comment-id (plist-get payload :comment-id))
+         (comment (seq-find (lambda (comment)
+                              (equal (prrr-comment-comment-id comment) comment-id))
+                            (plist-get data :comments)))
+         (kind (prrr-outbox-kind row))
+         (landed
+          (pcase kind
+            ((or 'thread 'publish 'reply 'publish-reply)
+             (when-let* ((found (prrr-state--landed-comment
+                                 row data taken (memq kind '(thread publish)))))
+               (list :comment-id (prrr-comment-comment-id found)
+                     :database-id (prrr-comment-database-id found)
+                     :created-at (prrr-comment-created-at found)
+                     :thread-id (prrr-comment-thread-id found)
+                     :review-id (prrr-comment-review-id found))))
+            ('edit (or (null comment)
+                       (prrr-state--same-body-p (prrr-comment-body comment)
+                                                (plist-get payload :body))))
+            ('delete (null comment))
+            ('resolve
+             (let ((thread (seq-find (lambda (thread)
+                                       (equal (prrr-thread-thread-id thread)
+                                              (plist-get payload :thread-id)))
+                                     (plist-get data :threads))))
+               (or (null thread)
+                   (eq (and (prrr-thread-resolved-p thread) t)
+                       (and (plist-get payload :resolved) t)))))
+            ('viewed
+             (let ((flag (seq-find (lambda (flag)
+                                     (equal (prrr-viewed-path flag) (plist-get payload :path)))
+                                   (plist-get data :viewed))))
+               (eq (and flag (eq (prrr-viewed-state flag) 'viewed))
+                   (and (plist-get payload :viewed) t))))
+            ('discard (null (plist-get data :pending-review)))
+            (_ 'unknown))))
+    (cond ((eq landed 'unknown) 'unknown)
+          ((null landed) 'missing)
+          ((consp landed) (cons 'landed landed))
+          (t (list 'landed)))))
 
 ;;;; Anchors
 
@@ -837,7 +960,9 @@ that requests changes or only comments."
       "A comment review needs a summary or a comment")))
 
 (defun prrr-state-outbox-describe (row)
-  "Describe the queued write ROW in one line, for choosing it."
+  "Describe the queued write ROW in one line, for choosing it.
+A failed write names its error; an unconfirmed one says it waits for
+GitHub's answer."
   (let* ((payload (prrr-outbox-payload row))
          (body (car (split-string (or (plist-get payload :body) "") "\n")))
          (anchor (plist-get payload :anchor)))
@@ -855,7 +980,10 @@ that requests changes or only comments."
               ('discard "discard the Pending Review")
               (kind (symbol-name kind)))
             (and (not (string-empty-p body)) (format ": %s" (truncate-string-to-width body 40 nil nil "…")))
-            (and (prrr-outbox-last-error row) (format " (failed: %s)" (prrr-outbox-last-error row))))))
+            (cond ((prrr-outbox-last-error row)
+                   (format " (failed: %s)" (prrr-outbox-last-error row)))
+                  ((prrr-state-outbox-unconfirmed-p row)
+                   " (waiting for GitHub's answer)")))))
 
 ;;;; Ranges
 

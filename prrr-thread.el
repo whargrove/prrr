@@ -102,10 +102,16 @@ is not part of the diff."
   (concat (prrr-thread-path thread) ", " (prrr-thread--location thread)))
 
 (defun prrr-thread--row-note (row)
-  "Return \"  unsent\", or \"  failed: \" and the error, for the queued write ROW."
+  "Return the note on the queued write ROW.
+\"  failed: \" and the error for a failed write; \"  waiting for
+GitHub's answer\" for an unconfirmed one, which is unsent too
+\(`prrr-state-outbox-unconfirmed-p'); else \"  unsent\"."
   (if-let* ((error (prrr-outbox-last-error row)))
       (propertize (concat "  failed: " error) 'font-lock-face 'prrr-failed)
-    (propertize "  unsent" 'font-lock-face 'prrr-unsent)))
+    (propertize (if (prrr-state-outbox-unconfirmed-p row)
+                    "  waiting for GitHub's answer"
+                  "  unsent")
+                'font-lock-face 'prrr-unsent)))
 
 (defun prrr-thread--write-note (id writes)
   "Return the note on the queued write of ID in WRITES, or nil.

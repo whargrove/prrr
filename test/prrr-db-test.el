@@ -101,12 +101,17 @@
   "Review Focus 4: `prrr-db' creates the database's directory."
   (let* ((dir (make-temp-file "prrr-db-test-" t))
          (prrr-database-file (expand-file-name "nested/dir/prrr.sqlite" dir))
-         (prrr-db--connection nil))
+         (prrr-db--connection nil)
+         (opened 0)
+         (prrr-db-open-hook (list (lambda () (cl-incf opened)))))
     (unwind-protect
         (progn
           (should (emacsql-live-p (prrr-db)))
+          (should (= 1 opened))
           (should (file-exists-p prrr-database-file))
           (should (eq (prrr-db) prrr-db--connection))
+          ;; The hook runs when the database opens, not on every use.
+          (should (= 1 opened))
           (prrr-db-close)
           (should (null prrr-db--connection)))
       (prrr-db-close)

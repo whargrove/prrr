@@ -229,6 +229,7 @@ setting timers, so nothing runs later; run one with
          (prrr-sync--outbox-creations nil)
          (prrr-sync--outbox-paused-until nil)
          (prrr-sync--outbox-scheduled nil)
+         (prrr-sync--outbox-started nil)
          (prrr-sync--outbox-buffers (make-hash-table :test #'equal))
          (prrr-sync--outbox-dirty (make-hash-table :test #'equal))
          (prrr-sync--renames (make-hash-table :test #'equal))

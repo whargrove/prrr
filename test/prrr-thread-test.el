@@ -143,6 +143,21 @@ BODY sees `section', the first child of the root."
       (should (looking-at "    example-me  2026-09-02  failed: GitHub returned HTTP 502$"))
       (should (eq 'prrr-failed (get-text-property (- (line-end-position) 2) 'font-lock-face))))))
 
+(ert-deftest prrr-thread-test-unconfirmed ()
+  "A write whose send got no answer is unsent, waiting for GitHub's answer."
+  (let ((writes (make-hash-table :test #'equal))
+        (row (prrr-thread-test--row "1")))
+    (setf (prrr-outbox-payload row) '(:sent-at "2026-10-10T12:00:01Z"))
+    (puthash "C_1" row writes)
+    (prrr-thread-test--with-render
+        (prrr-thread-insert (prrr-test-thread) (list (prrr-thread-test--comment))
+                            :writes writes)
+      (should (eq 'thread (oref section type)))
+      (forward-line)
+      (should (looking-at "    example-bob  2026-09-02  waiting for GitHub's answer$"))
+      (should (eq 'prrr-unsent (get-text-property (- (line-end-position) 2)
+                                                  'font-lock-face))))))
+
 (ert-deftest prrr-thread-test-agent-comment ()
   (let ((comment (prrr-thread-test--comment)))
     (setf (prrr-comment-agent-p comment) t)

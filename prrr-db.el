@@ -254,14 +254,20 @@ On a mismatch the `outbox' rows are collected into
       (prrr-db-reset db))))
   db)
 
+(defvar prrr-db-open-hook nil
+  "Functions run, with no argument, each time `prrr-db' opens the database.
+The connection is open and usable when they run.")
+
 (defun prrr-db ()
   "Return the open connection to `prrr-database-file', opening it if needed.
-The file's directory is created when missing."
+The file's directory is created when missing.  Opening it runs
+`prrr-db-open-hook'."
   (unless (and prrr-db--connection (emacsql-live-p prrr-db--connection))
     (let ((file (expand-file-name prrr-database-file)))
       (make-directory (file-name-directory file) t)
       (setq prrr-db--connection (emacsql-sqlite-open file))
-      (prrr-db--init prrr-db--connection)))
+      (prrr-db--init prrr-db--connection)
+      (run-hooks 'prrr-db-open-hook)))
   prrr-db--connection)
 
 (defun prrr-db-close ()

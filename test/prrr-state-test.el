@@ -829,6 +829,155 @@
       (should (equal "PRRT_1" (prrr-comment-thread-id comment))))))
 
 
+;;;; Unconfirmed writes
+
+(defun prrr-state-test--unconfirmed (id kind payload)
+  "A write ID of PR_1 with KIND and PAYLOAD whose send got no answer."
+  (prrr-state-test--write id "PR_1" kind (append payload '(:sent-at "2026-10-10T12:00:01Z"))))
+
+(cl-defun prrr-state-test--found (&key (id "PRRC_9") (thread "PRRT_9") (author "example-me")
+                                       (body "Nit.") reply-to
+                                       (created-at "2026-10-10T12:00:05Z"))
+  "A comment a refetch found: ID in Thread THREAD by AUTHOR.
+BODY, REPLY-TO and CREATED-AT are its fields."
+  (prrr-comment-create :comment-id id :thread-id thread :pr-id "PR_1" :author author
+                       :body body :reply-to reply-to :created-at created-at
+                       :review-id "PRR_1" :state 'pending :local-state 'sent
+                       :database-id "99"))
+
+(defun prrr-state-test--fresh (&rest comments)
+  "Review data a refetch answered: Thread PRRT_9 on a.el, T1 on b.el, and COMMENTS."
+  (list :threads (list (prrr-test-thread :id "PRRT_9" :path "a.el")
+                       (prrr-test-thread :id "T1" :path "b.el"))
+        :comments comments
+        :pending-review (prrr-pending-review-create :pr-id "PR_1" :review-id "PRR_1")
+        :viewed (list (prrr-viewed-create :pr-id "PR_1" :path "a.el" :state 'viewed))))
+
+(defconst prrr-state-test--new-thread
+  '(:thread "local:T" :comment "local:C" :body "Nit." :commit "1111"
+    :anchor (:path "a.el" :line 12 :side right :subject-type line))
+  "The payload of a new Thread on a.el.")
+
+(ert-deftest prrr-state-test-outbox-unconfirmed-blocks-its-pr ()
+  "A write whose send got no answer holds its PR as a failed one does."
+  (let ((a (prrr-state-test--unconfirmed "1" 'viewed '(:path "a")))
+        (b (prrr-state-test--write "2" "PR_1" 'viewed '(:path "b")))
+        (c (prrr-state-test--write "3" "PR_2" 'viewed '(:path "c"))))
+    (should (prrr-state-outbox-unconfirmed-p a))
+    (should-not (prrr-state-outbox-unconfirmed-p b))
+    (should (equal (cons c 0) (prrr-state-outbox-next (list a b c) nil 100.0)))
+    (should (equal '("PR_2") (prrr-state-outbox-busy-prs (list a b c))))))
+
+(ert-deftest prrr-state-test-outbox-landed-thread ()
+  (let ((row (prrr-state-test--unconfirmed "1" 'thread prrr-state-test--new-thread)))
+    (should (equal '(landed :comment-id "PRRC_9" :database-id "99"
+                            :created-at "2026-10-10T12:00:05Z" :thread-id "PRRT_9"
+                            :review-id "PRR_1")
+                   (prrr-state-outbox-landed row (prrr-state-test--fresh
+                                                  (prrr-state-test--found))
+                                             nil)))
+    ;; GitHub's clock may run a little behind ours.
+    (should (eq 'landed (car (prrr-state-outbox-landed
+                              row (prrr-state-test--fresh
+                                   (prrr-state-test--found :created-at "2026-10-10T11:56:00Z"))
+                              nil))))
+    (should (eq 'missing (prrr-state-outbox-landed row (prrr-state-test--fresh) nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-thread-near-misses ()
+  "Only a new Thread by me on the anchor's path, with the body, since the write, counts."
+  (let ((row (prrr-state-test--unconfirmed "1" 'publish prrr-state-test--new-thread)))
+    (dolist (comment (list (prrr-state-test--found :thread "T1")
+                           (prrr-state-test--found :author "example-alice")
+                           (prrr-state-test--found :body "Nit!")
+                           (prrr-state-test--found :reply-to "PRRC_1")
+                           (prrr-state-test--found :created-at "2026-10-10T11:54:00Z")))
+      (should (eq 'missing (prrr-state-outbox-landed row (prrr-state-test--fresh comment) nil))))
+    ;; A comment stored before the refetch is another write's.
+    (should (eq 'missing (prrr-state-outbox-landed
+                          row (prrr-state-test--fresh (prrr-state-test--found)) '("PRRC_9"))))))
+
+(ert-deftest prrr-state-test-outbox-landed-reply ()
+  (let ((row (prrr-state-test--unconfirmed "1" 'reply
+                                           '(:thread-id "PRRT_9" :comment "local:R"
+                                             :body "Nit."))))
+    (should (equal '(landed :comment-id "PRRC_9" :database-id "99"
+                            :created-at "2026-10-10T12:00:05Z" :thread-id "PRRT_9"
+                            :review-id "PRR_1")
+                   (prrr-state-outbox-landed
+                    row (prrr-state-test--fresh (prrr-state-test--found :reply-to "PRRC_1"))
+                    nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          row (prrr-state-test--fresh (prrr-state-test--found :thread "T1"))
+                          nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'publish-reply
+                                                        '(:thread-id "PRRT_9" :body "Other."))
+                          (prrr-state-test--fresh (prrr-state-test--found))
+                          nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-edit-and-delete ()
+  (let ((edit (prrr-state-test--unconfirmed "1" 'edit '(:comment-id "PRRC_9" :body "Better.")))
+        (delete (prrr-state-test--unconfirmed "2" 'delete '(:comment-id "PRRC_9"))))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              edit (prrr-state-test--fresh
+                                    (prrr-state-test--found :body "Better."))
+                              nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          edit (prrr-state-test--fresh (prrr-state-test--found)) nil)))
+    ;; A comment gone leaves the edit nothing to do.
+    (should (equal '(landed) (prrr-state-outbox-landed edit (prrr-state-test--fresh) nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed delete (prrr-state-test--fresh) nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          delete (prrr-state-test--fresh (prrr-state-test--found)) nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-resolve-viewed-discard ()
+  (let ((fresh (prrr-state-test--fresh)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'resolve
+                                                        '(:thread-id "PRRT_9" :resolved t))
+                          fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'resolve
+                                                            '(:thread-id "PRRT_9" :resolved nil))
+                              fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'viewed '(:path "a.el" :viewed t))
+                              fresh nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'viewed '(:path "b.el" :viewed t))
+                          fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'viewed '(:path "b.el" :viewed nil))
+                              fresh nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'discard nil) fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'discard nil)
+                              (plist-put (copy-sequence fresh) :pending-review nil)
+                              nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-unknown ()
+  "Review data does not show Discussion Comments or a submitted review."
+  (should (eq 'unknown (prrr-state-outbox-landed
+                        (prrr-state-test--unconfirmed "1" 'discussion
+                                                      '(:comment "local:D" :body "Thanks!"))
+                        (prrr-state-test--fresh) nil)))
+  (should (eq 'unknown (prrr-state-outbox-landed
+                        (prrr-state-test--unconfirmed "1" 'submit '(:verdict approve :body ""))
+                        (prrr-state-test--fresh) nil))))
+
+(ert-deftest prrr-state-test-outbox-unconfirmed-shows-as-unsent ()
+  (let* ((row (prrr-state-test--unconfirmed "1" 'thread prrr-state-test--new-thread))
+         (view (prrr-state-outbox-view (prrr-state-test--data) (list row))))
+    (should (eq 'unsent (prrr-comment-local-state
+                         (gethash "local:C" (let ((table (make-hash-table :test #'equal)))
+                                              (dolist (comment (plist-get view :comments) table)
+                                                (puthash (prrr-comment-comment-id comment)
+                                                         comment table)))))))
+    (should (equal "comment on a.el:12 right: Nit. (waiting for GitHub's answer)"
+                   (prrr-state-outbox-describe row)))))
+
+
 ;;;; What the user sees
 
 (defun prrr-state-test--data ()

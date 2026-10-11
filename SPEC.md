@@ -349,7 +349,21 @@ drops the writes that need it. A rate limit pauses the Outbox until it
 resets. Success stores GitHub's rows and renames the write's local ids
 in the PR's queued writes, so a reply to a Thread not yet sent goes
 out once the Thread has GitHub's id. Edit or delete of a comment whose
-own write is still queued changes or drops that write.
+own write is still queued and not yet sent changes or drops that write.
+
+A write whose send started is *unconfirmed* until GitHub answers: it
+may or may not have reached GitHub. The Outbox stores `:sent-at` in the
+write's payload before the request goes out (the `outbox` layout is
+frozen) and removes it on any answer; a failure answer, even a late
+one, counts the attempt and keeps GitHub's message. When GitHub has not
+answered after `prrr-sync-timeout` seconds, the send ends: the Outbox
+moves on to other PRs' writes, but the unconfirmed write holds back its
+PR, shows as unsent, "waiting for GitHub's answer", and is never sent
+again blindly, not by a retry and not after a restart. An edit or delete
+of what it creates becomes a write of its own that waits for GitHub's
+id. The Outbox starts by itself once per session, when prrr opens its
+database: it refetches the PRs of unconfirmed writes, then sends what
+is queued, without waiting for a Review Buffer.
 
 **Reconciliation.** On refetch, GitHub's rows replace every stored
 Thread, comment, Pending Review and Viewed flag of the PR; queued
@@ -357,7 +371,19 @@ writes, which live only in `outbox`, survive and are re-attempted
 against the current pending review id. An answer that a write of the
 PR may have raced (one succeeded since the refetch started, or one is
 being sent) is not stored; the Outbox refetches the PR once it has
-nothing more to send to it. Comments added from the web appear like
+nothing more to send to it. A refetch whose answer is stored decides
+each unconfirmed write of the PR from that answer: a new Thread or
+reply landed when there is a comment by me with its body, made no
+earlier than five minutes before the write was queued, that starts a
+Thread on its path (or is in its Thread) and was not stored before the
+refetch; an edit when the comment has its body (or is gone); a delete
+when the comment is gone; a resolve, Viewed change or discard when the
+Thread's flag, the file's flag or the absent Pending Review shows it.
+A write that landed is recorded as if GitHub had answered, renames
+included; one that did not is sent again. Discussion Comments and
+Submit are not in the review data, so an unconfirmed one fails with a
+message asking the user to check the PR, then retry or drop it. A retry
+of a PR with an unconfirmed write refetches it instead of sending. Comments added from the web appear like
 any other.
 
 **Pending Review lifecycle.** The first pending comment on a PR creates the

@@ -230,7 +230,16 @@ buffer refetches, or when you press `O r`; `O k` drops one, along with
 any reply that needs it. Until a failed change goes through, the later
 changes to that pull request wait behind it. When GitHub rate-limits
 you, the header says until when, and prrr waits. Unsent changes are
-kept in prrr's database, so they survive restarting Emacs.
+kept in prrr's database, so they survive restarting Emacs, and prrr
+sends them once it starts again.
+
+When GitHub does not answer within `prrr-sync-timeout` seconds, the
+change may or may not have reached GitHub. It shows as unsent, `waiting
+for GitHub's answer`, and is never sent twice blindly: prrr refetches
+the pull request, records the change if GitHub has it and sends it
+again if not. `O r` checks again. A Discussion Comment or a submitted
+review cannot be checked that way, so it ends as failed, asking you to
+look at the pull request on GitHub, then retry or drop it.
 
 Publishing a single comment at once while you have a pending review
 depends on GitHub accepting it; if GitHub refuses, the comment stays
