@@ -494,7 +494,8 @@ here and in the section keymaps.")
 (defun prrr-diff-record-bookmark ()
   "Record the head this Review Buffer shows as its pull request's Bookmark.
 Run when the user leaves it: when the buffer is killed, its window
-quit, or another PR of its Stack replaces it (SPEC section 8).  Does
+quit, or another PR of its Stack replaces it, and when opening the buffer
+again moves its head (SPEC section 8).  Does
 nothing when no head is shown.  A failure is reported, not raised, so
 leaving still works."
   (when (and prrr-diff--pullreq prrr-diff--head)
@@ -572,8 +573,6 @@ the diff."
 (defun prrr-diff--posts (pullreq)
   "Return PULLREQ's Discussion Comments, oldest first."
   (oref pullreq posts))
-
-
 
 (defun prrr-diff--outbox-status (data)
   "Describe the Outbox of the review DATA for the header, or return nil."

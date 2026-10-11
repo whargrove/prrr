@@ -158,7 +158,8 @@ takes comments (SPEC section 8)."
   "Show what changed since you last saw this pull request.
 The Range runs from the Bookmark's head to the head; its right side
 takes comments.  The Bookmark is recorded when you leave the Review
-Buffer, when you submit, and with `prrr-mark-seen'."
+Buffer, when opening it again moves its head, when you submit, and with
+`prrr-mark-seen'."
   (interactive)
   (let ((bookmark (prrr-db-get 'pr-bookmark (oref (prrr-diff-pullreq) their-id))))
     (prrr-range--show-from
@@ -230,8 +231,9 @@ then TO among the commits after it."
 
 (defun prrr-mark-seen ()
   "Record the head shown as seen: the since-opened Range starts there now.
-prrr also records it when you leave the Review Buffer and when you
-submit, never when you open it (SPEC section 8)."
+prrr also records it when you leave the Review Buffer, when you submit, and
+when opening the Review Buffer again moves its head, but not on a plain
+open (SPEC section 8)."
   (interactive)
   (let ((pullreq (prrr-diff-pullreq))
         (head (or (prrr-diff-head) (user-error "The pull request's head is missing"))))

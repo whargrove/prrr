@@ -288,16 +288,17 @@ MELPA magit, so a magit change is found by the test suite, not by users.
 
 **Refresh.** `g` (`prrr-refresh`) re-runs the open at the PR's current
 head; every other redraw keeps the head shown (section 8). Both
-preserve expanded files, folded Threads, and Viewed, through `magit-section-visibility-cache` restricted to
-the `file`, `thread`, `file-comment`, `review-comment`, `description`,
-`discussion`, `not-in-range`, `outdated` and `outdated-files` types. The
-cache records only the user's toggles, so every other section starts as
-on open; every open refreshes once its refetch answers, so a type left out
-of the list loses its toggle seconds after the user makes it. Hunks are
-left out: they start shown and are named by line ranges, which change with
-the diff. Viewed is read from the `viewed` table, never from the
-visibility cache. `G` (invalidate-and-refetch) additionally forces
-the per-PR refetch.
+preserve expanded files, folded Threads, and Viewed, through
+`magit-section-visibility-cache` restricted to the `file`, `thread`,
+`file-comment`, `review-comment`, `description`, `discussion`,
+`not-in-range`, `outdated` and `outdated-files` types. The cache
+records only the user's toggles, so every other section starts as on
+open; every open refreshes once its refetch answers, so a type left
+out of the list loses its toggle seconds after the user makes it.
+Hunks are left out: they start shown and are named by line ranges,
+which change with the diff. Viewed is read from the `viewed` table,
+never from the visibility cache. `G` (invalidate-and-refetch)
+additionally forces the per-PR refetch.
 
 **Magit features that keep working.** `TAB`, `n`/`p`, `M-n`/`M-p`, `^`,
 `RET` (visits the blob at the right line, including after a Thread), `j`
@@ -342,72 +343,71 @@ Buffer shows the stored rows with the queued writes applied
 (`prrr-state-outbox-view`): unsent ones with the `prrr-unsent` face,
 failed ones with the `prrr-failed` face and GitHub's message, and the
 header counts both. The Outbox sends one mutation at a time, at least a
-second apart, at most 80 content creations a minute, each PR's writes
-in order; a failed write holds back its PR's later writes and is
-retried on the PR's next write or refetch and through
-`prrr-outbox-retry`, or dropped with `prrr-outbox-discard`, which also
-drops the writes that need it. A rate limit pauses the Outbox until it
-resets. Success stores GitHub's rows and renames the write's local ids
-in the PR's queued writes, so a reply to a Thread not yet sent goes
-out once the Thread has GitHub's id. A success that answers after its
-write was dropped stores nothing, since the refetch that follows shows
-what GitHub made, but still renames, so a command naming the local id
-from a buffer drawn before the drop reaches GitHub's. A Discussion Comment is not in the review data but in forge's
-topic, which has it only once forge pulls the PR: GitHub's answer
-names the comment, and the Review Buffer shows it, marked sent, from a
-session-only list keyed by GitHub's database id until forge's topic
-lists a post with that id (forge is asked to pull the PR at once), so
-it is never missing and never shown twice. After a restart forge's
-next pull shows it. Edit or delete of a comment whose
+second apart, at most 80 content creations a minute, each PR's writes in
+order; a failed write holds back its PR's later writes and is retried on
+the PR's next write or refetch and through `prrr-outbox-retry`, or
+dropped with `prrr-outbox-discard`, which also drops the writes that
+need it. A rate limit pauses the Outbox until it resets. Success stores
+GitHub's rows and renames the write's local ids in the PR's queued
+writes, so a reply to a Thread not yet sent goes out once the Thread has
+GitHub's id. A success that answers after its write was dropped stores
+nothing, since the refetch that follows shows what GitHub made, but
+still renames, so a command naming the local id from a buffer drawn
+before the drop reaches GitHub's. A Discussion Comment is not in the
+review data but in forge's topic, which has it only once forge pulls the
+PR: GitHub's answer names the comment, and the Review Buffer shows it,
+marked sent, from a session-only list keyed by GitHub's database id
+until forge's topic lists a post with that id (forge is asked to pull
+the PR at once), so it is never missing and never shown twice. After a
+restart forge's next pull shows it. Edit or delete of a comment whose
 own write is still queued and not yet sent changes or drops that write.
 
-A write whose send started is *unconfirmed* until GitHub answers: it
-may or may not have reached GitHub. The Outbox stores `:sent-at` in the
+A write whose send started is *unconfirmed* until GitHub answers: it may
+or may not have reached GitHub. The Outbox stores `:sent-at` in the
 write's payload before the request goes out (the `outbox` layout is
-frozen) and removes it on any answer; a failure answer, even a late
-one, counts the attempt and keeps GitHub's message. When GitHub has not
+frozen) and removes it on any answer; a failure answer, even a late one,
+counts the attempt and keeps GitHub's message. When GitHub has not
 answered after `prrr-sync-timeout` seconds, the send ends: the Outbox
 moves on to other PRs' writes, but the unconfirmed write holds back its
 PR, shows as unsent, "waiting for GitHub's answer", and is never sent
-again blindly, not by a retry and not after a restart. A success
-answer that does not name what GitHub made (a null GraphQL payload, a
-REST answer without `node_id`) counts as no answer: GitHub may have
-made it, so the write stays unconfirmed and the refetch decides. An edit or delete
-of what it creates becomes a write of its own that waits for GitHub's
-id. The Outbox starts by itself once per session, when prrr opens its
-database: it refetches the PRs of unconfirmed writes, then sends what
-is queued, without waiting for a Review Buffer.
+again blindly, not by a retry and not after a restart. A success answer
+that does not name what GitHub made (a null GraphQL payload, a REST
+answer without `node_id`) counts as no answer: GitHub may have made it,
+so the write stays unconfirmed and the refetch decides. An edit or
+delete of what it creates becomes a write of its own that waits for
+GitHub's id. The Outbox starts by itself once per session, when prrr
+opens its database: it refetches the PRs of unconfirmed writes, then
+sends what is queued, without waiting for a Review Buffer.
 
 **Reconciliation.** On refetch, GitHub's rows replace every stored
 Thread, comment, Pending Review and Viewed flag of the PR; queued
 writes, which live only in `outbox`, survive and are re-attempted
-against the current pending review id. An answer that a write of the
-PR may have raced (one succeeded since the refetch started, or one is
-being sent) is not stored; the Outbox refetches the PR once it has
-nothing more to send to it. A PR whose last refetch failed is
-refetched by the Outbox no sooner than `prrr-sync-min-retry-spacing`
-after that attempt and not before a rate limit resets; the Outbox then
-pumps by itself. A refetch the Outbox needed (after a
-success, a send without an answer, or for an unconfirmed write) that
-fails or gets no answer is tried again by the Outbox, no sooner than
-`prrr-sync-min-retry-spacing` after it started and not before a rate
-limit resets, so a reply waiting for the id of a Thread published at
-once never needs the user's refetch. A refetch whose answer is stored decides
-each unconfirmed write of the PR from that answer: a new Thread or
-reply landed when there is a comment by me with its body, made no
-earlier than five minutes before the write was queued, that starts a
-Thread on its path (or is in its Thread) and was not stored before the
-refetch; an edit when the comment has its body (or is gone); a delete
-when the comment is gone; a resolve, Viewed change or discard when the
-Thread's flag, the file's flag or the absent Pending Review shows it.
-A write that landed is recorded as if GitHub had answered, renames
-included; one that did not is sent again. Discussion Comments and
-Submit are not in the review data, so an unconfirmed one fails with a
-message asking the user to check the PR, then retry or drop it; it
-stays unconfirmed, so neither a refetch nor another write sends it
-again, only the user's `prrr-outbox-retry`. A retry
-of a PR with an unconfirmed write refetches it instead of sending. Comments added from the web appear like
-any other.
+against the current pending review id. An answer that a write of the PR
+may have raced (one succeeded since the refetch started, or one is being
+sent) is not stored; the Outbox refetches the PR once it has nothing
+more to send to it. A PR whose last refetch failed is refetched by the
+Outbox no sooner than `prrr-sync-min-retry-spacing` after that attempt
+and not before a rate limit resets; the Outbox then pumps by itself. A
+refetch the Outbox needed (after a success, a send without an answer, or
+for an unconfirmed write) that fails or gets no answer is tried again by
+the Outbox, no sooner than `prrr-sync-min-retry-spacing` after it
+started and not before a rate limit resets, so a reply waiting for the
+id of a Thread published at once never needs the user's refetch. A
+refetch whose answer is stored decides each unconfirmed write of the PR
+from that answer: a new Thread or reply landed when there is a comment
+by me with its body, made no earlier than five minutes before the write
+was queued, that starts a Thread on its path (or is in its Thread) and
+was not stored before the refetch; an edit when the comment has its body
+(or is gone); a delete when the comment is gone; a resolve, Viewed
+change or discard when the Thread's flag, the file's flag or the absent
+Pending Review shows it. A write that landed is recorded as if GitHub
+had answered, renames included; one that did not is sent again.
+Discussion Comments and Submit are not in the review data, so an
+unconfirmed one fails with a message asking the user to check the PR,
+then retry or drop it; it stays unconfirmed, so neither a refetch nor
+another write sends it again, only the user's `prrr-outbox-retry`. A
+retry of a PR with an unconfirmed write refetches it instead of sending.
+Comments added from the web appear like any other.
 
 **Pending Review lifecycle.** The first pending comment on a PR creates the
 Pending Review (after checking for an existing one). Edit and delete of my
@@ -447,21 +447,22 @@ mapped from its commit to the new Range's commits through `git diff -U0`
 the file's heading.
 
 **Commenting.** `RIGHT`-side lines of any Range that ends at head are
-commentable as default-Range comments (their numbers are head line numbers).
-`LEFT`-side lines of `since-review`/`since-opened`, and both sides of
-`commit`/`between`, are read-only; `.` jumps to the same file and line in the
-default Range. File Comments need a Range that ends at head. Threads
-render inline only on the sides a Range numbers as GitHub does (right
-when it ends at head, left only in `default`); the others go to the
-file's `not-in-range` section. Both sides also need the review data
-fetched at the head shown: while the last refetch saw another head
-(until `g`), every line Thread folds into `not-in-range`, the left
-side too, because a rebase may have moved the merge base GitHub
-numbers it against and no stored field names that commit. At the
-head shown, prrr takes GitHub's merge base to be the local one (of
-forge's base commit and the head); they differ only if forge's base
-commit is stale in a way that changes the merge base, a limit prrr
-accepts.
+commentable as default-Range comments (their numbers are head line
+numbers). `LEFT`-side lines of `since-review`/`since-opened`, and both
+sides of `commit`/`between`, are read-only; `.` jumps to the same file
+and line in the default Range. File Comments need a Range that ends at
+head. Threads render inline only on the sides a Range numbers as
+GitHub does (right when it ends at head, left only in `default`); the
+others go to the file's `not-in-range` section. Both sides also need
+the review data fetched at the head shown: while the last refetch saw
+another head (until the head shown is the one the refetch saw: `g`,
+after `forge-pull` when the header asks), every line Thread folds into
+`not-in-range`, the left side too, because a rebase may have moved the
+merge base GitHub numbers it against and no stored field names that
+commit. At the head shown, prrr takes GitHub's merge base to be the
+local one (of forge's base commit and the head); they differ only if
+forge's base commit is stale in a way that changes the merge base, a
+limit prrr accepts.
 
 **Viewed** is GitHub's flag only, shown and toggled on every Range.
 

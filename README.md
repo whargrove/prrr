@@ -159,7 +159,8 @@ Resolved threads start folded. `RET` on a thread visits the line it is
 anchored to.
 
 Files you marked Viewed, here or on GitHub, are folded and marked `✓
-viewed`. `g` redraws at the pull request's current head and keeps what you expanded and folded.
+viewed`. `g` redraws at the pull request's current head and keeps what
+you expanded and folded.
 
 ### Keys in the Review Buffer
 
@@ -254,7 +255,9 @@ instead, drop it with `O k` and write the comment again without `C-u`.
 
 The Review Buffer shows a Range: the two commits it diffs. It opens at
 the default Range, the PR's merge base to its head, and the header
-names the Range shown. `D` chooses another:
+names the Range shown.  `D` opens a menu to choose another; the keys
+below belong to that menu only (in the buffer itself `r`, `c` and `d`
+mean other things):
 
 | Key | Command                   | Range                                                  |
 |-----|---------------------------|--------------------------------------------------------|
@@ -273,7 +276,11 @@ the head (default, since review, since opened) takes comments on its
 new side. Its old side, and both sides of one commit or of two commits,
 are read-only: `.` shows the same line in the default Range, where it
 takes a comment. Threads show inline where the Range numbers lines as
-GitHub does, and in the file's "Not in this diff" group otherwise.
+GitHub does, and in the file's "Not in this diff" group otherwise.  The
+same group takes every line Thread, on both sides, while the review
+data was fetched at another head than the one shown, until the head
+shown is the one the refetch saw (`g`, after `forge-pull` when the
+header asks for it).
 
 "Since opened" starts at the head you saw when you last left the
 Review Buffer, by `q`, by killing it, by stepping to another PR of

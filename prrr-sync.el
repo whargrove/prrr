@@ -1226,8 +1226,9 @@ in the repository."
 (defun prrr-sync-record-bookmark (pullreq oid)
   "Record OID as the head of PULLREQ the viewer last saw, and pin it.
 The Bookmark (table `pr-bookmark') is where the since-opened Range
-starts.  The Review Buffer records it when it closes, on Submit and
-on `prrr-mark-seen', never on open.  Return non-nil when OID was
+starts.  The Review Buffer records it when it closes, when opening it
+again moves its head, on Submit and on `prrr-mark-seen', never on a
+plain open.  Return non-nil when OID was
 pinned.  The Bookmark is written even when the pin fails, which
 happens only when OID is not in the repository: a since-opened Range
 fetches a missing start by sha, so the Bookmark is still worth having,
