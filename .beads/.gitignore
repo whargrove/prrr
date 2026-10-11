@@ -8,6 +8,7 @@ bd.sock
 bd.sock.startlock
 sync-state.json
 last-touched
+.auto-import-issues.jsonl
 .exclusive-lock
 
 # Daemon runtime (lock, log, pid)
