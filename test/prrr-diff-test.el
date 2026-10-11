@@ -947,6 +947,8 @@ FROM and TO are the texts of the lines."
                                              :end (prrr-diff-test--rev "refs/pullreqs/1")))
     (prrr-diff-test--goto-line "src/example.el" "+line thirty")
     (should-error (prrr-diff-anchor) :type 'user-error)
+    (prrr-diff-test--goto-line "src/example.el" "-line 30")
+    (should-error (prrr-diff-anchor) :type 'user-error)
     (should-error (prrr-diff-file-anchor) :type 'user-error)))
 
 (ert-deftest prrr-diff-test-anchor-in-a-thread ()
