@@ -125,7 +125,7 @@ Milestones 5 to 7 add the Range, Stack and Agent groups."
     ("b" "browse on GitHub" prrr-browse)
     ("B" "checkout" prrr-checkout)]
    ["Sync"
-    ("g" "refresh" magit-refresh)
+    ("g" "refresh" prrr-refresh)
     ("G" "refetch" prrr-refetch)]])
 
 (provide 'prrr-transient)

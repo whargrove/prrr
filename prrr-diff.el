@@ -461,6 +461,7 @@ See `prrr-diff-file-section-map' for why it exists.")
      "o" #'prrr-open-topic
      "b" #'prrr-browse
      "B" #'prrr-checkout
+     "g" #'prrr-refresh
      "G" #'prrr-refetch
      "?" #'prrr-menu
      "C-o" #'prrr-menu))
@@ -580,14 +581,13 @@ the diff."
   "Return the header's status line for PULLREQ.
 VIEW describes what the buffer diffs, a plist: :range, the
 `prrr-range'; :start and :end, the commits diffed, either may be nil;
-:head, the PR head shown; :rewritten, non-nil when the Range's start
-is not an ancestor of its end.  DATA is the review data shown.  Names
-the Range and whether history was rewritten, the Pending Review's
-comments, the Outbox, a queued Submit, what the last refetch said, and
-whether GitHub's head differs from the local one."
+:head, the PR head shown; :local, the head forge fetched, or nil;
+:rewritten, non-nil when the Range's start is not an ancestor of its
+end.  DATA is the review data shown.  Names the Range and whether
+history was rewritten, the Pending Review's comments, the Outbox, a
+queued Submit, what the last refetch said, and whether the head moved
+away from the one shown (`prrr-state-head-notice')."
   (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
-         (github-head (plist-get status :head-oid))
-         (head (plist-get view :head))
          (submit (plist-get data :submit))
          (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
                              (plist-get data :comments))))
@@ -603,9 +603,8 @@ whether GitHub's head differs from the local one."
                               (plist-get (prrr-outbox-payload submit) :verdict)))
                  (prrr-sync-outbox-describe)
                  (prrr-sync-describe status "refreshing…")
-                 (and github-head head (not (equal github-head head))
-                      (format "GitHub's head is %s: run forge-pull, then g"
-                              (prrr-state-short-oid github-head)))))
+                 (prrr-state-head-notice (plist-get view :head) (plist-get view :local)
+                                         (plist-get status :head-oid))))
      "  ·  ")))
 
 (defun prrr-diff--insert-header (pullreq view data)
@@ -648,19 +647,23 @@ just found, so only the other kinds are checked."
   "Insert the Review Buffer of `prrr-diff--pullreq' from git and the database.
 The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'.
 It diffs the commits of `prrr-diff--range' (`prrr-state-range-ends').
-The review data is `prrr-sync-review-data''s: what GitHub sent, with
-the Outbox's writes applied."
+The PR head is the one the buffer already shows, if any: only opening
+the buffer and `prrr-refresh' move it to the head forge fetched, so
+nothing changes under the user when forge fetches a new head.  The
+review data is `prrr-sync-review-data''s: what GitHub sent, with the
+Outbox's writes applied."
   (let* ((pullreq prrr-diff--pullreq)
          (range prrr-diff--range)
          (ref (prrr-diff--head-ref pullreq))
-         (head (magit-rev-verify ref))
+         (local (magit-rev-verify ref))
+         (head (or prrr-diff--head local))
          (merge-base (and head (eq (prrr-range-kind range) 'default)
                           (prrr-diff--merge-base pullreq head)))
          (ends (prrr-state-range-ends range merge-base head))
          (start (and head (car ends)))
          (end (and head (cdr ends)))
          (missing (and start (prrr-diff--missing-commit range start end)))
-         (view (list :range range :start start :end end :head head
+         (view (list :range range :start start :end end :head head :local local
                      :rewritten (and start (not missing)
                                      (not (eq (prrr-range-kind range) 'default))
                                      (not (magit-rev-ancestor-p start end)))))
@@ -759,6 +762,17 @@ The buffer shows \"refreshing…\" until the answer arrives, then redraws.
                (or (prrr-sync-describe (prrr-sync-review-status (oref pullreq their-id))
                                        "a refetch is running")
                    "try again shortly")))))
+
+;;;###autoload
+(defun prrr-refresh ()
+  "Redraw the Review Buffer at the pull request's current head.
+Every other redraw, such as the one after a refetch or a write, keeps
+the head the buffer shows, so the diff never changes under you; the
+header says \"head moved, press g\" instead (SPEC section 8)."
+  (interactive)
+  (prrr-diff-pullreq)
+  (setq prrr-diff--head nil)
+  (magit-refresh))
 
 (defun prrr-diff-head ()
   "Return the oid of the PR head the current Review Buffer shows, or nil.

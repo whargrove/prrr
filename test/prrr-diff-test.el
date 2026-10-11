@@ -505,8 +505,31 @@ SETUP runs first, inside the fixture repository and a fresh database.
              '(:state ok :head-oid "2222222222222222222222222222222222222222")
              prrr-sync--status)
     (prrr-diff-test--with-buffer nil
-      (should (string-match-p "GitHub's head is 2222222: run forge-pull, then g"
+      (should (string-match-p "head moved to 2222222 on GitHub: run forge-pull, then g"
                               (prrr-diff-test--status-line))))))
+
+(ert-deftest prrr-diff-test-head-moved-redraws-nothing-underneath ()
+  "SPEC section 8: a new head shows only as a notice until g."
+  (prrr-diff-test--with-buffer nil
+    (let ((old-head (prrr-diff-test--rev "refs/pullreqs/1"))
+          (first (prrr-diff-test--rev "refs/pullreqs/1~1")))
+      ;; forge fetches a head without line 30's change.
+      (call-process "git" nil nil nil "update-ref" "refs/pullreqs/1" first)
+      (magit-refresh-buffer)
+      (should (equal old-head (prrr-diff-head)))
+      (should (string-match-p "+line thirty" (buffer-string)))
+      (should (string-match-p "head moved, press g" (prrr-diff-test--status-line)))
+      (prrr-refresh)
+      (should (equal first (prrr-diff-head)))
+      (should-not (string-match-p "+line thirty" (buffer-string)))
+      (should-not (string-match-p "head moved" (prrr-diff-test--status-line))))))
+
+(ert-deftest prrr-diff-test-reopen-takes-the-new-head ()
+  (prrr-diff-test--with-buffer nil
+    (let ((first (prrr-diff-test--rev "refs/pullreqs/1~1")))
+      (call-process "git" nil nil nil "update-ref" "refs/pullreqs/1" first)
+      (prrr-diff-setup-buffer (prrr-diff-test--pullreq))
+      (should (equal first (prrr-diff-head))))))
 
 (ert-deftest prrr-diff-test-header-description-and-discussion ()
   (let ((prrr-diff-test--posts
@@ -722,7 +745,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
                    ("j" . prrr-jump-to-file) ("v" . prrr-toggle-viewed)
                    ("z" . prrr-collapse-all) ("Z" . prrr-expand-all)
                    ("o" . prrr-open-topic) ("b" . prrr-browse) ("B" . prrr-checkout)
-                   ("g" . magit-refresh) ("G" . prrr-refetch)))
+                   ("g" . prrr-refresh) ("G" . prrr-refetch)))
     (should (eq command (keymap-lookup prrr-diff-mode-map key)))
     (let ((suffix (transient-get-suffix 'prrr-menu key)))
       (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))

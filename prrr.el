@@ -54,6 +54,7 @@
 (autoload 'prrr-stack-up "prrr-stack" "Move to the next PR up the current Stack." t)
 (autoload 'prrr-stack-down "prrr-stack" "Move to the next PR down the current Stack." t)
 (autoload 'prrr-refetch "prrr-diff" "Refetch this pull request's review data now." t)
+(autoload 'prrr-refresh "prrr-diff" "Redraw the Review Buffer at the pull request's current head." t)
 (autoload 'prrr-queue-menu "prrr-transient" "Show the Review Queue commands." t)
 (autoload 'prrr-menu "prrr-transient" "Show the Review Buffer commands." t)
 (autoload 'prrr-comment "prrr-review" "Comment on the diff line at point, or on the region's lines." t)
