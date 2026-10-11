@@ -514,6 +514,14 @@ never sent again blindly; a refetch of its PR decides
 \(`prrr-state-outbox-landed')."
   (and (plist-get (prrr-outbox-payload row) :sent-at) t))
 
+(defun prrr-state-outbox-awaiting-user-p (row)
+  "Non-nil when the write ROW waits for the user to send it again or drop it.
+It is unconfirmed and failed: a refetch could not tell whether it
+reached GitHub, as for a Discussion Comment or a Submit.  It stays
+unconfirmed, so neither a refetch nor another write sends it again;
+only the user's retry (`prrr-sync-resend') does."
+  (and (prrr-state-outbox-unconfirmed-p row) (prrr-outbox-last-error row) t))
+
 (defun prrr-state--outbox-heads (rows)
   "Return the first row of each PR among ROWS, in the order of ROWS."
   (let ((seen nil) (heads nil))

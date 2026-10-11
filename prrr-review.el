@@ -250,10 +250,12 @@ records the head shown as the Bookmark (SPEC section 8)."
 
 ;;;###autoload
 (defun prrr-outbox-retry ()
-  "Send this pull request's failed writes again now."
+  "Send this pull request's failed writes again now.
+That includes a write GitHub never answered that a refetch could not
+confirm, which only this command sends again."
   (interactive)
   (let ((pullreq (prrr-diff-pullreq)))
-    (prrr-sync-retry (oref pullreq their-id) (current-buffer))
+    (prrr-sync-resend (oref pullreq their-id) (current-buffer))
     (message "Sending the Outbox again")))
 
 (defun prrr-review--read-write (data)

@@ -382,7 +382,9 @@ Thread's flag, the file's flag or the absent Pending Review shows it.
 A write that landed is recorded as if GitHub had answered, renames
 included; one that did not is sent again. Discussion Comments and
 Submit are not in the review data, so an unconfirmed one fails with a
-message asking the user to check the PR, then retry or drop it. A retry
+message asking the user to check the PR, then retry or drop it; it
+stays unconfirmed, so neither a refetch nor another write sends it
+again, only the user's `prrr-outbox-retry`. A retry
 of a PR with an unconfirmed write refetches it instead of sending. Comments added from the web appear like
 any other.
 

@@ -868,6 +868,18 @@ BODY, REPLY-TO and CREATED-AT are its fields."
     (should (equal (cons c 0) (prrr-state-outbox-next (list a b c) nil 100.0)))
     (should (equal '("PR_2") (prrr-state-outbox-busy-prs (list a b c))))))
 
+(ert-deftest prrr-state-test-outbox-awaiting-user ()
+  "A failed unconfirmed write waits for the user; it shows as failed."
+  (let ((waiting (prrr-state-test--unconfirmed "1" 'discussion '(:body "Thanks!")))
+        (failed (prrr-state-test--write "2" "PR_2" 'discussion '(:body "Hi") "offline")))
+    (should-not (prrr-state-outbox-awaiting-user-p waiting))
+    (should-not (prrr-state-outbox-awaiting-user-p failed))
+    (setf (prrr-outbox-last-error waiting) "No answer")
+    (should (prrr-state-outbox-awaiting-user-p waiting))
+    (should-not (prrr-state-outbox-next (list waiting) nil 100.0))
+    (should (equal "Discussion Comment: Thanks! (failed: No answer)"
+                   (prrr-state-outbox-describe waiting)))))
+
 (ert-deftest prrr-state-test-outbox-landed-thread ()
   (let ((row (prrr-state-test--unconfirmed "1" 'thread prrr-state-test--new-thread)))
     (should (equal '(landed :comment-id "PRRC_9" :database-id "99"

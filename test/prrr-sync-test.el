@@ -1112,7 +1112,55 @@ The Pending Review is the review-data fixture's.  Return the row of the write."
       (let ((row (car (prrr-db-outbox-rows))))
         (should (equal prrr-sync-unconfirmed-message (prrr-outbox-last-error row)))
         (should (string-match-p "check" (prrr-outbox-last-error row)))
-        (should-not (prrr-state-outbox-unconfirmed-p row))))))
+        (should (prrr-state-outbox-awaiting-user-p row))))))
+
+(defun prrr-sync-test--discussion-awaiting-user ()
+  "Post a Discussion Comment GitHub never answers; a refetch cannot confirm it."
+  (cl-letf (((symbol-function 'ghub-query) #'ignore))
+    (prrr-sync-test--write 'discussion '(:body "Thanks!"))
+    (prrr-test-run-timers 'prrr-sync--outbox-timed-out))
+  (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+    (prrr-test-run-timers 'prrr-sync--refetch))
+  (setq prrr-test-timers nil)
+  (should (prrr-state-outbox-awaiting-user-p (car (prrr-db-outbox-rows)))))
+
+(ert-deftest prrr-sync-test-outbox-awaiting-user-survives-a-refetch ()
+  "A later refetch keeps a write a refetch could not confirm for the user."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--discussion-awaiting-user)
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (should (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+        (prrr-test-run-timers 'prrr-sync--outbox-pump)
+        (should (equal '(repository) prrr-test-requests)))
+      (should (equal prrr-sync-unconfirmed-message
+                     (prrr-outbox-last-error (car (prrr-db-outbox-rows))))))))
+
+(ert-deftest prrr-sync-test-outbox-awaiting-user-survives-another-write ()
+  "Another write on the PR does not send it either."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--discussion-awaiting-user)
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t))
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should-not (memq 'addComment prrr-test-requests))
+        (should-not (memq 'markFileAsViewed prrr-test-requests)))
+      (let ((row (car (prrr-db-outbox-rows))))
+        (should (eq 'discussion (prrr-outbox-kind row)))
+        (should (prrr-state-outbox-awaiting-user-p row))))))
+
+(ert-deftest prrr-sync-test-outbox-awaiting-user-goes-on-resend ()
+  "The user's retry (O r) sends it, and what waited behind it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--discussion-awaiting-user)
+      (prrr-test-with-ghub-dispatch '((addComment . ((data (addComment (clientMutationId))))))
+        (prrr-sync-retry prrr-sync-test--pr)
+        (should-not prrr-test-requests)
+        (prrr-sync-resend prrr-sync-test--pr)
+        (should (equal '(addComment) prrr-test-requests)))
+      (should-not (prrr-db-outbox-rows)))))
 
 ;;;; Every kind of write
 

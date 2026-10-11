@@ -500,19 +500,36 @@ unless it is being sent."
 (defun prrr-sync-retry (&optional pr-id buffer)
   "Send the failed writes of PR-ID again, or those of every PR when nil.
 An unconfirmed write is not sent again: its PR is refetched instead,
-and the refetch decides whether it landed.  BUFFER, when live,
-refreshes whenever the PR's writes change."
+and the refetch decides whether it landed.  One awaiting the user
+\(`prrr-state-outbox-awaiting-user-p') goes out only through
+`prrr-sync-resend'.  BUFFER, when live, refreshes whenever the PR's
+writes change."
   (prrr-sync--remember-buffer pr-id buffer)
   (prrr-sync--outbox-recheck pr-id)
-  (prrr-db-outbox-clear-errors pr-id)
+  (prrr-db-outbox-clear-errors pr-id #'prrr-state-outbox-awaiting-user-p)
   (prrr-sync--outbox-changed pr-id)
   (prrr-sync--outbox-pump))
 
+(defun prrr-sync-resend (&optional pr-id buffer)
+  "Send the failed writes of PR-ID again, as the user asked; every PR when nil.
+That is `prrr-sync-retry', and also a write awaiting the user's
+decision (`prrr-state-outbox-awaiting-user-p'): the user checked the
+PR and wants it sent.  Writes and refetches retry through
+`prrr-sync-retry' alone, so such a write never goes out twice without
+the user.  BUFFER, when live, refreshes whenever the PR's writes
+change."
+  (dolist (row (prrr-db-outbox-rows pr-id))
+    (when (prrr-state-outbox-awaiting-user-p row)
+      (prrr-sync--outbox-answered row)))
+  (prrr-sync-retry pr-id buffer))
+
 (defun prrr-sync--outbox-recheck (&optional pr-id)
   "Have the Outbox refetch each PR with an unconfirmed write.
-Only PR-ID, when non-nil.  The write being sent is left to its answer."
+Only PR-ID, when non-nil.  The write being sent is left to its answer,
+and one awaiting the user is skipped: a refetch cannot decide it."
   (dolist (row (prrr-db-outbox-rows pr-id))
     (when (and (prrr-state-outbox-unconfirmed-p row)
+               (not (prrr-state-outbox-awaiting-user-p row))
                (not (equal (prrr-outbox-id row) (prrr-sync--sending-id))))
       (prrr-sync--outbox-mark-dirty row))))
 
@@ -938,18 +955,22 @@ TAKEN are the ids of the PR's comments stored before the refetch, as
 `prrr-state-outbox-landed' takes them.  A write that landed is
 recorded as a success; one that did not is no longer unconfirmed, so
 it goes out again; one review data cannot show, a Discussion Comment
-or a Submit, fails with `prrr-sync-unconfirmed-message', so the user
-checks the PR and then retries or drops it.  A comment that one write
-made is never taken for another's."
+or a Submit, fails with `prrr-sync-unconfirmed-message' and stays
+unconfirmed (`prrr-state-outbox-awaiting-user-p'), so the user checks
+the PR and then sends it again (`prrr-sync-resend') or drops it.  A
+comment that one write made is never taken for another's."
   (dolist (row (prrr-db-outbox-rows pr-id))
     (when (and (prrr-state-outbox-unconfirmed-p row)
                (not (equal (prrr-outbox-id row) (prrr-sync--sending-id))))
       (pcase (prrr-state-outbox-landed row data taken)
         (`(landed . ,result)
          (prrr-sync--outbox-record-success row result)
-         (push (plist-get result :comment-id) taken))
+         (when-let* ((comment-id (plist-get result :comment-id)))
+           (push comment-id taken)))
         ('missing (prrr-sync--outbox-answered row))
-        ('unknown (prrr-sync--outbox-answered row prrr-sync-unconfirmed-message))))))
+        ('unknown
+         (setf (prrr-outbox-last-error row) prrr-sync-unconfirmed-message)
+         (prrr-db-insert row))))))
 
 (defun prrr-sync--outbox-refetch-idle (rows)
   "Refetch each PR GitHub changed that has no write left to send now.
@@ -987,13 +1008,14 @@ one is being sent: the refetch's answer may then miss it."
 
 (defun prrr-sync--store-review-data (pr-id data)
   "Store DATA, a refetch's answer, as the review data of PR-ID.
-The PR's failed writes are retried, as after every refetch.  Then its
+The PR's failed writes are retried, as after every refetch, except
+those awaiting the user (`prrr-state-outbox-awaiting-user-p').  Then its
 unconfirmed writes are decided from DATA (`prrr-sync--outbox-resolve'),
 so one that a refetch cannot confirm stays failed for the user to
 decide.  That happens before DATA replaces the stored rows, so what a
 confirmed write stores is then replaced by GitHub's own rows, and the
 comments stored before are known."
-  (prrr-db-outbox-clear-errors pr-id)
+  (prrr-db-outbox-clear-errors pr-id #'prrr-state-outbox-awaiting-user-p)
   (prrr-sync--outbox-resolve pr-id data
                              (mapcar #'prrr-comment-comment-id
                                      (prrr-db-select 'review-comment :pr-id pr-id)))

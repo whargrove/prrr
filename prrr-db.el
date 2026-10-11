@@ -455,13 +455,19 @@ increase with time."
                        pr-id)
             (emacsql (prrr-db) [:select * :from outbox :order-by [(asc id)]]))))
 
-(defun prrr-db-outbox-clear-errors (&optional pr-id)
+(defun prrr-db-outbox-clear-errors (&optional pr-id keep)
   "Forget the last error of every queued write of PR-ID, or of every PR when nil.
-Their attempts count is kept."
-  (if pr-id
-      (emacsql (prrr-db) [:update outbox :set (= last-error $s1) :where (= pr-id $s2)]
-               nil pr-id)
-    (emacsql (prrr-db) [:update outbox :set (= last-error $s1)] nil)))
+Their attempts count is kept.  KEEP, when non-nil, is a function of a
+`prrr-outbox' row: a failed row it accepts keeps its error."
+  (cond (keep
+         (dolist (row (prrr-db-outbox-rows pr-id))
+           (when (and (prrr-outbox-last-error row) (not (funcall keep row)))
+             (setf (prrr-outbox-last-error row) nil)
+             (prrr-db-insert row))))
+        (pr-id
+         (emacsql (prrr-db) [:update outbox :set (= last-error $s1) :where (= pr-id $s2)]
+                  nil pr-id))
+        (t (emacsql (prrr-db) [:update outbox :set (= last-error $s1)] nil))))
 
 (defun prrr-db--rename (tree renames)
   "Return a copy of TREE in which each string that is a key of RENAMES is replaced.

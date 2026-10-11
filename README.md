@@ -239,7 +239,8 @@ for GitHub's answer`, and is never sent twice blindly: prrr refetches
 the pull request, records the change if GitHub has it and sends it
 again if not. `O r` checks again. A Discussion Comment or a submitted
 review cannot be checked that way, so it ends as failed, asking you to
-look at the pull request on GitHub, then retry or drop it.
+look at the pull request on GitHub, then retry or drop it; prrr sends
+it again only when you press `O r`.
 
 Publishing a single comment at once while you have a pending review
 depends on GitHub accepting it; if GitHub refuses, the comment stays
