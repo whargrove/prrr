@@ -587,11 +587,25 @@ stays queued instead of storing a comment with a nil id."
       (should (equal "GitHub refused: Validation Failed" (plist-get failure :message)))
       (should (equal "POST" (car captured))))))
 
+(ert-deftest prrr-github-test-add-discussion-comment ()
+  "A Discussion Comment's answer names it, so the Review Buffer can show it until forge has it."
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-comment") captured
+    (let ((result nil))
+      (prrr-github-add-discussion-comment "api.github.com" "PR_1" "Hi"
+                                          (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '((input (subjectId . "PR_1") (body . "Hi"))) (cadr captured)))
+      (should (equal '(:comment-id "IC_kwDOexampleNew01" :database-id 5001
+                       :created-at "2026-10-10T12:05:00Z")
+                     result)))))
+
+(ert-deftest prrr-github-test-add-discussion-comment-null-payload-is-a-failure ()
+  (prrr-github-test--null-payload '(data (addComment (commentEdge)))
+    (lambda (callback errorback)
+      (prrr-github-add-discussion-comment "api.github.com" "PR_1" "Hi" callback errorback))))
+
 (ert-deftest prrr-github-test-forge-mutations ()
   (pcase-dolist (`(,call ,mutation ,input)
-                 `((,(lambda (cb eb) (prrr-github-add-discussion-comment "h" "PR_1" "Hi" cb eb))
-                    addComment ((subjectId . "PR_1") (body . "Hi")))
-                   (,(lambda (cb eb) (prrr-github-edit-comment "h" "C_1" "New" cb eb))
+                 `((,(lambda (cb eb) (prrr-github-edit-comment "h" "C_1" "New" cb eb))
                     updatePullRequestReviewComment ((pullRequestReviewCommentId . "C_1") (body . "New")))
                    (,(lambda (cb eb) (prrr-github-delete-comment "h" "C_1" cb eb))
                     deletePullRequestReviewComment ((id . "C_1")))

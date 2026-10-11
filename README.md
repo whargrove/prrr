@@ -143,7 +143,9 @@ your pending review and the Viewed flags in the background. The header
 says `refreshing…` meanwhile, and `offline` or `rate limited until 14:05`
 when that fails. The header shows the title, the Range, your pending
 review's comment count, and `head moved, press g` when the pull request
-moved on. Folded below it are the description and the discussion.
+moved on. Folded below it are the description and the discussion; a
+Discussion Comment you just posted shows there, marked `sent`, until
+forge has pulled it.
 
 Large diffs stay fast. The first files, up to `prrr-eager-files` files or
 `prrr-eager-lines` changed lines, are shown expanded. Every other file

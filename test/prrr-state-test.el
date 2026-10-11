@@ -1251,6 +1251,14 @@ A reply that carries no commit (queued before replies did) implies none."
       (should (string-match-p "drop it with O k" problem))
       (should-not (string-match-p "C-c C-i" problem)))))
 
+(ert-deftest prrr-state-test-unpulled-posts ()
+  "A posted Discussion Comment shows until forge lists its database id."
+  (let ((posted '((:database-id 5001 :body "One.") (:database-id 5002 :body "Two."))))
+    (should (equal posted (prrr-state-unpulled-posts posted nil)))
+    (should (equal '((:database-id 5002 :body "Two."))
+                   (prrr-state-unpulled-posts posted '(4000 5001))))
+    (should-not (prrr-state-unpulled-posts posted '(5002 5001)))))
+
 (ert-deftest prrr-state-test-review-commit-problem ()
   (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))

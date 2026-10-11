@@ -629,7 +629,9 @@ away from the one shown (`prrr-state-head-notice')."
   "Insert the header of PULLREQ's Review Buffer.
 The title, a status line (`prrr-diff--status-line' of VIEW and DATA),
 and hidden `description' and `discussion' sections.  The discussion
-ends with DATA's unsent Discussion Comments."
+lists forge's posts, then the Discussion Comments GitHub accepted that
+forge has not pulled yet (`prrr-sync-posted-discussion'), then DATA's
+unsent ones."
   (magit-insert-section (prrr-header)
     (magit-insert-heading
       (propertize (format "#%d %s" (oref pullreq number) (oref pullreq title))
@@ -642,14 +644,18 @@ ends with DATA's unsent Discussion Comments."
       (if (string-empty-p (string-trim (or (oref pullreq body) "")))
           (prrr-diff--insert-note "No description")
         (forge-insert-post pullreq nil)))
-    (let ((posts (prrr-diff--posts pullreq))
-          (unsent (plist-get data :discussion)))
+    (let* ((posts (prrr-diff--posts pullreq))
+           (sent (prrr-sync-posted-discussion (oref pullreq their-id) posts))
+           (unsent (plist-get data :discussion)))
       (magit-insert-section section (discussion nil t)
         ;; Without this, forge's `forge-discussion-section-map' applies.
         (oset section keymap nil)
-        (magit-insert-heading (format "Discussion (%d)" (+ (length posts) (length unsent))))
+        (magit-insert-heading (format "Discussion (%d)"
+                                      (+ (length posts) (length sent) (length unsent))))
         (dolist (post posts)
           (forge-insert-post post pullreq))
+        (dolist (post sent)
+          (prrr-thread-insert-sent-post (plist-get post :body)))
         (pcase-dolist (`(,_id ,body ,row) unsent)
           (prrr-thread-insert-unsent-post body row))))
     (insert "\n")))

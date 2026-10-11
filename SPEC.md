@@ -156,7 +156,7 @@ comments page through `node(id:)`.
 | Reply inside Pending Review             | `addPullRequestReviewThreadReply(pullRequestReviewThreadId, pullRequestReviewId, body)`                                                            |
 | Immediate Publish of one Review Comment | REST `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` = head, `path`, `line`, `side`, optional `start_line`, `start_side`, `subject_type` |
 | Immediate reply                         | REST `POST /repos/{o}/{r}/pulls/{n}/comments/{id}/replies`                                                                                         |
-| Discussion Comment                      | `addComment(subjectId: <PR node id>, body)`                                                                                                        |
+| Discussion Comment                      | `addComment(subjectId: <PR node id>, body)`, selecting `commentEdge.node { id databaseId createdAt }`                                              |
 | Edit / delete a comment                 | `updatePullRequestReviewComment` / `deletePullRequestReviewComment`                                                                                |
 | Submit                                  | `submitPullRequestReview(pullRequestReviewId, event: APPROVE \| REQUEST_CHANGES \| COMMENT, body)`; without a Pending Review, `addPullRequestReview` with the event                                                 |
 | Discard Pending Review                  | `deletePullRequestReview`                                                                                                                          |
@@ -259,7 +259,8 @@ Threads whose anchor is not in the current Range go into a folded
 `not-in-range` section at the end of the file; outdated Threads into a
 folded `outdated` section; Threads on files no longer in the diff into a
 buffer-level folded `outdated-files` section. The header holds folded
-`description` and `discussion` sections (forge's `body` and `posts`) and a
+`description` and `discussion` sections (forge's `body` and `posts`, then
+the Discussion Comments forge has not pulled yet, sent and unsent) and a
 one-line status: PR, Range, "history rewritten" when the Range's start
 is not an ancestor of its end, Pending Review count, Outbox count,
 refresh state, and "head moved, press g" when applicable.
@@ -351,7 +352,13 @@ in the PR's queued writes, so a reply to a Thread not yet sent goes
 out once the Thread has GitHub's id. A success that answers after its
 write was dropped stores nothing, since the refetch that follows shows
 what GitHub made, but still renames, so a command naming the local id
-from a buffer drawn before the drop reaches GitHub's. Edit or delete of a comment whose
+from a buffer drawn before the drop reaches GitHub's. A Discussion Comment is not in the review data but in forge's
+topic, which has it only once forge pulls the PR: GitHub's answer
+names the comment, and the Review Buffer shows it, marked sent, from a
+session-only list keyed by GitHub's database id until forge's topic
+lists a post with that id (forge is asked to pull the PR at once), so
+it is never missing and never shown twice. After a restart forge's
+next pull shows it. Edit or delete of a comment whose
 own write is still queued and not yet sent changes or drops that write.
 
 A write whose send started is *unconfirmed* until GitHub answers: it

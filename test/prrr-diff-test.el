@@ -1018,6 +1018,26 @@ FROM and TO are the texts of the lines."
       (should (string-match-p "Your Discussion Comment  failed: offline"
                               (prrr-diff-test--text discussion))))))
 
+(ert-deftest prrr-diff-test-header-shows-a-posted-discussion-comment ()
+  "A Discussion Comment GitHub accepted shows until forge lists it, never twice."
+  (let ((prrr-sync--posted (make-hash-table :test #'equal)))
+    (puthash prrr-diff-test--pr (list (list :database-id 5001 :body "Posted."))
+             prrr-sync--posted)
+    (prrr-diff-test--with-buffer nil
+      (let ((text (prrr-diff-test--text
+                   (magit-get-section '((discussion) (prrr-header) (diffbuf))))))
+        (should (string-match-p "\\`Discussion (1)" text))
+        (should (string-match-p "Your Discussion Comment  sent" text))
+        (should (string-match-p "Posted\\." text))))
+    (let ((prrr-diff-test--posts
+           (list (forge-pullreq-post :id "post-1" :number 5001 :author "example-me"
+                                     :created "2026-10-10T12:05:00Z" :body "Posted."))))
+      (prrr-diff-test--with-buffer nil
+        (let ((text (prrr-diff-test--text
+                     (magit-get-section '((discussion) (prrr-header) (diffbuf))))))
+          (should (string-match-p "\\`Discussion (1)" text))
+          (should-not (string-match-p "Your Discussion Comment" text)))))))
+
 ;;;; Ranges
 
 (defun prrr-diff-test--rev (rev)

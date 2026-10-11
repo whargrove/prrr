@@ -131,6 +131,19 @@ A section of type `unsent-post' whose value is ROW's id."
       "\n")
     (prrr-thread--insert-body body nil)))
 
+(defun prrr-thread-insert-sent-post (body)
+  "Insert the Discussion Comment BODY that GitHub accepted from the Outbox.
+For one forge has not pulled yet (`prrr-sync-posted-discussion').  A
+section of type `sent-post'; no command acts on it, since the Outbox
+holds it no more."
+  (magit-insert-section (sent-post)
+    (magit-insert-heading
+      prrr-thread-indent
+      (propertize "Your Discussion Comment" 'font-lock-face 'prrr-comment-author)
+      (propertize "  sent" 'font-lock-face 'magit-dimmed)
+      "\n")
+    (prrr-thread--insert-body body nil)))
+
 (defun prrr-thread--heading (thread comments with-path writes)
   "Return the heading line of THREAD, which holds COMMENTS.
 WITH-PATH non-nil puts the file before the location; WRITES is as for

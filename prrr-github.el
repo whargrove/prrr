@@ -34,9 +34,10 @@
 ;; `prrr-github-error'; ghub's own error shapes never leave this file.
 ;; Writes are here too.  Most go through `forge-mutate' or
 ;; `forge-rest'.  `forge-mutate' selects only clientMutationId, so the
-;; three mutations whose answer prrr reads (creating the Pending
-;; Review, a Thread, a reply) go through `prrr-github--mutate', which
-;; calls `ghub-query' with forge's token as `forge-query' does.
+;; four mutations whose answer prrr reads (creating the Pending
+;; Review, a Thread, a reply, a Discussion Comment) go through
+;; `prrr-github--mutate', which calls `ghub-query' with forge's token
+;; as `forge-query' does.
 
 ;;; Code:
 
@@ -497,7 +498,14 @@ Variables: $owner, $name, $number and $me.")
     '(mutation (addPullRequestReviewThreadReply
                 [(input $input AddPullRequestReviewThreadReplyInput!)]
                 (comment id createdAt fullDatabaseId)))
-    "Add a reply to a Thread in a Pending Review; selects the new comment."))
+    "Add a reply to a Thread in a Pending Review; selects the new comment.")
+
+  (defconst prrr-github-add-comment-mutation
+    '(mutation (addComment [(input $input AddCommentInput!)]
+                 (commentEdge (node id databaseId createdAt))))
+    "Post a Discussion Comment; selects the new comment.
+databaseId, not fullDatabaseId: forge stores that one as the number of
+its post."))
 
 (defun prrr-github--mutate (host document input decode callback errorback)
   "Send the GraphQL mutation DOCUMENT to HOST with INPUT as its $input.
@@ -661,11 +669,19 @@ ERRORBACK receives a failure if CALLBACK's caller signals."
 
 (defun prrr-github-add-discussion-comment (host pr-id body callback errorback)
   "Post BODY as a Discussion Comment on the PR with node id PR-ID on HOST.
-CALLBACK receives no argument; ERRORBACK a failure classified by
-`prrr-github-error'."
-  (forge-mutate host addComment ((subjectId pr-id) (body body))
-    :callback (prrr-github--ignore-answer callback errorback)
-    :errorback (prrr-github--errorback errorback)))
+CALLBACK receives (:comment-id :database-id :created-at) of the new
+comment; :database-id is the integer forge stores as the post's
+number, so the Review Buffer can tell when forge has pulled it.
+ERRORBACK receives a failure classified by `prrr-github-error'."
+  (prrr-github--mutate
+   host prrr-github-add-comment-mutation
+   (prrr-github--input 'subjectId pr-id 'body body)
+   (lambda (data)
+     (let-alist (alist-get 'addComment data)
+       (list :comment-id (prrr-github--created .commentEdge.node.id)
+             :database-id .commentEdge.node.databaseId
+             :created-at .commentEdge.node.createdAt)))
+   callback errorback))
 
 (defun prrr-github-edit-comment (host comment-id body callback errorback)
   "Make BODY the text of the review comment COMMENT-ID on HOST.

@@ -1093,6 +1093,15 @@ behind it is judged by the Outbox against the review found then."
                        (plist-get (prrr-outbox-payload row) :commit)))
                 (plist-get data :outbox))))
 
+(defun prrr-state-unpulled-posts (posted numbers)
+  "Return the POSTED Discussion Comments that forge does not list yet.
+POSTED are plists with :database-id, GitHub's database id of each
+Discussion Comment GitHub accepted from the Outbox; NUMBERS are the
+database ids of the PR's Discussion Comments that forge lists.  A
+posted comment shows until forge lists it and no longer, so it is
+never missing from the Review Buffer and never there twice."
+  (seq-remove (lambda (post) (member (plist-get post :database-id) numbers)) posted))
+
 (defun prrr-state-outbox-commit-problem (review-commit commit)
   "Return why the Outbox cannot send a new Thread on COMMIT, or nil.
 REVIEW-COMMIT is the commit of the Pending Review it would join.  The

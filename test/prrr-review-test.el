@@ -222,7 +222,7 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
       (should-not prrr-test-requests))))
 
 (ert-deftest prrr-review-test-discussion-comment ()
-  (prrr-review-test--with-buffer '((addComment . ((data (addComment (clientMutationId))))))
+  (prrr-review-test--with-buffer `((addComment . ,(prrr-test-fixture "add-comment")))
     (let ((pulled nil))
       (cl-letf (((symbol-function 'forge-pull-topic) (lambda (topic) (interactive) (setq pulled topic))))
         (prrr-discussion-comment)

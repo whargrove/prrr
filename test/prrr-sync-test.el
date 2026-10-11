@@ -1311,7 +1311,7 @@ The Pending Review is the review-data fixture's.  Return the row of the write."
   (prrr-db-with-test-db
     (prrr-test-with-outbox
       (prrr-sync-test--discussion-awaiting-user)
-      (prrr-test-with-ghub-dispatch '((addComment . ((data (addComment (clientMutationId))))))
+      (prrr-test-with-ghub-dispatch `((addComment . ,(prrr-test-fixture "add-comment")))
         (prrr-sync-retry prrr-sync-test--pr)
         (should-not prrr-test-requests)
         (prrr-sync-resend prrr-sync-test--pr)
@@ -1354,13 +1354,31 @@ The Pending Review is the review-data fixture's.  Return the row of the write."
           (setq-local forge-buffer-topic 'example-topic)
           (cl-letf (((symbol-function 'forge-pull-topic)
                      (lambda (topic) (interactive) (setq pulled topic))))
-            (prrr-test-with-ghub-dispatch '((addComment . ((data (addComment (clientMutationId))))))
+            (prrr-test-with-ghub-dispatch `((addComment . ,(prrr-test-fixture "add-comment")))
               (prrr-sync-write (prrr-sync-test--repo) (prrr-sync-test--pullreq) 'discussion
                                '(:body "Thanks!") (current-buffer))
               (should (equal prrr-sync-test--pr
                              (alist-get 'subjectId (prrr-sync-test--input 'addComment)))))))
         (should (eq 'example-topic pulled))
         (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-discussion-shows-until-forge-has-it ()
+  "A posted Discussion Comment stays visible until forge's topic lists it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch `((addComment . ,(prrr-test-fixture "add-comment")))
+        (prrr-sync-test--write 'discussion '(:body "Thanks!")))
+      (should-not (prrr-db-outbox-rows))
+      (should-not (plist-get (prrr-sync-review-data prrr-sync-test--pr) :discussion))
+      (let ((posted (prrr-sync-posted-discussion prrr-sync-test--pr nil)))
+        (should (equal '(("Thanks!" 5001))
+                       (mapcar (lambda (post) (list (plist-get post :body)
+                                                    (plist-get post :database-id)))
+                               posted))))
+      (should (prrr-sync-posted-discussion
+               prrr-sync-test--pr (list (forge-pullreq-post :id "other" :number 4001))))
+      (should-not (prrr-sync-posted-discussion
+                   prrr-sync-test--pr (list (forge-pullreq-post :id "p" :number 5001)))))))
 
 (ert-deftest prrr-sync-test-outbox-edit-amends-an-unsent-comment ()
   "Review Focus 3: editing what GitHub has not got changes the queued write."

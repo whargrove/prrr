@@ -893,13 +893,46 @@ what a refetch found (`prrr-state-outbox-landed'): the same shape
 either way.  ROW leaves the Outbox, what it made or changed is stored
 \(`prrr-sync--outbox-outcome'), and the local ids it created are
 renamed to GitHub's in the PR's queued writes and in
-`prrr-sync--renames'.  A Discussion Comment has forge pull the PR,
-where it shows.  The caller refreshes buffers and pumps."
+`prrr-sync--renames'.  A Discussion Comment shows until forge has
+pulled it (`prrr-sync--outbox-record-post').  The caller refreshes
+buffers and pumps."
   (let ((outcome (prrr-sync--outbox-outcome row result)))
     (apply #'prrr-db-outbox-done (prrr-outbox-id row) outcome)
     (prrr-sync--learn-renames (plist-get outcome :renames)))
+  (prrr-sync--outbox-record-post row result))
+
+(defvar prrr-sync--posted (make-hash-table :test #'equal)
+  "Hash table from PR id to the Discussion Comments the Outbox posted to it.
+Each is a plist with :comment-id, :database-id, :body and :created-at,
+oldest first.  Review data does not hold Discussion Comments, forge's
+topic does, and only once forge pulls the PR; until then the Review
+Buffer shows them from here (`prrr-sync-posted-discussion').  It lives
+for the session only: after a restart forge's next pull shows them.")
+
+(defun prrr-sync--outbox-record-post (row result)
+  "Keep showing the Discussion Comment the write ROW posted, if it is one.
+RESULT is GitHub's answer, which names the new comment.  The comment
+is remembered in `prrr-sync--posted' and forge is asked to pull the
+PR, where it shows once pulled."
   (when (eq (prrr-outbox-kind row) 'discussion)
-    (prrr-sync--pull-topic (prrr-outbox-pr-id row))))
+    (let ((pr-id (prrr-outbox-pr-id row)))
+      (puthash pr-id
+               (append (gethash pr-id prrr-sync--posted)
+                       (list (list :comment-id (plist-get result :comment-id)
+                                   :database-id (plist-get result :database-id)
+                                   :body (plist-get (prrr-outbox-payload row) :body)
+                                   :created-at (plist-get result :created-at))))
+               prrr-sync--posted)
+      (prrr-sync--pull-topic pr-id))))
+
+(defun prrr-sync-posted-discussion (pr-id posts)
+  "Return the Discussion Comments posted to PR-ID that POSTS do not list yet.
+POSTS are forge's posts of the PR (`forge-pullreq-post').  Each is a
+plist with :comment-id, :database-id, :body and :created-at, oldest
+first: what GitHub accepted from the Outbox this session and forge has
+not pulled yet (`prrr-state-unpulled-posts')."
+  (when-let* ((posted (gethash pr-id prrr-sync--posted)))
+    (prrr-state-unpulled-posts posted (mapcar (lambda (post) (oref post number)) posts))))
 
 (defun prrr-sync--outbox-record-renames (row result)
   "Learn GitHub's ids of what the write ROW created, as RESULT names them.
@@ -918,15 +951,17 @@ a buffer drawn before the drop, still reaches what GitHub made."
 A late answer, after the watchdog ended the send, is still recorded
 when the write is queued and not being sent again: it did happen.
 One for a write dropped meanwhile records only its renames
-\(`prrr-sync--outbox-record-renames').  The PR is refetched in any
-case, so it shows what GitHub has."
+\(`prrr-sync--outbox-record-renames') and, for a Discussion Comment,
+the comment it posted (`prrr-sync--outbox-record-post').  The PR is
+refetched in any case, so it shows what GitHub has."
   (let ((id (prrr-outbox-id row))
         (pr-id (prrr-outbox-pr-id row)))
     (when (prrr-sync--outbox-current-p token)
       (setq prrr-sync--outbox-sending nil))
     (cond ((equal id (prrr-sync--sending-id))) ; sent again: its own answer records it
           ((prrr-db-get 'outbox id) (prrr-sync--outbox-record-success row result))
-          (t (prrr-sync--outbox-record-renames row result)))
+          (t (prrr-sync--outbox-record-renames row result)
+             (prrr-sync--outbox-record-post row result)))
     ;; Even a write discarded meanwhile changed GitHub: refetch to show it.
     (prrr-sync--outbox-mark-dirty row)
     (prrr-sync--outbox-changed pr-id)
