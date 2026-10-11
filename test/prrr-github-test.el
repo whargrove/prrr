@@ -383,5 +383,31 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
                (lambda (&rest keys) (and (equal keys '("github.user")) "example-me"))))
       (should (equal "example-me" (prrr-github-viewer))))))
 
+;;;; Mutations
+
+(ert-deftest prrr-github-test-set-viewed-sends-mark ()
+  (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
+    (let ((done nil))
+      (prrr-github-set-viewed "api.github.com" "PR_1" "src/a.el" t
+                              (lambda () (setq done t)) (lambda (_) (ert-fail "errorback")))
+      (should done)
+      (should (eq 'mutation (car (car captured))))
+      (should (eq 'markFileAsViewed (car (cadr (car captured)))))
+      (should (equal '((input (pullRequestId . "PR_1") (path . "src/a.el")))
+                     (cadr captured))))))
+
+(ert-deftest prrr-github-test-set-viewed-sends-unmark ()
+  (prrr-test-with-ghub-stub '((data (unmarkFileAsViewed (clientMutationId)))) captured
+    (prrr-github-set-viewed "api.github.com" "PR_1" "src/a.el" nil #'ignore #'ignore)
+    (should (eq 'unmarkFileAsViewed (car (cadr (car captured)))))))
+
+(ert-deftest prrr-github-test-set-viewed-failure-reaches-errorback ()
+  (prrr-test-with-ghub-error-stub '(error http 401) nil
+    (let ((failure nil))
+      (prrr-github-set-viewed "api.github.com" "PR_1" "src/a.el" t
+                              (lambda () (ert-fail "callback"))
+                              (lambda (f) (setq failure f)))
+      (should (eq 'auth (plist-get failure :kind))))))
+
 (provide 'prrr-github-test)
 ;;; prrr-github-test.el ends here
