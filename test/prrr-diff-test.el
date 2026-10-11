@@ -810,5 +810,101 @@ Thread, where section keymaps apply on top of the mode's."
       (should-error (magit-refresh-buffer)))
     (should-not magit-section-inhibit-markers)))
 
+;;;; Anchors
+
+(defun prrr-diff-test--goto-line (path text)
+  "Move to the diff line of PATH that reads TEXT, expanding PATH."
+  (prrr-diff-test--hunks path)
+  (goto-char (oref (prrr-diff-test--file-section path) start))
+  (re-search-forward (concat "^" (regexp-quote text) "$"))
+  (goto-char (line-beginning-position)))
+
+(defmacro prrr-diff-test--with-region (from to &rest body)
+  "Run BODY with the region over the lines FROM to TO of src/example.el.
+FROM and TO are the texts of the lines."
+  (declare (indent 2))
+  `(let ((transient-mark-mode t))
+     (prrr-diff-test--goto-line "src/example.el" ,from)
+     (push-mark (point) t t)
+     (prrr-diff-test--goto-line "src/example.el" ,to)
+     (goto-char (line-end-position))
+     ,@body))
+
+(ert-deftest prrr-diff-test-anchor-added-line ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--goto-line "src/example.el" "+line twelve")
+    (should (equal '(:path "src/example.el" :line 12 :side right :subject-type line)
+                   (prrr-diff-anchor)))))
+
+(ert-deftest prrr-diff-test-anchor-removed-line-is-left ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--goto-line "src/example.el" "-line 12")
+    (should (equal '(:path "src/example.el" :line 12 :side left :subject-type line)
+                   (prrr-diff-anchor)))))
+
+(ert-deftest prrr-diff-test-anchor-context-line ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--goto-line "src/example.el" " line 13")
+    (should (equal '(:path "src/example.el" :line 13 :side right :subject-type line)
+                   (prrr-diff-anchor)))))
+
+(ert-deftest prrr-diff-test-anchor-region-is-a-range ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--with-region " line 10" "+line twelve"
+      (should (equal '(:path "src/example.el" :line 12 :side right
+                       :start-line 10 :start-side right :subject-type line)
+                     (prrr-diff-anchor))))))
+
+(ert-deftest prrr-diff-test-anchor-region-ending-at-a-line-start ()
+  "A region that ends where a line starts covers the lines before it."
+  (prrr-diff-test--with-buffer nil
+    (let ((transient-mark-mode t))
+      (prrr-diff-test--goto-line "src/example.el" " line 10")
+      (push-mark (point) t t)
+      (prrr-diff-test--goto-line "src/example.el" "+line twelve")
+      (should (equal '(:path "src/example.el" :line 12 :side left
+                       :start-line 10 :start-side right :subject-type line)
+                     (prrr-diff-anchor))))))
+
+(ert-deftest prrr-diff-test-anchor-across-hunks-refused ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--with-region "+line twelve" "+line thirty"
+      (should-error (prrr-diff-anchor) :type 'user-error))))
+
+(ert-deftest prrr-diff-test-anchor-in-a-thread ()
+  "Point in a Thread anchors to the diff line the Thread follows."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let ((hunk (car (prrr-diff-test--hunks "src/example.el"))))
+      (goto-char (oref (car (oref hunk children)) start))
+      (forward-line 1)
+      (should (equal '(:path "src/example.el" :line 12 :side right :subject-type line)
+                     (prrr-diff-anchor))))))
+
+(ert-deftest prrr-diff-test-anchor-off-diff-lines ()
+  (prrr-diff-test--with-buffer nil
+    (let ((hunk (car (prrr-diff-test--hunks "src/example.el")))
+          (file (prrr-diff-test--file-section "src/example.el")))
+      (goto-char (oref hunk start))
+      (should-error (prrr-diff-anchor) :type 'user-error)
+      (goto-char (oref file start))
+      (should-error (prrr-diff-anchor) :type 'user-error)
+      (should (equal '(:path "src/example.el" :subject-type file) (prrr-diff-file-anchor))))))
+
+(ert-deftest prrr-diff-test-region-lines-skip-threads ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (prrr-diff-test--with-region " line 11" " line 13"
+      (should (equal '((?\s . "line 11") (?- . "line 12") (?+ . "line twelve") (?\s . "line 13"))
+                     (prrr-diff-region-lines))))))
+
+(ert-deftest prrr-diff-test-thread-and-comment-at-point ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let* ((hunk (car (prrr-diff-test--hunks "src/example.el")))
+           (thread (car (oref hunk children))))
+      (goto-char (oref thread start))
+      (should (equal "PRRT_kwDOexample0000001" (prrr-thread-thread-id (prrr-diff-thread-at-point))))
+      (should-not (prrr-diff-comment-at-point))
+      (goto-char (oref (cadr (oref thread children)) start))
+      (should (equal "PRRC_kwDOexample0000002" (prrr-comment-comment-id (prrr-diff-comment-at-point))))
+      (should (equal "PRRT_kwDOexample0000001" (prrr-thread-thread-id (prrr-diff-thread-at-point)))))))
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

@@ -729,5 +729,58 @@ DATA's structs are never changed."
     (list :threads threads :comments comments :pending-review pending :viewed viewed
           :outbox rows :writes writes :discussion (nreverse discussion) :submit submit)))
 
+;;;; Anchors
+
+(defun prrr-state-anchor (path first last)
+  "Return the anchor of a comment on the diff lines FIRST to LAST of PATH.
+FIRST and LAST describe one diff line each, as (HUNK KIND OLD NEW):
+HUNK identifies its hunk (compared with `eq'), KIND is the line's
+first character (?+, ?- or ?\\s), OLD and NEW its numbers in the old
+and new file, nil on a side the line is not on.  LAST may equal FIRST.
+The anchor is a plist (:path :line :side :start-line :start-side
+:subject-type line): a removed line is on the `left' side at its old
+number, any other line on the `right' side at its new number; LAST
+gives :line and :side, and FIRST, when it is another line, :start-line
+and :start-side (SPEC section 7).  Signal a `user-error' when either
+line is not a diff line or the two are in different hunks."
+  (pcase-let ((`(,hunk ,kind ,old ,new) first)
+              (`(,last-hunk ,last-kind ,last-old ,last-new) last))
+    (unless (and (memq kind '(?+ ?- ?\s)) (memq last-kind '(?+ ?- ?\s)))
+      (user-error "Not on a diff line"))
+    (unless (eq hunk last-hunk)
+      (user-error "A comment can span the lines of one hunk only"))
+    (let ((side (if (eq last-kind ?-) 'left 'right))
+          (line (if (eq last-kind ?-) last-old last-new))
+          (start-side (if (eq kind ?-) 'left 'right))
+          (start (if (eq kind ?-) old new)))
+      (append (list :path path :line line :side side)
+              (unless (and (eq start-side side) (eql start line))
+                (list :start-line start :start-side start-side))
+              (list :subject-type 'line)))))
+
+(defun prrr-state-file-anchor (path)
+  "Return the anchor of a File Comment on PATH."
+  (list :path path :subject-type 'file))
+
+(defun prrr-state-anchor-label (anchor)
+  "Describe ANCHOR for a header, as \"src/a.el:3-5 right\" or \"src/a.el\"."
+  (let ((path (plist-get anchor :path))
+        (line (plist-get anchor :line))
+        (side (plist-get anchor :side))
+        (start (plist-get anchor :start-line))
+        (start-side (plist-get anchor :start-side)))
+    (cond ((eq (plist-get anchor :subject-type) 'file) path)
+          ((null start) (format "%s:%d %s" path line side))
+          ((eq start-side side) (format "%s:%d-%d %s" path start line side))
+          (t (format "%s:%d %s-%d %s" path start start-side line side)))))
+
+(defun prrr-state-suggestion-body (lines)
+  "Return a comment body suggesting a replacement for LINES.
+LINES are the commented diff lines as (KIND . TEXT).  Signal a
+`user-error' when one was removed, since a suggestion replaces lines of
+the new file."
+  (when (seq-some (lambda (line) (eq (car line) ?-)) lines)
+    (user-error "A suggestion replaces lines of the new file; the region has removed lines"))
+  (concat "```suggestion\n" (mapconcat #'cdr lines "\n") "\n```\n"))
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

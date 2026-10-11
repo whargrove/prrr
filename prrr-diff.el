@@ -661,6 +661,122 @@ The buffer shows \"refreshing…\" until the answer arrives, then redraws.
                                        "a refetch is running")
                    "try again shortly")))))
 
+(defun prrr-diff-head ()
+  "Return the oid of the head the current Review Buffer diffs to, or nil."
+  prrr-diff--head)
+
+(defun prrr-diff--hunk-of (section)
+  "Return the `hunk' section SECTION is in, or nil."
+  (while (and section (not (eq (oref section type) 'hunk)))
+    (setq section (oref section parent)))
+  section)
+
+(defun prrr-diff--line-at (pos)
+  "Describe the diff line at POS as (HUNK KIND OLD NEW TEXT), or nil.
+HUNK is the line's `hunk' section, KIND its first character, OLD and
+NEW its numbers in the old and new file (nil on a side it is not on),
+TEXT the line without KIND.  A position in a Thread counts as the diff
+line the Thread follows.  nil off a hunk and on a hunk's heading."
+  (save-excursion
+    (goto-char pos)
+    (goto-char (line-beginning-position))
+    (let* ((at (magit-section-at))
+           (hunk (prrr-diff--hunk-of at)))
+      (when hunk
+        (unless (eq at hunk)
+          (goto-char (oref at start))
+          (forward-line -1)
+          ;; Several Threads can follow one diff line: step past them.
+          (while (and (not (bobp)) (not (eq (magit-section-at) hunk)))
+            (forward-line -1)))
+        (when (>= (point) (oref hunk content))
+          (let ((target (point))
+                (old (car (oref hunk from-range)))
+                (new (car (oref hunk to-range))))
+            (goto-char (oref hunk content))
+            (catch 'found
+              (while (<= (point) target)
+                (when (eq (magit-section-at) hunk)
+                  (let ((kind (char-after)))
+                    (when (= (point) target)
+                      (throw 'found
+                             (list hunk kind
+                                   (and (memq kind '(?- ?\s)) old)
+                                   (and (memq kind '(?+ ?\s)) new)
+                                   (buffer-substring-no-properties
+                                    (min (1+ (point)) (line-end-position))
+                                    (line-end-position)))))
+                    (pcase kind
+                      (?\s (cl-incf old) (cl-incf new))
+                      (?- (cl-incf old))
+                      (?+ (cl-incf new)))))
+                (forward-line))
+              nil)))))))
+
+(defun prrr-diff--region-ends ()
+  "Return (BEG . END), the first and last position the comment commands use.
+The region's when it is active, else point twice.  A region ending at
+the start of a line ends on the line before."
+  (if (use-region-p)
+      (let ((beg (region-beginning))
+            (end (region-end)))
+        (cons beg (if (and (> end beg) (save-excursion (goto-char end) (bolp)))
+                      (1- end)
+                    end)))
+    (cons (point) (point))))
+
+(defun prrr-diff-anchor ()
+  "Return the anchor of a comment on the line at point or the region's lines.
+See `prrr-state-anchor'.  Signal a `user-error' off the diff's lines or
+across hunks."
+  (prrr-diff-pullreq)
+  (pcase-let* ((`(,beg . ,end) (prrr-diff--region-ends))
+               (first (or (prrr-diff--line-at beg)
+                          (user-error "Not on a diff line; C comments on the file")))
+               (last (or (prrr-diff--line-at end)
+                         (user-error "The region does not end on a diff line")))
+               (file (oref (car first) parent)))
+    (prrr-state-anchor (oref file value) (seq-take first 4) (seq-take last 4))))
+
+(defun prrr-diff-file-anchor ()
+  "Return the anchor of a File Comment on the file at point."
+  (prrr-diff-pullreq)
+  (prrr-state-file-anchor
+   (oref (or (prrr-diff--file-at-point) (user-error "No file here")) value)))
+
+(defun prrr-diff-region-lines ()
+  "Return the diff lines of the line at point or of the region, as (KIND . TEXT).
+Lines of Threads in between are left out."
+  (pcase-let* ((`(,beg . ,end) (prrr-diff--region-ends))
+               (lines nil))
+    (save-excursion
+      (goto-char beg)
+      (goto-char (line-beginning-position))
+      (while (<= (point) end)
+        (let ((line (and (prrr-diff--hunk-of (magit-section-at))
+                         (eq (magit-section-at) (prrr-diff--hunk-of (magit-section-at)))
+                         (prrr-diff--line-at (point)))))
+          (when line
+            (push (cons (nth 1 line) (nth 4 line)) lines)))
+        (forward-line)))
+    (nreverse lines)))
+
+(defun prrr-diff--section-of (types)
+  "Return the section around point whose type is one of TYPES, or nil."
+  (let ((section (magit-current-section)))
+    (while (and section (not (memq (oref section type) types)))
+      (setq section (oref section parent)))
+    section))
+
+(defun prrr-diff-thread-at-point ()
+  "Return the `prrr-thread' at point, as the buffer shows it, or nil."
+  (when-let ((section (prrr-diff--section-of '(thread file-comment))))
+    (gethash (oref section value) prrr-diff--threads)))
+
+(defun prrr-diff-comment-at-point ()
+  "Return the `prrr-comment' at point, as the buffer shows it, or nil."
+  (when-let ((section (prrr-diff--section-of '(review-comment))))
+    (gethash (oref section value) prrr-diff--comments)))
 ;;;; Commands
 
 (defun prrr-diff--files ()

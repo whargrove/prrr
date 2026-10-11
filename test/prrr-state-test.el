@@ -899,5 +899,41 @@
     (should (= 1 (length (plist-get view :threads))))
     (should (zerop (hash-table-count (plist-get view :writes))))))
 
+;;;; Anchors
+
+(ert-deftest prrr-state-test-anchor-one-line ()
+  (should (equal '(:path "a" :line 12 :side right :subject-type line)
+                 (prrr-state-anchor "a" '(h ?+ nil 12) '(h ?+ nil 12))))
+  (should (equal '(:path "a" :line 13 :side right :subject-type line)
+                 (prrr-state-anchor "a" '(h ?\s 13 13) '(h ?\s 13 13))))
+  (should (equal '(:path "a" :line 12 :side left :subject-type line)
+                 (prrr-state-anchor "a" '(h ?- 12 nil) '(h ?- 12 nil)))))
+
+(ert-deftest prrr-state-test-anchor-range ()
+  (should (equal '(:path "a" :line 12 :side right :start-line 9 :start-side right
+                   :subject-type line)
+                 (prrr-state-anchor "a" '(h ?\s 9 9) '(h ?+ nil 12))))
+  (should (equal '(:path "a" :line 12 :side right :start-line 12 :start-side left
+                   :subject-type line)
+                 (prrr-state-anchor "a" '(h ?- 12 nil) '(h ?+ nil 12)))))
+
+(ert-deftest prrr-state-test-anchor-refused ()
+  (should-error (prrr-state-anchor "a" '(h ?+ nil 12) '(g ?+ nil 30)) :type 'user-error)
+  (should-error (prrr-state-anchor "a" '(h ?\\ nil nil) '(h ?\\ nil nil)) :type 'user-error))
+
+(ert-deftest prrr-state-test-anchor-label ()
+  (should (equal "a:12 right" (prrr-state-anchor-label '(:path "a" :line 12 :side right))))
+  (should (equal "a:9-12 right"
+                 (prrr-state-anchor-label '(:path "a" :line 12 :side right
+                                            :start-line 9 :start-side right))))
+  (should (equal "a:12 left-12 right"
+                 (prrr-state-anchor-label '(:path "a" :line 12 :side right
+                                            :start-line 12 :start-side left))))
+  (should (equal "a" (prrr-state-anchor-label (prrr-state-file-anchor "a")))))
+
+(ert-deftest prrr-state-test-suggestion-body ()
+  (should (equal "```suggestion\nline twelve\nline 13\n```\n"
+                 (prrr-state-suggestion-body '((?+ . "line twelve") (?\s . "line 13")))))
+  (should-error (prrr-state-suggestion-body '((?- . "line 12"))) :type 'user-error))
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here
