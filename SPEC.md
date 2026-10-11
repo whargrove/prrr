@@ -54,14 +54,14 @@ depends only on the files above it.
 
 | File                | Purpose                                                                                                                      | Depends on                             |
 |---------------------|------------------------------------------------------------------------------------------------------------------------------|----------------------------------------|
-| `prrr.el`           | Package entry: `defgroup`, the commands shared by the Review Queue and Review Buffer (`prrr-open-topic`, `prrr-browse`, `prrr-checkout`; `prrr-review` arrives with the Review Buffer). Loads nothing else; every command is autoloaded. Options that belong to one file are defined in that file. | nothing at load time |
+| `prrr.el`           | Package entry: `defgroup`, the commands shared by the Review Queue and Review Buffer (`prrr-open-topic`, `prrr-browse`, `prrr-checkout`, `prrr-review`). Loads nothing else; every command is autoloaded. Options that belong to one file are defined in that file. | nothing at load time |
 | `prrr-db.el`        | SQLite schema, connection, struct types, CRUD.                                                                               | emacsql                                |
 | `prrr-github.el`    | Every GitHub call: GraphQL queries and mutations, REST calls, pagination, rate-limit pauses, response decoding into structs. | forge-query, forge-rest, ghub, prrr-db |
 | `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, forge, magit-mode |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
 | `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
 | `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync |
-| `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | magit-section, prrr-db                 |
+| `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | magit-section, magit-diff, prrr-db     |
 | `prrr-range.el`     | Range kinds, switching, since-review and since-opened computation, force-push handling.                                      | prrr-sync, prrr-diff                   |
 | `prrr-review.el`    | Pending Review lifecycle: add, edit, delete, reply, Immediate Publish, Submit with Verdict, discard.                         | prrr-github, prrr-sync, prrr-thread    |
 | `prrr-stack.el`     | Stack chain computation and navigation.                                                                                      | prrr-state, prrr-diff                  |
@@ -247,10 +247,18 @@ file list 65 ms at 417 files, 355 ms at 2,516; per-file wash 2 to 7 ms.
 Threads whose anchor is not in the current Range go into a folded
 `not-in-range` section at the end of the file; outdated Threads into a
 folded `outdated` section; Threads on files no longer in the diff into a
-buffer-level folded `outdated-files` section. A `discussion` section's keymap is cleared, since forge's `forge-discussion-section-map` would otherwise apply by type name. The header holds folded
+buffer-level folded `outdated-files` section. The header holds folded
 `description` and `discussion` sections (forge's `body` and `posts`) and a
 one-line status: PR, Range, Pending Review count, Outbox count, refresh
 state, and "head moved, press g" when applicable.
+
+**Section keymaps.** magit and forge give a section the keymap named after
+its type, and a section keymap wins over the mode's. A `discussion`
+section's keymap is cleared, since forge's `forge-discussion-section-map`
+would otherwise apply. `file` and `hunk` sections get
+`prrr-diff-file-section-map` and `prrr-diff-hunk-section-map`, children of
+magit's, in which every key a later milestone gives to prrr is `undefined`
+(magit's bind `C` to `magit-commit-add-log`).
 
 **Magit coupling.** prrr ships its own copy of `magit-diff-wash-hunk`
 (extended to insert `thread` children) and washes deferred files with
@@ -267,8 +275,14 @@ MELPA magit, so a magit change is found by the test suite, not by users.
 
 **Refresh.** `g` re-runs the open and preserves expanded files, folded
 Threads, and Viewed, through `magit-section-visibility-cache` restricted to
-the `file` and `thread` types. Viewed is read from the `viewed` table, never
-from the visibility cache. `G` (invalidate-and-refetch) additionally forces
+the `file`, `thread`, `file-comment`, `review-comment`, `description`,
+`discussion`, `not-in-range`, `outdated` and `outdated-files` types. The
+cache records only the user's toggles, so every other section starts as
+on open; every open refreshes once its refetch answers, so a type left out
+of the list loses its toggle seconds after the user makes it. Hunks are
+left out: they start shown and are named by line ranges, which change with
+the diff. Viewed is read from the `viewed` table, never from the
+visibility cache. `G` (invalidate-and-refetch) additionally forces
 the per-PR refetch.
 
 **Magit features that keep working.** `TAB`, `n`/`p`, `M-n`/`M-p`, `^`,

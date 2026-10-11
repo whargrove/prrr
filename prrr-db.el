@@ -389,7 +389,8 @@ absent from the table."
 DATA is the plist `prrr-github-decode-review-data' returns, or nil: its
 :threads, :comments, :pending-review and :viewed replace every
 `thread', `review-comment', `pending-review' and `viewed' row of PR-ID.
-One transaction.  The Outbox of milestone 4 keeps unsent rows here."
+One transaction.  Today every such row is replaced; milestone 4 will
+keep the Outbox's unsent rows here (bead prrr-8ok)."
   (let ((db (prrr-db)))
     (emacsql-with-transaction db
       (dolist (table '(thread review-comment pending-review viewed))
