@@ -166,15 +166,33 @@ nil when forge recorded no base commit or it is not in the repository."
 (defvar-local prrr-diff--file-threads nil
   "Hash table from path to its `prrr-file-threads'; set by each refresh.")
 
+(defvar-local prrr-diff--data nil
+  "The review data shown, from `prrr-sync-review-data'; set by each refresh.")
+
+(defvar-local prrr-diff--comments nil
+  "Hash table from comment id to the `prrr-comment' shown; set by each refresh.")
+
 ;;;; Washing
 
-(defun prrr-diff--insert-anchored (anchors side line comments)
+(defun prrr-diff--anchored-lines (thread right-lines)
+  "Return the text of THREAD's lines that RIGHT-LINES holds, in order.
+RIGHT-LINES maps new-file line numbers to their text."
+  (let ((line (prrr-thread-line thread)))
+    (delq nil (mapcar (lambda (number) (gethash number right-lines))
+                      (number-sequence (or (prrr-thread-start-line thread) line) line)))))
+
+(defun prrr-diff--insert-anchored (anchors side line comments right-lines)
   "Insert the Threads ANCHORS holds for LINE of SIDE, and remove them.
-COMMENTS maps Thread ids to their Review Comments."
+COMMENTS maps Thread ids to their Review Comments.  RIGHT-LINES maps
+the new-file numbers of the hunk's lines so far to their text, against
+which a right-side Thread's suggestions are shown."
   (when line
     (let ((key (cons side line)))
       (dolist (thread (gethash key anchors))
-        (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)))
+        (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
+                            :writes (plist-get prrr-diff--data :writes)
+                            :lines (and (eq side 'right)
+                                        (prrr-diff--anchored-lines thread right-lines))))
       (remhash key anchors))))
 
 (defun prrr-diff--wash-hunk (anchors comments)
@@ -194,7 +212,8 @@ there was a hunk."
            (about (match-string 2))
            (combined (length= ranges 3))
            (old (car (car ranges)))
-           (new (car (car (last ranges)))))
+           (new (car (car (last ranges))))
+           (right-lines (and (> (hash-table-count anchors) 0) (make-hash-table))))
       (magit-delete-line)
       (magit-insert-section section (hunk (cons about ranges) nil
                                           :combined combined
@@ -210,9 +229,12 @@ there was a hunk."
               (?\s (setq old-line old new-line new) (cl-incf old) (cl-incf new))
               (?- (setq old-line old) (cl-incf old))
               (?+ (setq new-line new) (cl-incf new)))
+            (when (and right-lines new-line)
+              (puthash new-line (buffer-substring-no-properties (1+ (point)) (line-end-position))
+                       right-lines))
             (forward-line)
-            (prrr-diff--insert-anchored anchors 'left old-line comments)
-            (prrr-diff--insert-anchored anchors 'right new-line comments)))))
+            (prrr-diff--insert-anchored anchors 'left old-line comments right-lines)
+            (prrr-diff--insert-anchored anchors 'right new-line comments right-lines)))))
     t))
 
 (defun prrr-diff--insert-group (type title threads comments)
@@ -226,7 +248,8 @@ any file names each Thread's file."
                     'font-lock-face 'magit-section-secondary-heading))
       (dolist (thread threads)
         (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
-                            (eq type 'outdated-files))))))
+                            :with-path (eq type 'outdated-files)
+                            :writes (plist-get prrr-diff--data :writes))))))
 
 (defun prrr-diff--insert-note (text)
   "Insert TEXT as a dimmed, indented line."
@@ -245,7 +268,8 @@ becomes a one-line note."
   (let ((anchors (make-hash-table :test #'equal))
         (lines (and threads (prrr-file-threads-lines threads))))
     (dolist (thread (and threads (prrr-file-threads-file-comments threads)))
-      (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)))
+      (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
+                          :writes (plist-get prrr-diff--data :writes)))
     (dolist (thread lines)
       (let ((key (prrr-state-thread-anchor thread)))
         (puthash key (append (gethash key anchors) (list thread)) anchors)))
@@ -369,32 +393,45 @@ Buffer that child may be a File Comment."
 
 ;;;; Mode and refresh
 
-(defconst prrr-diff--later-keys
-  '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L")
-  "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
-They are `undefined' until then, so magit's commit, stage, discard or
-rebase never run from a Review Buffer.")
+(defconst prrr-diff--review-keys
+  '(("c" . prrr-comment) ("C" . prrr-comment-file) ("r" . prrr-reply)
+    ("e" . prrr-edit-comment) ("k" . prrr-delete-comment)
+    ("d" . prrr-discussion-comment) ("R" . prrr-toggle-resolved)
+    ("s" . prrr-comment-suggest)
+    ("S" . prrr-submit) ("O" . prrr-outbox))
+  "The commenting and reviewing keys of a Review Buffer (SPEC section 9).
+They are bound in the section keymaps too, which win over the mode's
+and in which magit binds several of them.")
 
-(defun prrr-diff--undefine-later-keys (map)
-  "Bind every key of `prrr-diff--later-keys' in MAP to `undefined'; return MAP."
+(defconst prrr-diff--later-keys
+  '("D" "." "m" ">" "<" "@" "L")
+  "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
+They are `undefined' until then, so magit's diff arguments or log never
+run from a Review Buffer.")
+
+(defun prrr-diff--bind-review-keys (map)
+  "Bind the review keys in MAP and make the later keys `undefined'; return MAP.
+They are `prrr-diff--review-keys' and `prrr-diff--later-keys'."
+  (pcase-dolist (`(,key . ,command) prrr-diff--review-keys)
+    (keymap-set map key command))
   (dolist (key prrr-diff--later-keys)
     (keymap-set map key #'undefined))
   map)
 
 (defvar prrr-diff-file-section-map
-  (prrr-diff--undefine-later-keys (define-keymap :parent magit-file-section-map))
+  (prrr-diff--bind-review-keys (define-keymap :parent magit-file-section-map))
   "Keymap of a Review Buffer's `file' sections.
 A section's keymap is a text property, which wins over
-`prrr-diff-mode-map'; magit's, which applies by type name, binds keys
-of `prrr-diff--later-keys' such as `C'.")
+`prrr-diff-mode-map'; magit's, which applies by type name,
+binds keys of `prrr-diff--review-keys' such as `C'.")
 
 (defvar prrr-diff-hunk-section-map
-  (prrr-diff--undefine-later-keys (define-keymap :parent magit-hunk-section-map))
+  (prrr-diff--bind-review-keys (define-keymap :parent magit-hunk-section-map))
   "Keymap of a Review Buffer's `hunk' sections.
 See `prrr-diff-file-section-map' for why it exists.")
 
 (defvar prrr-diff-mode-map
-  (prrr-diff--undefine-later-keys
+  (prrr-diff--bind-review-keys
    (define-keymap
      :parent magit-diff-mode-map
      "]" #'prrr-next-thread
@@ -414,8 +451,8 @@ See `prrr-diff-file-section-map' for why it exists.")
      "?" #'prrr-menu
      "C-o" #'prrr-menu))
   "Keys of the Review Buffer (SPEC section 9).
-The keys of `prrr-diff--later-keys' are `undefined' here and in the
-section keymaps.")
+The keys of `prrr-diff--review-keys' and `prrr-diff--later-keys' are bound
+here and in the section keymaps.")
 
 (define-derived-mode prrr-diff-mode magit-diff-mode "prrr"
   "Review one pull request: its diff with Threads inline.
@@ -506,14 +543,27 @@ Threads whose file is not in the diff."
   "Return the first seven characters of OID."
   (substring oid 0 (min 7 (length oid))))
 
+
+(defun prrr-diff--outbox-status (data)
+  "Describe the Outbox of the review DATA for the header, or return nil."
+  (let* ((outbox (plist-get data :outbox))
+         (failed (seq-count #'prrr-outbox-last-error outbox))
+         (unsent (- (length outbox) failed)))
+    (when outbox
+      (concat "Outbox: "
+              (string-join (delq nil (list (and (> unsent 0) (format "%d unsent" unsent))
+                                           (and (> failed 0) (format "%d failed, O to act" failed))))
+                           ", ")))))
+
 (defun prrr-diff--status-line (pullreq base head data)
   "Return the header's status line for PULLREQ.
 BASE and HEAD are the diffed oids, either may be nil; DATA is the
-stored review data.  Names the Range, the Pending Review's comments,
-what the last refetch said, and whether GitHub's head differs from the
-local one."
+review data shown.  Names the Range, the Pending Review's comments, the
+Outbox, a queued Submit, what the last refetch said, and whether
+GitHub's head differs from the local one."
   (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
          (github-head (plist-get status :head-oid))
+         (submit (plist-get data :submit))
          (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
                              (plist-get data :comments))))
     (string-join
@@ -522,8 +572,13 @@ local one."
                      (format "Range: default, %s..%s" (prrr-diff--short base)
                              (prrr-diff--short head))
                    "Range: unavailable")
-                 (and (plist-get data :pending-review)
+                 (and (or (plist-get data :pending-review) (> pending 0))
                       (format "Pending Review: %d comment%s" pending (if (= pending 1) "" "s")))
+                 (prrr-diff--outbox-status data)
+                 (and submit
+                      (format "submitting (%s)…"
+                              (plist-get (prrr-outbox-payload submit) :verdict)))
+                 (prrr-sync-outbox-describe)
                  (prrr-sync-describe status "refreshing…")
                  (and github-head head (not (equal github-head head))
                       (format "GitHub's head is %s: run forge-pull, then g"
@@ -533,7 +588,8 @@ local one."
 (defun prrr-diff--insert-header (pullreq base head data)
   "Insert the header of PULLREQ's Review Buffer.
 The title, a status line (`prrr-diff--status-line' of BASE, HEAD and
-DATA), and hidden `description' and `discussion' sections."
+DATA), and hidden `description' and `discussion' sections.  The
+discussion ends with DATA's unsent Discussion Comments."
   (magit-insert-section (prrr-header)
     (magit-insert-heading
       (propertize (format "#%d %s" (oref pullreq number) (oref pullreq title))
@@ -546,26 +602,35 @@ DATA), and hidden `description' and `discussion' sections."
       (if (string-empty-p (string-trim (or (oref pullreq body) "")))
           (prrr-diff--insert-note "No description")
         (forge-insert-post pullreq nil)))
-    (let ((posts (prrr-diff--posts pullreq)))
+    (let ((posts (prrr-diff--posts pullreq))
+          (unsent (plist-get data :discussion)))
       (magit-insert-section section (discussion nil t)
         ;; Without this, forge's `forge-discussion-section-map' applies.
         (oset section keymap nil)
-        (magit-insert-heading (format "Discussion (%d)" (length posts)))
+        (magit-insert-heading (format "Discussion (%d)" (+ (length posts) (length unsent))))
         (dolist (post posts)
-          (forge-insert-post post pullreq))))
+          (forge-insert-post post pullreq))
+        (pcase-dolist (`(,_id ,body ,row) unsent)
+          (prrr-thread-insert-unsent-post body row))))
     (insert "\n")))
 
 (defun prrr-diff-refresh-buffer ()
   "Insert the Review Buffer of `prrr-diff--pullreq' from git and the database.
-The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'."
+The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'.
+The review data is `prrr-sync-review-data''s: what GitHub sent, with
+the Outbox's writes applied."
   (let* ((pullreq prrr-diff--pullreq)
          (ref (prrr-diff--head-ref pullreq))
          (head (magit-rev-verify ref))
          (base (and head (prrr-diff--merge-base pullreq head)))
-         (data (prrr-db-review-data (oref pullreq their-id))))
+         (data (prrr-sync-review-data (oref pullreq their-id))))
     (setq prrr-diff--base base
           prrr-diff--head head
+          prrr-diff--data data
+          prrr-diff--comments (make-hash-table :test #'equal)
           magit-buffer-diff-range (and base (concat base ".." head)))
+    (dolist (comment (plist-get data :comments))
+      (puthash (prrr-comment-comment-id comment) comment prrr-diff--comments))
     ;; magit resets this to nil when the root section finishes; a
     ;; failed refresh must not leave later insertions without markers.
     (setq magit-section-inhibit-markers 'delay)
@@ -629,7 +694,7 @@ the buffer."
     (prrr-sync-refetch (forge-get-repository pullreq) pullreq buffer)
     (prrr-diff-setup-buffer pullreq)))
 
-(defun prrr-diff--require-pullreq ()
+(defun prrr-diff-pullreq ()
   "Return the current Review Buffer's pull request.
 Signal a `user-error' outside a Review Buffer."
   (or (and (derived-mode-p 'prrr-diff-mode) prrr-diff--pullreq)
@@ -641,7 +706,7 @@ Signal a `user-error' outside a Review Buffer."
 The buffer shows \"refreshing…\" until the answer arrives, then redraws.
 `g' redraws from the database without fetching."
   (interactive)
-  (let ((pullreq (prrr-diff--require-pullreq)))
+  (let ((pullreq (prrr-diff-pullreq)))
     (if (prrr-sync-refetch (forge-get-repository pullreq) pullreq (current-buffer))
         (magit-refresh-buffer)
       (message "Not refetching: %s"
@@ -649,6 +714,122 @@ The buffer shows \"refreshing…\" until the answer arrives, then redraws.
                                        "a refetch is running")
                    "try again shortly")))))
 
+(defun prrr-diff-head ()
+  "Return the oid of the head the current Review Buffer diffs to, or nil."
+  prrr-diff--head)
+
+(defun prrr-diff--hunk-of (section)
+  "Return the `hunk' section SECTION is in, or nil."
+  (while (and section (not (eq (oref section type) 'hunk)))
+    (setq section (oref section parent)))
+  section)
+
+(defun prrr-diff--line-at (pos)
+  "Describe the diff line at POS as (HUNK KIND OLD NEW TEXT), or nil.
+HUNK is the line's `hunk' section, KIND its first character, OLD and
+NEW its numbers in the old and new file (nil on a side it is not on),
+TEXT the line without KIND.  A position in a Thread counts as the diff
+line the Thread follows.  nil off a hunk and on a hunk's heading."
+  (save-excursion
+    (goto-char pos)
+    (goto-char (line-beginning-position))
+    (let* ((at (magit-section-at))
+           (hunk (prrr-diff--hunk-of at)))
+      (when hunk
+        (unless (eq at hunk)
+          (goto-char (oref at start))
+          (forward-line -1)
+          ;; Several Threads can follow one diff line: step past them.
+          (while (and (not (bobp)) (not (eq (magit-section-at) hunk)))
+            (forward-line -1)))
+        (when (>= (point) (oref hunk content))
+          (let ((target (point))
+                (old (car (oref hunk from-range)))
+                (new (car (oref hunk to-range))))
+            (goto-char (oref hunk content))
+            (catch 'found
+              (while (<= (point) target)
+                (when (eq (magit-section-at) hunk)
+                  (let ((kind (char-after)))
+                    (when (= (point) target)
+                      (throw 'found
+                             (list hunk kind
+                                   (and (memq kind '(?- ?\s)) old)
+                                   (and (memq kind '(?+ ?\s)) new)
+                                   (buffer-substring-no-properties
+                                    (min (1+ (point)) (line-end-position))
+                                    (line-end-position)))))
+                    (pcase kind
+                      (?\s (cl-incf old) (cl-incf new))
+                      (?- (cl-incf old))
+                      (?+ (cl-incf new)))))
+                (forward-line))
+              nil)))))))
+
+(defun prrr-diff--region-ends ()
+  "Return (BEG . END), the first and last position the comment commands use.
+The region's when it is active, else point twice.  A region ending at
+the start of a line ends on the line before."
+  (if (use-region-p)
+      (let ((beg (region-beginning))
+            (end (region-end)))
+        (cons beg (if (and (> end beg) (save-excursion (goto-char end) (bolp)))
+                      (1- end)
+                    end)))
+    (cons (point) (point))))
+
+(defun prrr-diff-anchor ()
+  "Return the anchor of a comment on the line at point or the region's lines.
+See `prrr-state-anchor'.  Signal a `user-error' off the diff's lines or
+across hunks."
+  (prrr-diff-pullreq)
+  (pcase-let* ((`(,beg . ,end) (prrr-diff--region-ends))
+               (first (or (prrr-diff--line-at beg)
+                          (user-error "Not on a diff line; C comments on the file")))
+               (last (or (prrr-diff--line-at end)
+                         (user-error "The region does not end on a diff line")))
+               (file (oref (car first) parent)))
+    (prrr-state-anchor (oref file value) (seq-take first 4) (seq-take last 4))))
+
+(defun prrr-diff-file-anchor ()
+  "Return the anchor of a File Comment on the file at point."
+  (prrr-diff-pullreq)
+  (prrr-state-file-anchor
+   (oref (or (prrr-diff--file-at-point) (user-error "No file here")) value)))
+
+(defun prrr-diff-region-lines ()
+  "Return the diff lines of the line at point or of the region, as (KIND . TEXT).
+Lines of Threads in between are left out."
+  (pcase-let* ((`(,beg . ,end) (prrr-diff--region-ends))
+               (lines nil))
+    (save-excursion
+      (goto-char beg)
+      (goto-char (line-beginning-position))
+      (while (<= (point) end)
+        (let ((line (and (prrr-diff--hunk-of (magit-section-at))
+                         (eq (magit-section-at) (prrr-diff--hunk-of (magit-section-at)))
+                         (prrr-diff--line-at (point)))))
+          (when line
+            (push (cons (nth 1 line) (nth 4 line)) lines)))
+        (forward-line)))
+    (nreverse lines)))
+
+(defun prrr-diff--section-of (types)
+  "Return the section around point whose type is one of TYPES, or nil."
+  (let ((section (magit-current-section)))
+    (while (and section (not (memq (oref section type) types)))
+      (setq section (oref section parent)))
+    section))
+
+(defun prrr-diff-thread-at-point ()
+  "Return the `prrr-thread' at point, as the buffer shows it, or nil."
+  (when-let ((section (prrr-diff--section-of '(thread file-comment))))
+    (gethash (oref section value) prrr-diff--threads)))
+
+(defun prrr-diff-comment-at-point ()
+  "Return the `prrr-comment' at point, as the buffer shows it, or nil."
+  (when-let ((section (prrr-diff--section-of '(review-comment))))
+    (gethash (oref section value) prrr-diff--comments)))
 ;;;; Commands
 
 (defun prrr-diff--files ()
@@ -678,20 +859,20 @@ file is one after point; after the last, the last is one before it."
 (defun prrr-next-file ()
   "Move to the next file of the diff."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (magit-section-goto (or (prrr-diff--file-near-point 1) (user-error "No next file"))))
 
 (defun prrr-previous-file ()
   "Move to the previous file of the diff."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (magit-section-goto (or (prrr-diff--file-near-point -1) (user-error "No previous file"))))
 
 (defun prrr-jump-to-file (path)
   "Move to the file PATH of the diff and expand it.
 Interactively, read PATH with completion over the diff's files."
   (interactive
-   (progn (prrr-diff--require-pullreq)
+   (progn (prrr-diff-pullreq)
           (list (completing-read "Jump to file: "
                                  (mapcar (lambda (file) (oref file value)) (prrr-diff--files))
                                  nil t))))
@@ -732,7 +913,7 @@ Only Threads whose `prrr-thread' satisfies WANTED count.  A file not
 washed yet is expanded when it holds such a Thread, and the target is
 revealed wherever it is folded.  Signal a `user-error' when there is
 none."
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   ;; HERE is a marker that advances with insertions at it: washing a file
   ;; above point (or one ending at point) must not leave HERE behind its
   ;; Threads.
@@ -792,7 +973,7 @@ none."
 (defun prrr-collapse-all ()
   "Fold every file of the diff."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (mapc #'magit-section-hide (prrr-diff--files)))
 
 (defconst prrr-diff--expand-all-quietly 100
@@ -803,32 +984,32 @@ none."
 Asks first when that means washing more than
 `prrr-diff--expand-all-quietly' files, which takes seconds."
   (interactive)
-  (prrr-diff--require-pullreq)
+  (prrr-diff-pullreq)
   (let* ((files (prrr-diff--files))
          (unwashed (seq-count (lambda (file) (oref file washer)) files)))
     (when (or (<= unwashed prrr-diff--expand-all-quietly)
               (y-or-n-p (format "Wash %d more files? " unwashed)))
       (mapc #'magit-section-show files))))
 
-(defun prrr-diff--viewed-p (pr-id path)
-  "Non-nil when PATH of PR-ID is stored as Viewed."
-  (let ((row (prrr-db-get 'viewed pr-id path)))
-    (and row (eq (prrr-viewed-state row) 'viewed))))
+(defun prrr-diff--viewed-p (path)
+  "Non-nil when the buffer shows PATH as Viewed."
+  (member path (prrr-diff--viewed-paths (plist-get prrr-diff--data :viewed))))
 
 (defun prrr-toggle-viewed ()
   "Mark the file at point Viewed on GitHub and fold it, or unmark it.
-Marking moves to the next file, as GitHub does."
+Marking moves to the next file, as GitHub does.  The change shows at
+once and reaches GitHub through the Outbox."
   (interactive)
-  (let* ((pullreq (prrr-diff--require-pullreq))
+  (let* ((pullreq (prrr-diff-pullreq))
          (file (or (prrr-diff--file-at-point) (user-error "No file here")))
          (path (oref file value))
-         (pr-id (oref pullreq their-id))
-         (viewed (not (prrr-diff--viewed-p pr-id path))))
+         (viewed (not (prrr-diff--viewed-p path))))
     ;; Folding first records the fold in the visibility cache, so the
     ;; refresh below agrees with the Viewed flag.
     (if viewed (magit-section-hide file) (magit-section-show file))
     (magit-section-goto file)
-    (prrr-sync-set-viewed (forge-get-repository pullreq) pr-id path viewed (current-buffer))
+    (prrr-sync-write (forge-get-repository pullreq) pullreq 'viewed
+                     (list :path path :viewed viewed) (current-buffer))
     (magit-refresh-buffer)
     (when-let ((next (and viewed (prrr-diff--file-near-point 1))))
       (magit-section-goto next))))

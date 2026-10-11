@@ -134,6 +134,17 @@
                                   "PR_kwDOexample0000001"
                                   "2026-10-10T12:00:00Z"))
 
+(ert-deftest prrr-github-test-decode-review-data-crlf-body ()
+  "Bodies written in GitHub's web UI end lines with CRLF; suggestions in them must still show."
+  (let* ((crlf "Try:\r\n```suggestion\r\n(when x\r\n```\r\n")
+         (data (cl-subst crlf "Typo in the title." (prrr-test-fixture "review-data")
+                         :test #'equal))
+         (comment (seq-find (lambda (c) (string-prefix-p "Try:" (prrr-comment-body c)))
+                            (plist-get (prrr-github-decode-review-data data "PR_1") :comments))))
+    (should (equal "Try:\n```suggestion\n(when x\n```\n" (prrr-comment-body comment)))
+    (should (equal '((text . "Try:") (suggestion "(when x"))
+                   (prrr-state-split-suggestions (prrr-comment-body comment))))))
+
 (ert-deftest prrr-github-test-decode-review-data-threads ()
   (let ((threads (plist-get (prrr-github-test--review-data) :threads)))
     (should (= 5 (length threads)))
@@ -408,6 +419,173 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
                               (lambda () (ert-fail "callback"))
                               (lambda (f) (setq failure f)))
       (should (eq 'auth (plist-get failure :kind))))))
+
+;;;; Writes
+
+(defconst prrr-github-test--anchor
+  '(:path "src/example.el" :line 12 :side right :start-line 10 :start-side right :subject-type line)
+  "A range anchor on the right side.")
+
+(ert-deftest prrr-github-test-decode-review-data-database-id-and-resolvable ()
+  (let ((data (prrr-github-decode-review-data (prrr-test-fixture "review-data") "PR_1")))
+    (should (equal "1001" (prrr-comment-database-id (car (plist-get data :comments)))))
+    (should (prrr-thread-resolvable-p (car (plist-get data :threads))))))
+
+(ert-deftest prrr-github-test-find-pending-review ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "pending-review") captured
+    (let ((found :none))
+      (prrr-github-find-pending-review "api.github.com" "example-org" "example-repo" 1 "example-me"
+                                       (lambda (review) (setq found review))
+                                       (lambda (f) (ert-fail f)))
+      (should (equal "PRR_kwDOexamplePending1" (prrr-pending-review-review-id found)))
+      (should (equal "PR_kwDOexample0000001" (prrr-pending-review-pr-id found)))
+      (should (equal "example-me" (alist-get 'me (cadr captured)))))))
+
+(ert-deftest prrr-github-test-find-pending-review-none ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "pending-review-none") captured
+    (let ((found :none))
+      (prrr-github-find-pending-review "api.github.com" "o" "n" 1 "me"
+                                       (lambda (review) (setq found review)) #'ert-fail)
+      (should (null found))
+      (should captured))))
+
+(ert-deftest prrr-github-test-create-pending-review ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "create-review") captured
+    (let ((review nil))
+      (prrr-github-create-pending-review "api.github.com" "PR_1" "1111" (lambda (r) (setq review r)) #'ert-fail)
+      (should (eq 'mutation (car (car captured))))
+      (should (equal '((input (pullRequestId . "PR_1") (commitOID . "1111"))) (cadr captured)))
+      (should (equal "PRR_kwDOexampleNew01" (prrr-pending-review-review-id review)))
+      (should (equal "PR_1" (prrr-pending-review-pr-id review))))))
+
+(ert-deftest prrr-github-test-add-thread-range ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-thread") captured
+    (let ((result nil))
+      (prrr-github-add-thread "api.github.com" "PRR_1" prrr-github-test--anchor "Nit."
+                              (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '((input (pullRequestReviewId . "PRR_1") (path . "src/example.el") (body . "Nit.")
+                              (line . 12) (side . "RIGHT") (startLine . 10) (startSide . "RIGHT")))
+                     (cadr captured)))
+      (should (equal '(:thread-id "PRRT_kwDOexampleNew01" :comment-id "PRRC_kwDOexampleNew01"
+                       :database-id "2001" :created-at "2026-10-10T12:00:00Z")
+                     result)))))
+
+(ert-deftest prrr-github-test-add-thread-file ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-thread") captured
+    (prrr-github-add-thread "api.github.com" "PRR_1" '(:path "a.el" :subject-type file) "Split."
+                            #'ignore #'ert-fail)
+    (should (equal '((input (pullRequestReviewId . "PRR_1") (path . "a.el") (body . "Split.")
+                            (subjectType . "FILE")))
+                   (cadr captured)))))
+
+(ert-deftest prrr-github-test-add-reply ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-reply") captured
+    (let ((result nil))
+      (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "Agreed." (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '((input (pullRequestReviewThreadId . "PRRT_1") (pullRequestReviewId . "PRR_1") (body . "Agreed.")))
+                     (cadr captured)))
+      (should (equal "PRRC_kwDOexampleNew02" (plist-get result :comment-id))))))
+
+(defconst prrr-github-test--created-nothing
+  '(:kind error :message "GitHub accepted the request but created nothing" :reset-at nil)
+  "The failure of a creation GitHub answered with a null payload.")
+
+(defmacro prrr-github-test--null-payload (answer call)
+  "Check that CALL, answered with ANSWER, fails as having created nothing.
+CALL is a function of a callback and an errorback that sends the request."
+  `(prrr-test-with-ghub-stub ,answer captured
+     (let ((failure nil))
+       (funcall ,call #'ert-fail (lambda (f) (setq failure f)))
+       (should captured)
+       (should (equal prrr-github-test--created-nothing failure)))))
+
+(ert-deftest prrr-github-test-add-thread-null-payload-is-a-failure ()
+  "A null Thread without errors must not count as success: the comment would be lost."
+  (dolist (answer '((data (addPullRequestReviewThread (thread)))
+                    (data (addPullRequestReviewThread))))
+    (prrr-github-test--null-payload answer
+      (lambda (callback errorback)
+        (prrr-github-add-thread "api.github.com" "PRR_1" prrr-github-test--anchor "Nit."
+                                callback errorback)))))
+
+(ert-deftest prrr-github-test-add-reply-null-payload-is-a-failure ()
+  (prrr-github-test--null-payload '(data (addPullRequestReviewThreadReply (comment)))
+    (lambda (callback errorback)
+      (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "x" callback errorback))))
+
+(ert-deftest prrr-github-test-create-review-null-payload-is-a-failure ()
+  (prrr-github-test--null-payload '(data (addPullRequestReview (pullRequestReview)))
+    (lambda (callback errorback)
+      (prrr-github-create-pending-review "api.github.com" "PR_1" "1111" callback errorback))))
+
+(ert-deftest prrr-github-test-write-failure-reaches-errorback ()
+  (prrr-test-with-ghub-error-stub '(errors ((type . "UNPROCESSABLE") (message . "one pending review"))) nil
+    (let ((failure nil))
+      (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "x" #'ert-fail (lambda (f) (setq failure f)))
+      (should (equal '(:kind error :message "one pending review" :reset-at nil) failure)))))
+
+(ert-deftest prrr-github-test-error-http-422-is-a-refusal ()
+  (should (equal '(:kind error :message "GitHub refused: Validation Failed (line must be part of the diff)" :reset-at nil)
+                 (prrr-github-error '(error http 422 ((message . "Validation Failed")
+                                                      (errors ((message . "line must be part of the diff")))))))))
+
+(ert-deftest prrr-github-test-publish-comment ()
+  (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+    (let ((result nil))
+      (prrr-github-publish-comment "api.github.com" "example-org" "example-repo" 1 "1111"
+                                   prrr-github-test--anchor "Now." (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '("POST" "/repos/example-org/example-repo/pulls/1/comments"
+                       ((body . "Now.") (commit_id . "1111") (path . "src/example.el") (line . 12)
+                        (side . "RIGHT") (start_line . 10) (start_side . "RIGHT") (subject_type . "line")))
+                     captured))
+      (should (equal '(:comment-id "PRRC_kwDOexampleNew03" :database-id "3001" :created-at "2026-10-10T12:02:00Z")
+                     result)))))
+
+(ert-deftest prrr-github-test-publish-file-comment ()
+  (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+    (prrr-github-publish-comment "api.github.com" "o" "n" 1 "1111" '(:path "a.el" :subject-type file) "File."
+                                 #'ignore #'ert-fail)
+    (should (equal '((body . "File.") (commit_id . "1111") (path . "a.el") (subject_type . "file"))
+                   (nth 2 captured)))))
+
+(ert-deftest prrr-github-test-publish-reply ()
+  (prrr-test-with-rest-stub (prrr-test-fixture "publish-reply") captured
+    (let ((result nil))
+      (prrr-github-publish-reply "api.github.com" "o" "n" 1 "1001" "Done." (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '("POST" "/repos/o/n/pulls/1/comments/1001/replies" ((body . "Done."))) captured))
+      (should (equal "3002" (plist-get result :database-id))))))
+
+(ert-deftest prrr-github-test-publish-refused ()
+  (prrr-test-with-rest-stub '(:error (error http 422 ((message . "Validation Failed")))) captured
+    (let ((failure nil))
+      (prrr-github-publish-reply "api.github.com" "o" "n" 1 "1001" "x" #'ert-fail (lambda (f) (setq failure f)))
+      (should (equal "GitHub refused: Validation Failed" (plist-get failure :message)))
+      (should (equal "POST" (car captured))))))
+
+(ert-deftest prrr-github-test-forge-mutations ()
+  (pcase-dolist (`(,call ,mutation ,input)
+                 `((,(lambda (cb eb) (prrr-github-add-discussion-comment "h" "PR_1" "Hi" cb eb))
+                    addComment ((subjectId . "PR_1") (body . "Hi")))
+                   (,(lambda (cb eb) (prrr-github-edit-comment "h" "C_1" "New" cb eb))
+                    updatePullRequestReviewComment ((pullRequestReviewCommentId . "C_1") (body . "New")))
+                   (,(lambda (cb eb) (prrr-github-delete-comment "h" "C_1" cb eb))
+                    deletePullRequestReviewComment ((id . "C_1")))
+                   (,(lambda (cb eb) (prrr-github-set-resolved "h" "T_1" t cb eb))
+                    resolveReviewThread ((threadId . "T_1")))
+                   (,(lambda (cb eb) (prrr-github-set-resolved "h" "T_1" nil cb eb))
+                    unresolveReviewThread ((threadId . "T_1")))
+                   (,(lambda (cb eb) (prrr-github-submit-review "h" "PRR_1" "PR_1" "1111" 'request-changes "Fix." cb eb))
+                    submitPullRequestReview ((pullRequestReviewId . "PRR_1") (event . "REQUEST_CHANGES") (body . "Fix.")))
+                   (,(lambda (cb eb) (prrr-github-submit-review "h" nil "PR_1" "1111" 'approve "" cb eb))
+                    addPullRequestReview ((pullRequestId . "PR_1") (commitOID . "1111") (event . "APPROVE") (body . "")))
+                   (,(lambda (cb eb) (prrr-github-discard-review "h" "PRR_1" cb eb))
+                    deletePullRequestReview ((pullRequestReviewId . "PRR_1")))))
+    (prrr-test-with-ghub-stub `((data (,mutation (clientMutationId)))) captured
+      (let ((done nil))
+        (funcall call (lambda () (setq done t)) #'ert-fail)
+        (should done)
+        (should (equal (list mutation (list (cons 'input input)))
+                       (list (car (cadr (car captured))) (cadr captured))))))))
 
 (provide 'prrr-github-test)
 ;;; prrr-github-test.el ends here

@@ -30,6 +30,10 @@
 ;; Where the Review Buffer shows each Thread is decided here too
 ;; (`prrr-state-thread-layout').  Line mapping across Ranges is
 ;; milestone 5 and is not here yet.
+;;
+;; The Outbox's rules are here as well: which queued write goes next,
+;; which writes depend on which, and what a write leaves behind once
+;; GitHub accepts it.  prrr-sync.el carries them out.
 
 ;;; Code:
 
@@ -438,6 +442,418 @@ file is not in PATHS, which the buffer shows in `outdated-files'."
 SIDE is `left' for the old file and `right' for the new one, also when
 GitHub sent no side.  A range Thread is shown after its last line."
   (cons (or (prrr-thread-side thread) 'right) (prrr-thread-line thread)))
+
+;;;; The Outbox
+
+(defconst prrr-state-outbox-kinds
+  '(thread publish reply publish-reply edit delete resolve viewed discussion
+    submit discard)
+  "Kinds of write the Outbox sends, and the payload of each.
+Every payload has :target, the PR as the Outbox reaches it:
+\(:host :owner :name :number :pr-id :me), :me being the viewer's login.
+  thread         a new Thread in the Pending Review: :thread and
+                 :comment, the local ids of the Thread and its first
+                 comment; :anchor (see `prrr-state-anchor'); :body;
+                 :commit, the head the user commented on.
+  publish        the same, published at once (Immediate Publish).
+  reply          a reply in the Pending Review: :thread-id, :comment
+                 (its local id), :body.
+  publish-reply  the same, published at once.
+  edit           :comment-id, :body.
+  delete         :comment-id.
+  resolve        :thread-id, :resolved (non-nil to resolve).
+  viewed         :path, :viewed (non-nil to mark Viewed).
+  discussion     a Discussion Comment: :comment (its local id), :body.
+  submit         :verdict (`approve', `request-changes' or `comment'),
+                 :body, :commit.
+  discard        nothing more.")
+
+(defconst prrr-state-local-prefix "local:"
+  "Prefix of the ids prrr gives what it created before GitHub names it.")
+
+(defun prrr-state-local-id-p (id)
+  "Non-nil when ID is a local id, one GitHub has not given yet."
+  (and (stringp id) (string-prefix-p prrr-state-local-prefix id)))
+
+(defconst prrr-state-creation-kinds
+  '(thread publish reply publish-reply discussion submit)
+  "Kinds of write that create content on GitHub.
+GitHub allows 80 content creations a minute (SPEC section 4).")
+
+(defconst prrr-state-creations-per-minute 80
+  "Most content creations the Outbox sends in any minute.")
+
+(defun prrr-state-outbox-created-ids (row)
+  "Return the local ids of what the write ROW creates."
+  (let ((payload (prrr-outbox-payload row)))
+    (delq nil (list (plist-get payload :thread) (plist-get payload :comment)))))
+
+(defun prrr-state-outbox-references (row)
+  "Return the ids of the existing things the write ROW acts on."
+  (let ((payload (prrr-outbox-payload row)))
+    (pcase (prrr-outbox-kind row)
+      ((or 'reply 'publish-reply 'resolve) (list (plist-get payload :thread-id)))
+      ((or 'edit 'delete) (list (plist-get payload :comment-id))))))
+
+(defun prrr-state-outbox-ready-p (row)
+  "Non-nil when every id the write ROW acts on is GitHub's.
+A write that acts on something still known by a local id waits."
+  (not (seq-some #'prrr-state-local-id-p (prrr-state-outbox-references row))))
+
+(defun prrr-state--outbox-heads (rows)
+  "Return the first row of each PR among ROWS, in the order of ROWS."
+  (let ((seen nil) (heads nil))
+    (dolist (row rows)
+      (unless (member (prrr-outbox-pr-id row) seen)
+        (push (prrr-outbox-pr-id row) seen)
+        (push row heads)))
+    (nreverse heads)))
+
+(defun prrr-state--sendable-p (row)
+  "Non-nil when the write ROW, the first of its PR, may be sent."
+  (and (null (prrr-outbox-last-error row)) (prrr-state-outbox-ready-p row)))
+
+(defun prrr-state-outbox-busy-prs (rows)
+  "Return the ids of the PRs among ROWS whose first write may be sent.
+The writes of one PR go out in order, so a failed or waiting first
+write holds back the rest of its PR."
+  (mapcar #'prrr-outbox-pr-id
+          (seq-filter #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
+
+(defun prrr-state-outbox-next (rows creations now)
+  "Choose the write the Outbox sends next.
+ROWS are every queued `prrr-outbox' row, oldest first; CREATIONS the
+times, as floats, at which content creations were sent; NOW the
+current float time.  Each PR's writes go out in order: only its first
+write is a candidate, and only when it has not failed and acts on no
+local id.  The oldest candidate wins.  Return nil when there is none,
+else (ROW . WAIT): send ROW after WAIT seconds, which is 0 unless ROW
+creates content and `prrr-state-creations-per-minute' were sent in the
+last minute."
+  (when-let ((row (seq-find #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
+    (cons row
+          (let ((recent (sort (seq-filter (lambda (time) (> time (- now 60))) creations) #'<)))
+            (if (or (not (memq (prrr-outbox-kind row) prrr-state-creation-kinds))
+                    (< (length recent) prrr-state-creations-per-minute))
+                0
+              (- (+ (nth (- (length recent) prrr-state-creations-per-minute) recent) 60)
+                 now))))))
+
+(defun prrr-state-outbox-dependents (rows ids)
+  "Return the rows among ROWS whose write needs one of IDS.
+A write needs an id it acts on, or one created by another write that
+needs one of IDS.  The rows keep the order of ROWS."
+  (let ((needed ids) (found nil) (changed t))
+    (while changed
+      (setq changed nil)
+      (dolist (row rows)
+        (when (and (not (memq row found))
+                   (seq-some (lambda (id) (member id needed))
+                             (prrr-state-outbox-references row)))
+          (push row found)
+          (setq needed (append (prrr-state-outbox-created-ids row) needed)
+                changed t))))
+    (seq-filter (lambda (row) (memq row found)) rows)))
+
+(defun prrr-state-thread-renames (old-comments new-comments)
+  "Return an alist from local Thread id to GitHub's, learned from a refetch.
+OLD-COMMENTS are the stored comments; NEW-COMMENTS those GitHub just
+sent.  A comment published at once is stored under GitHub's comment id
+but a local Thread id, because GitHub's answer does not name the
+Thread; the refetch does."
+  (let ((threads (make-hash-table :test #'equal)) (renames nil))
+    (dolist (comment new-comments)
+      (puthash (prrr-comment-comment-id comment) (prrr-comment-thread-id comment) threads))
+    (dolist (comment old-comments)
+      (let ((old (prrr-comment-thread-id comment))
+            (new (gethash (prrr-comment-comment-id comment) threads)))
+        (when (and (prrr-state-local-id-p old) new (not (assoc old renames)))
+          (push (cons old new) renames))))
+    (nreverse renames)))
+
+(defun prrr-state--outbox-thread (row thread-id)
+  "Return the Thread the write ROW creates, under THREAD-ID."
+  (let* ((payload (prrr-outbox-payload row))
+         (anchor (plist-get payload :anchor)))
+    (prrr-thread-create :thread-id thread-id :pr-id (prrr-outbox-pr-id row)
+                        :path (plist-get anchor :path) :line (plist-get anchor :line)
+                        :start-line (plist-get anchor :start-line)
+                        :side (plist-get anchor :side)
+                        :start-side (plist-get anchor :start-side)
+                        :subject-type (or (plist-get anchor :subject-type) 'line)
+                        :outdated-p nil :resolved-p nil :resolvable-p nil
+                        :original-line (plist-get anchor :line)
+                        :original-commit (plist-get payload :commit))))
+
+(defun prrr-state--outbox-comment (row comment-id thread-id created-at)
+  "Return the comment the write ROW creates, under COMMENT-ID in THREAD-ID.
+CREATED-AT is its creation time."
+  (let ((payload (prrr-outbox-payload row)))
+    (prrr-comment-create :comment-id comment-id :thread-id thread-id
+                         :pr-id (prrr-outbox-pr-id row)
+                         :author (plist-get (plist-get payload :target) :me)
+                         :body (plist-get payload :body) :created-at created-at
+                         :state (if (memq (prrr-outbox-kind row) '(thread reply))
+                                    'pending
+                                  'submitted)
+                         :local-state 'unsent :agent-p nil)))
+
+(defun prrr-state-outbox-created (row result)
+  "Return (ROWS . RENAMES) once GitHub accepted the creating write ROW.
+ROW's kind is `thread', `publish', `reply' or `publish-reply'.  RESULT
+is GitHub's answer, a plist with :comment-id, :database-id and
+:created-at, plus :thread-id and :review-id for a Thread added to the
+Pending Review.  ROWS are the `prrr-thread' and `prrr-comment' to
+store; RENAMES maps the write's local ids to GitHub's.  A Thread
+published at once keeps its local id, since GitHub's answer does not
+name it (see `prrr-state-thread-renames')."
+  (let* ((payload (prrr-outbox-payload row))
+         (local-thread (plist-get payload :thread))
+         (thread-id (or (plist-get result :thread-id) local-thread
+                        (plist-get payload :thread-id)))
+         (comment (prrr-state--outbox-comment row (plist-get result :comment-id) thread-id
+                                              (plist-get result :created-at))))
+    (setf (prrr-comment-local-state comment) 'sent
+          (prrr-comment-review-id comment) (plist-get result :review-id)
+          (prrr-comment-database-id comment) (plist-get result :database-id))
+    (cons (if local-thread
+              (list (prrr-state--outbox-thread row thread-id) comment)
+            (list comment))
+          (delq nil (list (and local-thread (plist-get result :thread-id)
+                               (cons local-thread (plist-get result :thread-id)))
+                          (cons (plist-get payload :comment) (plist-get result :comment-id)))))))
+
+(defun prrr-state--copy (struct &rest changes)
+  "Return a copy of the row STRUCT with CHANGES, :SLOT VALUE pairs, applied."
+  (let ((copy (copy-sequence struct)))
+    (while changes
+      (setf (cl-struct-slot-value (type-of copy) (intern (substring (symbol-name (pop changes)) 1))
+                                  copy)
+            (pop changes)))
+    copy))
+
+(defun prrr-state-outbox-view (data rows)
+  "Return review DATA as the user sees it with the queued writes ROWS applied.
+DATA is a plist like the one `prrr-db-review-data' returns; ROWS are
+the PR's `prrr-outbox' rows, oldest first.  Threads, comments, the
+Pending Review and Viewed flags change as each write will change them
+on GitHub; created things carry their local ids and a `local-state' of
+`unsent'.  A failed delete or discard changes nothing, so what it was
+meant to remove stays in view.  The result has DATA's keys plus:
+  :outbox      ROWS;
+  :writes      a hash table from each comment id, Thread id and Viewed
+               path a queued write touches to the newest such row;
+  :discussion  the queued Discussion Comments as (ID BODY ROW) lists;
+  :submit      the queued Submit row, or nil.
+DATA's structs are never changed."
+  (let ((threads (plist-get data :threads))
+        (comments (plist-get data :comments))
+        (pending (plist-get data :pending-review))
+        (viewed (plist-get data :viewed))
+        (writes (make-hash-table :test #'equal))
+        (emptied nil) (discussion nil) (submit nil))
+    (dolist (row rows)
+      (let* ((payload (prrr-outbox-payload row))
+             (failed (prrr-outbox-last-error row))
+             (comment-id (plist-get payload :comment-id))
+             (thread-id (plist-get payload :thread-id)))
+        (pcase (prrr-outbox-kind row)
+          ((or 'thread 'publish)
+           (let ((thread (plist-get payload :thread))
+                 (comment (plist-get payload :comment)))
+             (setq threads (append threads (list (prrr-state--outbox-thread row thread)))
+                   comments (append comments
+                                    (list (prrr-state--outbox-comment
+                                           row comment thread (prrr-outbox-created-at row)))))
+             (puthash thread row writes)
+             (puthash comment row writes)))
+          ((or 'reply 'publish-reply)
+           (let ((comment (plist-get payload :comment)))
+             (setq comments (append comments
+                                    (list (prrr-state--outbox-comment
+                                           row comment thread-id (prrr-outbox-created-at row)))))
+             (puthash comment row writes)))
+          ('edit
+           (setq comments (mapcar (lambda (comment)
+                                    (if (equal (prrr-comment-comment-id comment) comment-id)
+                                        (prrr-state--copy comment :body (plist-get payload :body)
+                                                          :local-state 'unsent)
+                                      comment))
+                                  comments))
+           (puthash comment-id row writes))
+          ('delete
+           (if failed
+               (puthash comment-id row writes)
+             (let ((gone (seq-find (lambda (comment)
+                                     (equal (prrr-comment-comment-id comment) comment-id))
+                                   comments)))
+               (when gone
+                 (push (prrr-comment-thread-id gone) emptied)
+                 (setq comments (delq gone (copy-sequence comments)))))))
+          ('resolve
+           (setq threads (mapcar (lambda (thread)
+                                   (if (equal (prrr-thread-thread-id thread) thread-id)
+                                       (prrr-state--copy thread :resolved-p
+                                                         (and (plist-get payload :resolved) t))
+                                     thread))
+                                 threads))
+           (puthash thread-id row writes))
+          ('viewed
+           (let ((path (plist-get payload :path)))
+             (setq viewed (append (seq-remove (lambda (flag) (equal (prrr-viewed-path flag) path))
+                                              viewed)
+                                  (list (prrr-viewed-create
+                                         :pr-id (prrr-outbox-pr-id row) :path path
+                                         :state (if (plist-get payload :viewed) 'viewed 'unviewed)))))
+             (puthash path row writes)))
+          ('discussion
+           (push (list (plist-get payload :comment) (plist-get payload :body) row) discussion))
+          ('discard
+           (unless failed
+             (dolist (comment comments)
+               (when (eq (prrr-comment-state comment) 'pending)
+                 (push (prrr-comment-thread-id comment) emptied)))
+             (setq pending nil
+                   comments (seq-remove (lambda (comment)
+                                          (eq (prrr-comment-state comment) 'pending))
+                                        comments))))
+          ('submit (setq submit row)))))
+    (when emptied
+      (let ((live (make-hash-table :test #'equal)))
+        (dolist (comment comments)
+          (puthash (prrr-comment-thread-id comment) t live))
+        (setq threads (seq-remove (lambda (thread)
+                                    (let ((id (prrr-thread-thread-id thread)))
+                                      (and (member id emptied) (not (gethash id live)))))
+                                  threads))))
+    (list :threads threads :comments comments :pending-review pending :viewed viewed
+          :outbox rows :writes writes :discussion (nreverse discussion) :submit submit)))
+
+;;;; Anchors
+
+(defun prrr-state-anchor (path first last)
+  "Return the anchor of a comment on the diff lines FIRST to LAST of PATH.
+FIRST and LAST describe one diff line each, as (HUNK KIND OLD NEW):
+HUNK identifies its hunk (compared with `eq'), KIND is the line's
+first character (?+, ?- or ?\\s), OLD and NEW its numbers in the old
+and new file, nil on a side the line is not on.  LAST may equal FIRST.
+The anchor is a plist (:path :line :side :start-line :start-side
+:subject-type line): a removed line is on the `left' side at its old
+number, any other line on the `right' side at its new number; LAST
+gives :line and :side, and FIRST, when it is another line, :start-line
+and :start-side (SPEC section 7).  Signal a `user-error' when either
+line is not a diff line or the two are in different hunks."
+  (pcase-let ((`(,hunk ,kind ,old ,new) first)
+              (`(,last-hunk ,last-kind ,last-old ,last-new) last))
+    (unless (and (memq kind '(?+ ?- ?\s)) (memq last-kind '(?+ ?- ?\s)))
+      (user-error "Not on a diff line"))
+    (unless (eq hunk last-hunk)
+      (user-error "A comment can span the lines of one hunk only"))
+    (let ((side (if (eq last-kind ?-) 'left 'right))
+          (line (if (eq last-kind ?-) last-old last-new))
+          (start-side (if (eq kind ?-) 'left 'right))
+          (start (if (eq kind ?-) old new)))
+      (append (list :path path :line line :side side)
+              (unless (and (eq start-side side) (eql start line))
+                (list :start-line start :start-side start-side))
+              (list :subject-type 'line)))))
+
+(defun prrr-state-file-anchor (path)
+  "Return the anchor of a File Comment on PATH."
+  (list :path path :subject-type 'file))
+
+(defun prrr-state-anchor-label (anchor)
+  "Describe ANCHOR for a header, as \"src/a.el:3-5 right\" or \"src/a.el\"."
+  (let ((path (plist-get anchor :path))
+        (line (plist-get anchor :line))
+        (side (plist-get anchor :side))
+        (start (plist-get anchor :start-line))
+        (start-side (plist-get anchor :start-side)))
+    (cond ((eq (plist-get anchor :subject-type) 'file) path)
+          ((null start) (format "%s:%d %s" path line side))
+          ((eq start-side side) (format "%s:%d-%d %s" path start line side))
+          (t (format "%s:%d %s-%d %s" path start start-side line side)))))
+
+(defun prrr-state-suggestion-body (lines)
+  "Return a comment body suggesting a replacement for LINES.
+LINES are the commented diff lines as (KIND . TEXT).  Signal a
+`user-error' when one was removed, since a suggestion replaces lines of
+the new file."
+  (when (seq-some (lambda (line) (eq (car line) ?-)) lines)
+    (user-error "A suggestion replaces lines of the new file; the region has removed lines"))
+  (concat "```suggestion\n" (mapconcat #'cdr lines "\n") "\n```\n"))
+;;;; Suggestions
+
+(defun prrr-state-split-suggestions (body)
+  "Split BODY into its prose and its suggestion blocks, in order.
+Return a list of (text . STRING) and (suggestion . LINES) pairs, LINES
+being the suggested lines, nil for a block that deletes the anchored
+lines.  A block opens with a line \"```suggestion\" and closes with a
+line \"```\"."
+  (let ((parts nil) (start 0))
+    (while (string-match "^```suggestion[ \t]*\n\\(\\(?:.*\n\\)*?\\)```[ \t]*$" body start)
+      (let ((text (substring body start (match-beginning 0)))
+            (lines (match-string 1 body)))
+        (setq start (match-end 0))
+        (unless (string-empty-p (string-trim text))
+          (push (cons 'text (string-trim text)) parts))
+        (push (cons 'suggestion (and (not (string-empty-p lines))
+                                     (split-string (string-remove-suffix "\n" lines) "\n")))
+              parts)))
+    (let ((rest (string-trim (substring body start))))
+      (unless (string-empty-p rest)
+        (push (cons 'text rest) parts)))
+    (nreverse parts)))
+
+(defun prrr-state-suggestion-diff (old new)
+  "Return the mini diff from the lines OLD to the lines NEW.
+A list of (CHAR . LINE): ?\\s for a line both keep at the start or the
+end, ?- for one only OLD has, ?+ for one only NEW has."
+  (let ((head 0) (tail 0))
+    (while (and (< head (length old)) (< head (length new))
+                (equal (nth head old) (nth head new)))
+      (cl-incf head))
+    (while (and (< tail (- (length old) head)) (< tail (- (length new) head))
+                (equal (nth (- (length old) tail 1) old) (nth (- (length new) tail 1) new)))
+      (cl-incf tail))
+    (append (mapcar (lambda (line) (cons ?\s line)) (seq-take old head))
+            (mapcar (lambda (line) (cons ?- line)) (seq-subseq old head (- (length old) tail)))
+            (mapcar (lambda (line) (cons ?+ line)) (seq-subseq new head (- (length new) tail)))
+            (mapcar (lambda (line) (cons ?\s line)) (seq-subseq old (- (length old) tail))))))
+
+;;;; Submit
+
+(defun prrr-state-submit-problem (verdict body pending)
+  "Return why a Submit with VERDICT, summary BODY and PENDING comments is refused.
+nil when it may go.  GitHub wants a summary or a comment for a review
+that requests changes or only comments."
+  (when (and (memq verdict '(request-changes comment))
+             (string-empty-p (string-trim body))
+             (zerop pending))
+    (if (eq verdict 'request-changes)
+        "Requesting changes needs a summary or a comment"
+      "A comment review needs a summary or a comment")))
+
+(defun prrr-state-outbox-describe (row)
+  "Describe the queued write ROW in one line, for choosing it."
+  (let* ((payload (prrr-outbox-payload row))
+         (body (car (split-string (or (plist-get payload :body) "") "\n")))
+         (anchor (plist-get payload :anchor)))
+    (concat (pcase (prrr-outbox-kind row)
+              ('thread (format "comment on %s" (prrr-state-anchor-label anchor)))
+              ('publish (format "comment published on %s" (prrr-state-anchor-label anchor)))
+              ((or 'reply 'publish-reply) "reply")
+              ('edit "edit")
+              ('delete "delete a comment")
+              ('resolve (if (plist-get payload :resolved) "resolve a Thread" "unresolve a Thread"))
+              ('viewed (format "%s %s" (if (plist-get payload :viewed) "mark Viewed" "unmark Viewed")
+                               (plist-get payload :path)))
+              ('discussion "Discussion Comment")
+              ('submit (format "submit (%s)" (plist-get payload :verdict)))
+              ('discard "discard the Pending Review")
+              (kind (symbol-name kind)))
+            (and (not (string-empty-p body)) (format ": %s" (truncate-string-to-width body 40 nil nil "…")))
+            (and (prrr-outbox-last-error row) (format " (failed: %s)" (prrr-outbox-last-error row))))))
 
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

@@ -716,5 +716,265 @@
   (should (equal '(right . 9) (prrr-state-thread-anchor
                                (prrr-test-thread :start-line 4 :line 9)))))
 
+;;;; The Outbox
+
+(defconst prrr-state-test--target
+  '(:host "api.github.com" :owner "example-org" :name "example-repo" :number 1
+    :pr-id "PR_1" :me "example-me")
+  "The target of the test writes.")
+
+(defun prrr-state-test--write (id pr-id kind payload &optional last-error)
+  "A queued write ID of PR-ID with KIND, PAYLOAD and LAST-ERROR."
+  (prrr-outbox-create :id id :pr-id pr-id :kind kind
+                      :payload (append (list :target prrr-state-test--target) payload)
+                      :created-at "2026-10-10T12:00:00Z" :attempts 0
+                      :last-error last-error))
+
+(ert-deftest prrr-state-test-outbox-next-in-order-per-pr ()
+  (let ((a (prrr-state-test--write "1" "PR_1" 'viewed '(:path "a")))
+        (b (prrr-state-test--write "2" "PR_1" 'viewed '(:path "b")))
+        (c (prrr-state-test--write "3" "PR_2" 'viewed '(:path "c"))))
+    (should (equal (cons a 0) (prrr-state-outbox-next (list a b c) nil 100.0)))
+    (should (equal '("PR_1" "PR_2") (prrr-state-outbox-busy-prs (list a b c))))
+    ;; A failed write holds back its PR, not the others.
+    (setf (prrr-outbox-last-error a) "offline")
+    (should (equal (cons c 0) (prrr-state-outbox-next (list a b c) nil 100.0)))
+    (should (equal '("PR_2") (prrr-state-outbox-busy-prs (list a b c))))
+    (should-not (prrr-state-outbox-next (list a b) nil 100.0))))
+
+(ert-deftest prrr-state-test-outbox-next-waits-for-ids ()
+  "A write on something GitHub has not named yet waits."
+  (let ((reply (prrr-state-test--write "1" "PR_1" 'reply
+                                       '(:thread-id "local:T" :comment "local:C"))))
+    (should-not (prrr-state-outbox-ready-p reply))
+    (should-not (prrr-state-outbox-next (list reply) nil 100.0))
+    (should-not (prrr-state-outbox-busy-prs (list reply)))))
+
+(ert-deftest prrr-state-test-outbox-next-creations-per-minute ()
+  "SPEC section 4: at most 80 content creations in any minute."
+  (let ((thread (prrr-state-test--write "1" "PR_1" 'thread
+                                        '(:thread "local:T" :comment "local:C")))
+        (viewed (prrr-state-test--write "2" "PR_1" 'viewed '(:path "a")))
+        (times (number-sequence 41.0 120.0 1.0)))
+    (should (= 80 (length times)))
+    ;; The oldest of the 80, sent at 41, leaves the window at 101.
+    (should (equal (cons thread 1.0) (prrr-state-outbox-next (list thread) times 100.0)))
+    (should (equal (cons thread 0) (prrr-state-outbox-next (list thread) (cdr times) 100.0)))
+    (should (equal (cons viewed 0) (prrr-state-outbox-next (list viewed) times 100.0)))))
+
+(ert-deftest prrr-state-test-outbox-dependents ()
+  (let* ((thread (prrr-state-test--write "1" "PR_1" 'thread
+                                         '(:thread "local:T" :comment "local:C")))
+         (reply (prrr-state-test--write "2" "PR_1" 'reply
+                                        '(:thread-id "local:T" :comment "local:R")))
+         (edit (prrr-state-test--write "3" "PR_1" 'edit '(:comment-id "local:R" :body "x")))
+         (other (prrr-state-test--write "4" "PR_1" 'edit '(:comment-id "PRRC_1" :body "y")))
+         (rows (list thread reply edit other)))
+    (should (equal '("local:T" "local:C") (prrr-state-outbox-created-ids thread)))
+    (should (equal (list reply edit)
+                   (prrr-state-outbox-dependents rows (prrr-state-outbox-created-ids thread))))
+    (should-not (prrr-state-outbox-dependents rows '("local:X")))))
+
+(ert-deftest prrr-state-test-thread-renames ()
+  (should (equal '(("local:T" . "PRRT_9"))
+                 (prrr-state-thread-renames
+                  (list (prrr-comment-create :comment-id "PRRC_1" :thread-id "local:T")
+                        (prrr-comment-create :comment-id "PRRC_2" :thread-id "local:T")
+                        (prrr-comment-create :comment-id "PRRC_3" :thread-id "PRRT_3"))
+                  (list (prrr-comment-create :comment-id "PRRC_1" :thread-id "PRRT_9")
+                        (prrr-comment-create :comment-id "PRRC_2" :thread-id "PRRT_9")))))
+  (should-not (prrr-state-thread-renames
+               (list (prrr-comment-create :comment-id "PRRC_1" :thread-id "local:T"))
+               nil)))
+
+(ert-deftest prrr-state-test-outbox-created-thread ()
+  (let ((write (prrr-state-test--write
+                "1" "PR_1" 'thread
+                '(:thread "local:T" :comment "local:C" :body "Nit." :commit "1111"
+                  :anchor (:path "a.el" :line 3 :side right :subject-type line)))))
+    (pcase-let ((`(,rows . ,renames)
+                 (prrr-state-outbox-created write '(:thread-id "PRRT_1" :comment-id "PRRC_1"
+                                                    :created-at "2026-10-10T12:00:00Z"
+                                                    :database-id "9" :review-id "PRR_1"))))
+      (should (equal '(("local:T" . "PRRT_1") ("local:C" . "PRRC_1")) renames))
+      (pcase-let ((`(,thread ,comment) rows))
+        (should (equal '("PRRT_1" "a.el" 3 right)
+                       (list (prrr-thread-thread-id thread) (prrr-thread-path thread)
+                             (prrr-thread-line thread) (prrr-thread-side thread))))
+        (should (equal '("PRRC_1" "PRRT_1" "example-me" "Nit." pending sent "PRR_1" "9")
+                       (list (prrr-comment-comment-id comment) (prrr-comment-thread-id comment)
+                             (prrr-comment-author comment) (prrr-comment-body comment)
+                             (prrr-comment-state comment) (prrr-comment-local-state comment)
+                             (prrr-comment-review-id comment)
+                             (prrr-comment-database-id comment))))))))
+
+(ert-deftest prrr-state-test-outbox-created-published-thread-keeps-local-id ()
+  "GitHub's answer to Immediate Publish does not name the Thread."
+  (let ((write (prrr-state-test--write
+                "1" "PR_1" 'publish
+                '(:thread "local:T" :comment "local:C" :body "Now."
+                  :anchor (:path "a.el" :line 3 :side right)))))
+    (pcase-let ((`((,thread ,comment) . ,renames)
+                 (prrr-state-outbox-created write '(:comment-id "PRRC_1" :database-id "9"))))
+      (should (equal '(("local:C" . "PRRC_1")) renames))
+      (should (equal "local:T" (prrr-thread-thread-id thread)))
+      (should (eq 'submitted (prrr-comment-state comment))))))
+
+(ert-deftest prrr-state-test-outbox-created-reply ()
+  (let ((write (prrr-state-test--write "1" "PR_1" 'reply
+                                       '(:thread-id "PRRT_1" :comment "local:R" :body "Yes."))))
+    (pcase-let ((`((,comment) . ,renames)
+                 (prrr-state-outbox-created write '(:comment-id "PRRC_2" :review-id "PRR_1"))))
+      (should (equal '(("local:R" . "PRRC_2")) renames))
+      (should (equal "PRRT_1" (prrr-comment-thread-id comment))))))
+
+
+;;;; What the user sees
+
+(defun prrr-state-test--data ()
+  "Stored review data: one Thread with my pending comment, and a Pending Review."
+  (list :threads (list (prrr-test-thread :id "T1"))
+        :comments (list (prrr-comment-create :comment-id "C1" :thread-id "T1" :pr-id "PR_1"
+                                             :author "example-me" :body "Old."
+                                             :state 'pending :local-state 'sent))
+        :pending-review (prrr-pending-review-create :pr-id "PR_1" :review-id "PRR_1")
+        :viewed nil))
+
+(ert-deftest prrr-state-test-outbox-view-applies-writes ()
+  (let* ((data (prrr-state-test--data))
+         (rows (list (prrr-state-test--write "1" "PR_1" 'thread
+                                             '(:thread "local:T" :comment "local:C" :body "New."
+                                               :anchor (:path "b.el" :line 1 :side right)))
+                     (prrr-state-test--write "2" "PR_1" 'edit '(:comment-id "C1" :body "Edited.")
+                                             "offline")
+                     (prrr-state-test--write "3" "PR_1" 'resolve '(:thread-id "T1" :resolved t))
+                     (prrr-state-test--write "4" "PR_1" 'viewed '(:path "a.el" :viewed t))
+                     (prrr-state-test--write "5" "PR_1" 'discussion
+                                             '(:comment "local:D" :body "Thanks!"))
+                     (prrr-state-test--write "6" "PR_1" 'submit '(:verdict approve :body ""))))
+         (view (prrr-state-outbox-view data rows)))
+    (should (equal '("T1" "local:T") (mapcar #'prrr-thread-thread-id (plist-get view :threads))))
+    (should (equal '(("Edited." unsent) ("New." unsent))
+                   (mapcar (lambda (comment) (list (prrr-comment-body comment)
+                                                   (prrr-comment-local-state comment)))
+                           (plist-get view :comments))))
+    (should (prrr-thread-resolved-p (car (plist-get view :threads))))
+    (should (eq 'viewed (prrr-viewed-state (car (plist-get view :viewed)))))
+    (should (equal "Thanks!" (nth 1 (car (plist-get view :discussion)))))
+    (should (equal "6" (prrr-outbox-id (plist-get view :submit))))
+    (should (equal rows (plist-get view :outbox)))
+    (let ((writes (plist-get view :writes)))
+      (should (equal "offline" (prrr-outbox-last-error (gethash "C1" writes))))
+      (should (equal "1" (prrr-outbox-id (gethash "local:C" writes))))
+      (should (equal "3" (prrr-outbox-id (gethash "T1" writes))))
+      (should (equal "4" (prrr-outbox-id (gethash "a.el" writes)))))
+    ;; The stored rows are untouched.
+    (should (equal "Old." (prrr-comment-body (car (plist-get data :comments)))))
+    (should-not (prrr-thread-resolved-p (car (plist-get data :threads))))))
+
+(ert-deftest prrr-state-test-outbox-view-delete ()
+  "Deleting a Thread's last comment hides the Thread; a failed delete hides nothing."
+  (let ((data (prrr-state-test--data)))
+    (let ((view (prrr-state-outbox-view
+                 data (list (prrr-state-test--write "1" "PR_1" 'delete '(:comment-id "C1"))))))
+      (should-not (plist-get view :comments))
+      (should-not (plist-get view :threads)))
+    (let ((view (prrr-state-outbox-view
+                 data (list (prrr-state-test--write "1" "PR_1" 'delete '(:comment-id "C1")
+                                                    "GitHub returned HTTP 502")))))
+      (should (= 1 (length (plist-get view :comments))))
+      (should (gethash "C1" (plist-get view :writes))))))
+
+(ert-deftest prrr-state-test-outbox-view-discard ()
+  (let ((view (prrr-state-outbox-view (prrr-state-test--data)
+                                      (list (prrr-state-test--write "1" "PR_1" 'discard nil)))))
+    (should-not (plist-get view :pending-review))
+    (should-not (plist-get view :comments))
+    (should-not (plist-get view :threads))))
+
+(ert-deftest prrr-state-test-outbox-view-keeps-threads-without-comments ()
+  "A stored Thread whose comments are not stored is not the overlay's to hide."
+  (let ((view (prrr-state-outbox-view (list :threads (list (prrr-test-thread)) :comments nil)
+                                      nil)))
+    (should (= 1 (length (plist-get view :threads))))
+    (should (zerop (hash-table-count (plist-get view :writes))))))
+
+;;;; Anchors
+
+(ert-deftest prrr-state-test-anchor-one-line ()
+  (should (equal '(:path "a" :line 12 :side right :subject-type line)
+                 (prrr-state-anchor "a" '(h ?+ nil 12) '(h ?+ nil 12))))
+  (should (equal '(:path "a" :line 13 :side right :subject-type line)
+                 (prrr-state-anchor "a" '(h ?\s 13 13) '(h ?\s 13 13))))
+  (should (equal '(:path "a" :line 12 :side left :subject-type line)
+                 (prrr-state-anchor "a" '(h ?- 12 nil) '(h ?- 12 nil)))))
+
+(ert-deftest prrr-state-test-anchor-range ()
+  (should (equal '(:path "a" :line 12 :side right :start-line 9 :start-side right
+                   :subject-type line)
+                 (prrr-state-anchor "a" '(h ?\s 9 9) '(h ?+ nil 12))))
+  (should (equal '(:path "a" :line 12 :side right :start-line 12 :start-side left
+                   :subject-type line)
+                 (prrr-state-anchor "a" '(h ?- 12 nil) '(h ?+ nil 12)))))
+
+(ert-deftest prrr-state-test-anchor-refused ()
+  (should-error (prrr-state-anchor "a" '(h ?+ nil 12) '(g ?+ nil 30)) :type 'user-error)
+  (should-error (prrr-state-anchor "a" '(h ?\\ nil nil) '(h ?\\ nil nil)) :type 'user-error))
+
+(ert-deftest prrr-state-test-anchor-label ()
+  (should (equal "a:12 right" (prrr-state-anchor-label '(:path "a" :line 12 :side right))))
+  (should (equal "a:9-12 right"
+                 (prrr-state-anchor-label '(:path "a" :line 12 :side right
+                                            :start-line 9 :start-side right))))
+  (should (equal "a:12 left-12 right"
+                 (prrr-state-anchor-label '(:path "a" :line 12 :side right
+                                            :start-line 12 :start-side left))))
+  (should (equal "a" (prrr-state-anchor-label (prrr-state-file-anchor "a")))))
+
+(ert-deftest prrr-state-test-suggestion-body ()
+  (should (equal "```suggestion\nline twelve\nline 13\n```\n"
+                 (prrr-state-suggestion-body '((?+ . "line twelve") (?\s . "line 13")))))
+  (should-error (prrr-state-suggestion-body '((?- . "line 12"))) :type 'user-error))
+;;;; Suggestions
+
+(ert-deftest prrr-state-test-split-suggestions ()
+  (should (equal '((text . "Try this:") (suggestion "a" "b") (text . "Thanks."))
+                 (prrr-state-split-suggestions "Try this:\n```suggestion\na\nb\n```\nThanks.")))
+  (should (equal '((suggestion "a") (suggestion "b"))
+                 (prrr-state-split-suggestions "```suggestion\na\n```\n```suggestion\nb\n```")))
+  (should (equal '((text . "plain\n\nmore")) (prrr-state-split-suggestions "plain\n\nmore\n")))
+  (should-not (prrr-state-split-suggestions "")))
+
+(ert-deftest prrr-state-test-split-suggestions-empty-block ()
+  "An empty block deletes the lines; one with an empty line replaces them by it."
+  (should (equal '((suggestion)) (prrr-state-split-suggestions "```suggestion\n```")))
+  (should (equal '((suggestion "")) (prrr-state-split-suggestions "```suggestion\n\n```"))))
+
+(ert-deftest prrr-state-test-suggestion-diff ()
+  (should (equal '((?\s . "a") (?- . "b") (?+ . "B") (?\s . "c"))
+                 (prrr-state-suggestion-diff '("a" "b" "c") '("a" "B" "c"))))
+  (should (equal '((?- . "x")) (prrr-state-suggestion-diff '("x") nil)))
+  (should (equal '((?+ . "y")) (prrr-state-suggestion-diff nil '("y")))))
+
+;;;; Submit
+
+(ert-deftest prrr-state-test-submit-problem ()
+  (should-not (prrr-state-submit-problem 'approve "" 0))
+  (should-not (prrr-state-submit-problem 'request-changes "" 2))
+  (should-not (prrr-state-submit-problem 'comment "Looks fine." 0))
+  (should (prrr-state-submit-problem 'request-changes "  " 0))
+  (should (prrr-state-submit-problem 'comment "" 0)))
+
+(ert-deftest prrr-state-test-outbox-describe ()
+  (should (equal "comment on a.el:3 right: First line (failed: offline)"
+                 (prrr-state-outbox-describe
+                  (prrr-state-test--write "1" "PR_1" 'thread
+                                          '(:body "First line\nsecond"
+                                            :anchor (:path "a.el" :line 3 :side right))
+                                          "offline"))))
+  (should (equal "mark Viewed a.el"
+                 (prrr-state-outbox-describe
+                  (prrr-state-test--write "1" "PR_1" 'viewed '(:path "a.el" :viewed t))))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

@@ -673,24 +673,45 @@ SETUP runs first, inside the fixture repository and a fresh database.
         (should (oref (prrr-diff-test--file-section path) hidden))))))
 
 (ert-deftest prrr-diff-test-toggle-viewed ()
+  "Toggling Viewed writes through the Outbox, shows at once and folds."
   (prrr-diff-test--with-buffer nil
-    (cl-letf (((symbol-function 'forge-get-repository)
-               (lambda (&rest _) (forge-github-repository :id "r" :apihost "api.github.com"))))
-      (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
-        (prrr-jump-to-file "README.md")
-        (prrr-toggle-viewed)
-        (should (eq 'markFileAsViewed (car (cadr (car captured)))))
-        (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'forge-get-repository)
+                 (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
+                                                            :name "example-repo"
+                                                            :apihost "api.github.com"))))
+        (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
+          (prrr-jump-to-file "README.md")
+          (prrr-toggle-viewed)
+          (should (eq 'markFileAsViewed (car (cadr (car captured)))))
+          (should (eq 'viewed (prrr-viewed-state (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+          (let ((readme (prrr-diff-test--file-section "README.md")))
+            (should (oref readme hidden))
+            (should (string-match-p "✓ viewed" (prrr-diff-test--text readme))))
+          (should (equal '(file . "data.bin") (prrr-diff-test--at)))
+          (prrr-jump-to-file "README.md")
+          (prrr-toggle-viewed)
+          (should (eq 'unviewed (prrr-viewed-state
+                                 (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
+          (should-not (oref (prrr-diff-test--file-section "README.md") hidden))
+          (should (equal '(file . "README.md") (prrr-diff-test--at))))))))
+
+(ert-deftest prrr-diff-test-toggle-viewed-offline-shows-at-once ()
+  "Review Focus 1: offline, the flag shows and folds, and stays in the Outbox."
+  (prrr-diff-test--with-buffer nil
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'forge-get-repository)
+                 (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
+                                                            :name "example-repo"
+                                                            :apihost "api.github.com"))))
+        (prrr-test-with-ghub-error-stub '(error http 502) nil
+          (prrr-jump-to-file "README.md")
+          (prrr-toggle-viewed))
+        (should-not (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))
+        (should (= 1 (length (prrr-db-outbox-rows prrr-diff-test--pr))))
         (let ((readme (prrr-diff-test--file-section "README.md")))
           (should (oref readme hidden))
-          (should (string-match-p "✓ viewed" (prrr-diff-test--text readme))))
-        (should (equal '(file . "data.bin") (prrr-diff-test--at)))
-        (prrr-jump-to-file "README.md")
-        (prrr-toggle-viewed)
-        (should (eq 'unviewed (prrr-viewed-state
-                               (prrr-db-get 'viewed prrr-diff-test--pr "README.md"))))
-        (should-not (oref (prrr-diff-test--file-section "README.md") hidden))
-        (should (equal '(file . "README.md") (prrr-diff-test--at)))))))
+          (should (string-match-p "✓ viewed" (prrr-diff-test--text readme))))))))
 
 (ert-deftest prrr-diff-test-keys-and-menu-agree ()
   "SPEC section 9: every key of this milestone, in the buffer and the menu."
@@ -711,7 +732,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
   (should (eq 'magit-dispatch (keymap-lookup prrr-diff-mode-map "h"))))
 
 (ert-deftest prrr-diff-test-later-keys-do-nothing-yet ()
-  "Magit's commit, stage, discard and friends never run in a Review Buffer.
+  "Magit's diff arguments, log and friends never run in a Review Buffer.
 Checked by the effective binding on a file heading, a hunk line and a
 Thread, where section keymaps apply on top of the mode's."
   (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
@@ -722,8 +743,11 @@ Thread, where section keymaps apply on top of the mode's."
                                              (hunk-line . ,(oref hunk content))
                                              (thread . ,(oref thread start))))
         (goto-char position)
-        (dolist (key '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L"))
+        (dolist (key prrr-diff--later-keys)
           (should (equal (list where key 'undefined)
+                         (list where key (key-binding (kbd key))))))
+        (pcase-dolist (`(,key . ,command) prrr-diff--review-keys)
+          (should (equal (list where key command)
                          (list where key (key-binding (kbd key))))))))))
 
 (ert-deftest prrr-diff-test-previous-thread-washes-files-before-point ()
@@ -788,6 +812,136 @@ Thread, where section keymaps apply on top of the mode's."
                (lambda (&rest _) (error "Example failure"))))
       (should-error (magit-refresh-buffer)))
     (should-not magit-section-inhibit-markers)))
+
+;;;; Anchors
+
+(defun prrr-diff-test--goto-line (path text)
+  "Move to the diff line of PATH that reads TEXT, expanding PATH."
+  (prrr-diff-test--hunks path)
+  (goto-char (oref (prrr-diff-test--file-section path) start))
+  (re-search-forward (concat "^" (regexp-quote text) "$"))
+  (goto-char (line-beginning-position)))
+
+(defmacro prrr-diff-test--with-region (from to &rest body)
+  "Run BODY with the region over the lines FROM to TO of src/example.el.
+FROM and TO are the texts of the lines."
+  (declare (indent 2))
+  `(let ((transient-mark-mode t))
+     (prrr-diff-test--goto-line "src/example.el" ,from)
+     (push-mark (point) t t)
+     (prrr-diff-test--goto-line "src/example.el" ,to)
+     (goto-char (line-end-position))
+     ,@body))
+
+(ert-deftest prrr-diff-test-anchor-added-line ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--goto-line "src/example.el" "+line twelve")
+    (should (equal '(:path "src/example.el" :line 12 :side right :subject-type line)
+                   (prrr-diff-anchor)))))
+
+(ert-deftest prrr-diff-test-anchor-removed-line-is-left ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--goto-line "src/example.el" "-line 12")
+    (should (equal '(:path "src/example.el" :line 12 :side left :subject-type line)
+                   (prrr-diff-anchor)))))
+
+(ert-deftest prrr-diff-test-anchor-context-line ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--goto-line "src/example.el" " line 13")
+    (should (equal '(:path "src/example.el" :line 13 :side right :subject-type line)
+                   (prrr-diff-anchor)))))
+
+(ert-deftest prrr-diff-test-anchor-region-is-a-range ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--with-region " line 10" "+line twelve"
+      (should (equal '(:path "src/example.el" :line 12 :side right
+                       :start-line 10 :start-side right :subject-type line)
+                     (prrr-diff-anchor))))))
+
+(ert-deftest prrr-diff-test-anchor-region-ending-at-a-line-start ()
+  "A region that ends where a line starts covers the lines before it."
+  (prrr-diff-test--with-buffer nil
+    (let ((transient-mark-mode t))
+      (prrr-diff-test--goto-line "src/example.el" " line 10")
+      (push-mark (point) t t)
+      (prrr-diff-test--goto-line "src/example.el" "+line twelve")
+      (should (equal '(:path "src/example.el" :line 12 :side left
+                       :start-line 10 :start-side right :subject-type line)
+                     (prrr-diff-anchor))))))
+
+(ert-deftest prrr-diff-test-anchor-across-hunks-refused ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-test--with-region "+line twelve" "+line thirty"
+      (should-error (prrr-diff-anchor) :type 'user-error))))
+
+(ert-deftest prrr-diff-test-anchor-in-a-thread ()
+  "Point in a Thread anchors to the diff line the Thread follows."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let ((hunk (car (prrr-diff-test--hunks "src/example.el"))))
+      (goto-char (oref (car (oref hunk children)) start))
+      (forward-line 1)
+      (should (equal '(:path "src/example.el" :line 12 :side right :subject-type line)
+                     (prrr-diff-anchor))))))
+
+(ert-deftest prrr-diff-test-anchor-off-diff-lines ()
+  (prrr-diff-test--with-buffer nil
+    (let ((hunk (car (prrr-diff-test--hunks "src/example.el")))
+          (file (prrr-diff-test--file-section "src/example.el")))
+      (goto-char (oref hunk start))
+      (should-error (prrr-diff-anchor) :type 'user-error)
+      (goto-char (oref file start))
+      (should-error (prrr-diff-anchor) :type 'user-error)
+      (should (equal '(:path "src/example.el" :subject-type file) (prrr-diff-file-anchor))))))
+
+(ert-deftest prrr-diff-test-region-lines-skip-threads ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (prrr-diff-test--with-region " line 11" " line 13"
+      (should (equal '((?\s . "line 11") (?- . "line 12") (?+ . "line twelve") (?\s . "line 13"))
+                     (prrr-diff-region-lines))))))
+
+(ert-deftest prrr-diff-test-thread-and-comment-at-point ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let* ((hunk (car (prrr-diff-test--hunks "src/example.el")))
+           (thread (car (oref hunk children))))
+      (goto-char (oref thread start))
+      (should (equal "PRRT_kwDOexample0000001" (prrr-thread-thread-id (prrr-diff-thread-at-point))))
+      (should-not (prrr-diff-comment-at-point))
+      (goto-char (oref (cadr (oref thread children)) start))
+      (should (equal "PRRC_kwDOexample0000002" (prrr-comment-comment-id (prrr-diff-comment-at-point))))
+      (should (equal "PRRT_kwDOexample0000001" (prrr-thread-thread-id (prrr-diff-thread-at-point)))))))
+;;;; Unsent writes and suggestions
+
+(ert-deftest prrr-diff-test-suggestion-against-anchored-lines ()
+  "A suggestion on a right-side Thread is a mini diff against its lines."
+  (prrr-diff-test--with-buffer
+      (progn (prrr-diff-test--store-fixture)
+             (prrr-db-insert (prrr-comment-create
+                              :comment-id "C_SUGGEST" :thread-id "PRRT_kwDOexample0000001"
+                              :pr-id prrr-diff-test--pr :author "example-carol"
+                              :body "```suggestion\nline 12\n```"
+                              :created-at "2026-09-05T00:00:00Z" :state 'submitted
+                              :local-state 'sent)))
+    (prrr-diff-test--hunks "src/example.el")
+    (goto-char (point-min))
+    (re-search-forward "^      Suggested change:\n      -line twelve\n      \\+line 12$")))
+
+(ert-deftest prrr-diff-test-header-counts-the-outbox ()
+  "SPEC section 6: the header counts the Outbox; unsent Discussion Comments show."
+  (prrr-diff-test--with-buffer
+      (progn
+        (prrr-diff-test--store-fixture)
+        (prrr-db-insert (prrr-outbox-create :id "1" :pr-id prrr-diff-test--pr :kind 'viewed
+                                            :payload '(:path "a.el" :viewed t) :attempts 0))
+        (prrr-db-insert (prrr-outbox-create :id "2" :pr-id prrr-diff-test--pr :kind 'discussion
+                                            :payload '(:comment "local:D" :body "Thanks!")
+                                            :attempts 1 :last-error "offline")))
+    (let ((status (prrr-diff-test--status-line)))
+      (should (string-match-p "Pending Review: 1 comment" status))
+      (should (string-match-p "Outbox: 1 unsent, 1 failed, O to act" status)))
+    (let ((discussion (magit-get-section '((discussion) (prrr-header) (diffbuf)))))
+      (should (string-match-p "Discussion (1)" (prrr-diff-test--text discussion)))
+      (should (string-match-p "Your Discussion Comment  failed: offline"
+                              (prrr-diff-test--text discussion))))))
 
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

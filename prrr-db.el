@@ -30,6 +30,11 @@
 ;; database with another version is dropped and recreated except for
 ;; the `outbox' table, whose rows are kept and also exposed through
 ;; `prrr-db-preserved-outbox' so the UI can show them first.
+;;
+;; The review tables hold only what GitHub sent or accepted.  Writes
+;; GitHub has not accepted yet are rows of the `outbox' table, which
+;; the Outbox in prrr-sync.el reads and changes through the functions
+;; of the part "The Outbox".
 
 ;;; Code:
 
@@ -45,7 +50,7 @@ One database serves every repository.  Created on first use."
   :type 'file
   :group 'prrr)
 
-(defconst prrr-db-schema-version 1
+(defconst prrr-db-schema-version 2
   "Version of the table layout in `prrr-db--tables'.
 Bump it whenever a table changes.  A stored version that differs makes
 `prrr-db--init' call `prrr-db-reset'.")
@@ -66,16 +71,22 @@ viewer's review, or nil.  STATE values are GitHub's strings."
 (cl-defstruct (prrr-thread (:constructor prrr-thread-create) (:copier nil))
   "A Thread (table `thread').
 SIDE and START-SIDE are `left' or `right'; SUBJECT-TYPE is `line' or
-`file'; OUTDATED-P and RESOLVED-P are booleans."
+`file'; OUTDATED-P and RESOLVED-P are booleans.  RESOLVABLE-P is
+non-nil when GitHub lets the viewer resolve the Thread, or unresolve
+it when it is resolved."
   thread-id pr-id path line start-line side start-side subject-type
-  outdated-p resolved-p original-line original-commit fetched-at)
+  outdated-p resolved-p resolvable-p original-line original-commit fetched-at)
 
 (cl-defstruct (prrr-comment (:constructor prrr-comment-create) (:copier nil))
   "A Review Comment inside a Thread (table `review-comment').
-STATE is `pending' or `submitted' (GitHub's); LOCAL-STATE is `sent',
-`unsent' or `proposed'; AGENT-P marks comments added through the API."
+STATE is `pending' or `submitted' (GitHub's).  LOCAL-STATE is `sent' for
+a row GitHub sent or accepted, `unsent' for one the Outbox has not sent
+yet (only in `prrr-state-outbox-view', never stored) and `proposed' for
+an agent's proposal (milestone 7).  AGENT-P marks comments added through
+the API.  DATABASE-ID is GitHub's numeric id as a string, which its
+REST endpoints take."
   comment-id thread-id pr-id author body created-at updated-at reply-to
-  review-id state local-state agent-p)
+  review-id state local-state agent-p database-id)
 
 (cl-defstruct (prrr-pending-review (:constructor prrr-pending-review-create)
                                    (:copier nil))
@@ -96,7 +107,11 @@ STATE is `viewed', `unviewed' or `dismissed'."
   pr-id last-opened-head-oid last-opened-at)
 
 (cl-defstruct (prrr-outbox (:constructor prrr-outbox-create) (:copier nil))
-  "A write GitHub has not accepted yet (table `outbox')."
+  "A write GitHub has not accepted yet (table `outbox').
+ID increases with time, so the Outbox sends in id order.  KIND and
+PAYLOAD are as `prrr-state-outbox-kinds' describes.  ATTEMPTS counts
+the sends that failed; LAST-ERROR is the last failure's message, nil
+when the write is waiting to be sent."
   id pr-id kind payload created-at attempts last-error)
 
 ;;;; Schema
@@ -108,11 +123,11 @@ STATE is `viewed', `unviewed' or `dismissed'."
        created-at fetched-at]))
     (thread prrr-thread
      ([(thread-id :primary-key) pr-id path line start-line side start-side
-       subject-type outdated-p resolved-p original-line original-commit
+       subject-type outdated-p resolved-p resolvable-p original-line original-commit
        fetched-at]))
     (review-comment prrr-comment
      ([(comment-id :primary-key) thread-id pr-id author body created-at
-       updated-at reply-to review-id state local-state agent-p]))
+       updated-at reply-to review-id state local-state agent-p database-id]))
     (pending-review prrr-pending-review
      ([(pr-id :primary-key) review-id commit-oid body created-at]))
     (viewed prrr-viewed
@@ -384,13 +399,15 @@ absent from the table."
 
 ;;;; Review data
 
-(defun prrr-db-replace-review-data (pr-id data)
+(defun prrr-db-replace-review-data (pr-id data &optional renames)
   "Make DATA the only stored review data of PR-ID.
 DATA is the plist `prrr-github-decode-review-data' returns, or nil: its
 :threads, :comments, :pending-review and :viewed replace every
 `thread', `review-comment', `pending-review' and `viewed' row of PR-ID.
-One transaction.  Today every such row is replaced; milestone 4 will
-keep the Outbox's unsent rows here (bead prrr-8ok)."
+These tables hold only what GitHub sent or accepted; the Outbox's
+unsent writes live in the `outbox' table, which this leaves alone apart
+from RENAMES, an alist from local id to GitHub's applied to the PR's
+queued writes.  One transaction."
   (let ((db (prrr-db)))
     (emacsql-with-transaction db
       (dolist (table '(thread review-comment pending-review viewed))
@@ -402,7 +419,8 @@ keep the Outbox's unsent rows here (bead prrr-8ok)."
         (when rows
           (emacsql db (vector :insert-or-replace :into (prrr-db--table-of (car rows))
                               :values '$v1)
-                   (mapcar #'prrr-db--struct-to-row rows)))))
+                   (mapcar #'prrr-db--struct-to-row rows))))
+      (prrr-db--rename-outbox-ids pr-id renames))
     nil))
 
 (defun prrr-db-review-data (pr-id)
@@ -417,6 +435,64 @@ and :viewed.  A PR never fetched has nil for each."
                                    (or (prrr-comment-created-at b) ""))))
         :pending-review (prrr-db-get 'pending-review pr-id)
         :viewed (prrr-db-select 'viewed :pr-id pr-id)))
+
+;;;; The Outbox
+
+(defun prrr-db-outbox-rows (&optional pr-id)
+  "Return the queued writes of PR-ID, or of every PR when nil, oldest first.
+Rows are `prrr-outbox' structs ordered by id, which the Outbox makes
+increase with time."
+  (mapcar (lambda (row) (prrr-db--row-to-struct 'outbox row))
+          (if pr-id
+              (emacsql (prrr-db) [:select * :from outbox :where (= pr-id $s1)
+                                  :order-by [(asc id)]]
+                       pr-id)
+            (emacsql (prrr-db) [:select * :from outbox :order-by [(asc id)]]))))
+
+(defun prrr-db-outbox-clear-errors (&optional pr-id)
+  "Forget the last error of every queued write of PR-ID, or of every PR when nil.
+Their attempts count is kept."
+  (if pr-id
+      (emacsql (prrr-db) [:update outbox :set (= last-error $s1) :where (= pr-id $s2)]
+               nil pr-id)
+    (emacsql (prrr-db) [:update outbox :set (= last-error $s1)] nil)))
+
+(defun prrr-db--rename (tree renames)
+  "Return a copy of TREE in which each string that is a key of RENAMES is replaced.
+RENAMES is an alist from old to new string; TREE is built of conses and atoms."
+  (cond ((stringp tree) (or (cdr (assoc tree renames)) tree))
+        ((consp tree) (cons (prrr-db--rename (car tree) renames)
+                            (prrr-db--rename (cdr tree) renames)))
+        (t tree)))
+
+(defun prrr-db--rename-outbox-ids (pr-id renames)
+  "Replace the ids in RENAMES in the payloads of PR-ID's queued writes.
+RENAMES is an alist from local id to GitHub's id.  Runs inside the
+caller's transaction."
+  (when renames
+    (dolist (row (prrr-db-outbox-rows pr-id))
+      (let ((payload (prrr-db--rename (prrr-outbox-payload row) renames)))
+        (unless (equal payload (prrr-outbox-payload row))
+          (setf (prrr-outbox-payload row) payload)
+          (prrr-db-insert row))))))
+
+(cl-defun prrr-db-outbox-done (id &key insert delete renames)
+  "Record that GitHub accepted the queued write ID, in one transaction.
+The write's row leaves the `outbox' table.  DELETE lists (TABLE . PLIST)
+pairs, each deleting the rows `prrr-db-delete' would; then the structs
+in INSERT are stored.  RENAMES, an alist from local id to GitHub's id,
+is applied to the payloads of the PR's other queued writes, so a write
+that needs what this one created now names it as GitHub does."
+  (let ((db (prrr-db))
+        (row (prrr-db-get 'outbox id)))
+    (emacsql-with-transaction db
+      (prrr-db-delete 'outbox :id id)
+      (pcase-dolist (`(,table . ,plist) delete)
+        (apply #'prrr-db-delete table plist))
+      (mapc #'prrr-db-insert insert)
+      (when row
+        (prrr-db--rename-outbox-ids (prrr-outbox-pr-id row) renames)))
+    nil))
 
 (provide 'prrr-db)
 ;;; prrr-db.el ends here

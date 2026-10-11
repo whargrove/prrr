@@ -106,7 +106,7 @@ BODY sees `section', the first child of the root."
       (prrr-thread-insert (prrr-thread-create :thread-id "T_9" :pr-id "PR_1" :path "src/old.el"
                                               :line nil :original-line 40 :side 'left
                                               :subject-type 'line :outdated-p t)
-                          nil t)
+                          nil :with-path t)
     (should (eq 'thread (oref section type)))
     (should (looking-at "    Thread  src/old.el, line 40, left  0 comments$"))))
 
@@ -117,6 +117,209 @@ BODY sees `section', the first child of the root."
     (should (eq 'thread (oref section type)))
     (forward-line)
     (should (looking-at "    ghost  2026-09-02$"))))
+
+;;;; Unsent writes, agents and suggestions
+
+(defun prrr-thread-test--row (id &optional error)
+  "A queued write with ID, failed with ERROR when non-nil."
+  (prrr-outbox-create :id id :pr-id "PR_1" :kind 'edit :payload nil
+                      :created-at "2026-10-10T12:00:00Z" :attempts (if error 1 0)
+                      :last-error error))
+
+(ert-deftest prrr-thread-test-unsent-and-failed ()
+  (let ((writes (make-hash-table :test #'equal)))
+    (puthash "C_1" (prrr-thread-test--row "1") writes)
+    (puthash "C_2" (prrr-thread-test--row "2" "GitHub returned HTTP 502") writes)
+    (prrr-thread-test--with-render
+        (prrr-thread-insert (prrr-test-thread)
+                            (list (prrr-thread-test--comment)
+                                  (prrr-thread-test--comment :id "C_2" :author "example-me"))
+                            :writes writes)
+      (should (eq 'thread (oref section type)))
+      (forward-line)
+      (should (looking-at "    example-bob  2026-09-02  unsent$"))
+      (should (eq 'prrr-unsent (get-text-property (- (line-end-position) 2) 'font-lock-face)))
+      (forward-line 2)
+      (should (looking-at "    example-me  2026-09-02  failed: GitHub returned HTTP 502$"))
+      (should (eq 'prrr-failed (get-text-property (- (line-end-position) 2) 'font-lock-face))))))
+
+(ert-deftest prrr-thread-test-agent-comment ()
+  (let ((comment (prrr-thread-test--comment)))
+    (setf (prrr-comment-agent-p comment) t)
+    (prrr-thread-test--with-render
+        (prrr-thread-insert (prrr-test-thread) (list comment))
+      (should (eq 'thread (oref section type)))
+      (forward-line)
+      (should (looking-at "    example-bob  2026-09-02  agent$")))))
+
+(ert-deftest prrr-thread-test-suggestion-as-mini-diff ()
+  (prrr-thread-test--with-render
+      (prrr-thread-insert (prrr-test-thread)
+                          (list (prrr-thread-test--comment
+                                 :body "Rename it:\n```suggestion\nline 12\n```\nThanks."))
+                          :lines '("line twelve"))
+    (should (eq 'thread (oref section type)))
+    (should (equal '("    Thread  line 12  1 comment"
+                     "    example-bob  2026-09-02"
+                     "      Rename it:"
+                     "      Suggested change:"
+                     "      -line twelve"
+                     "      +line 12"
+                     "      Thanks.")
+                   (prrr-thread-test--lines)))
+    (goto-char (point-min))
+    (re-search-forward "^      \\+line 12")
+    (should (eq 'magit-diff-added (get-text-property (- (point) 2) 'font-lock-face)))))
+
+(ert-deftest prrr-thread-test-unsent-discussion-comment ()
+  (prrr-thread-test--with-render
+      (prrr-thread-insert-unsent-post "Thanks!" (prrr-thread-test--row "9"))
+    (should (eq 'unsent-post (oref section type)))
+    (should (equal '("    Your Discussion Comment  unsent" "      Thanks!")
+                   (prrr-thread-test--lines)))))
+
+
+;;;; The capture buffer
+
+(defmacro prrr-thread-test--with-capture (args &rest body)
+  "Open a capture buffer from a scratch buffer and run BODY in it.
+ARGS follow the label and the confirm function of `prrr-comment-capture'.
+`confirmed' collects (TEXT IMMEDIATE BUFFER) of each confirm and
+`origin' is the scratch buffer."
+  (declare (indent 1))
+  `(let ((confirmed nil)
+         (origin (generate-new-buffer "prrr-test-origin")))
+     (unwind-protect
+         (with-current-buffer origin
+           (insert "line one\nline two\n")
+           (goto-char 10)
+           (let ((capture (apply #'prrr-comment-capture "src/a.el:3 right"
+                                 (lambda (text immediate)
+                                   (push (list text immediate (current-buffer)) confirmed))
+                                 (list ,@args))))
+             (with-current-buffer capture
+               ,@body)))
+       (dolist (buffer (buffer-list))
+         (when (string-prefix-p "*prrr comment*" (buffer-name buffer))
+           (kill-buffer buffer)))
+       (kill-buffer origin))))
+
+(ert-deftest prrr-thread-test-capture-confirm ()
+  (prrr-thread-test--with-capture ()
+    (should (eq 'prrr-comment-mode major-mode))
+    (should (derived-mode-p 'text-mode))
+    (should (string-match-p "src/a\\.el:3 right" (prrr-comment--header)))
+    (should (string-match-p "Pending Review" (prrr-comment--header)))
+    (insert "  Looks odd.  \n")
+    (let ((capture (current-buffer)))
+      (prrr-comment-confirm)
+      (should-not (buffer-live-p capture)))
+    (should (equal (list (list "Looks odd." nil origin)) confirmed))
+    (should (eq (current-buffer) origin))
+    (should (= 10 (point)))))
+
+(ert-deftest prrr-thread-test-capture-keys ()
+  (prrr-thread-test--with-capture ()
+    (should (eq 'prrr-comment-confirm (key-binding (kbd "C-c C-c"))))
+    (should (eq 'prrr-comment-abort (key-binding (kbd "C-c C-k"))))
+    (should (eq 'prrr-comment-toggle-immediate (key-binding (kbd "C-c C-i"))))))
+
+(ert-deftest prrr-thread-test-capture-empty-refused ()
+  "Review Focus 5: an empty comment is refused and the buffer stays."
+  (prrr-thread-test--with-capture ()
+    (insert "  \n")
+    (should-error (prrr-comment-confirm) :type 'user-error)
+    (should (eq major-mode 'prrr-comment-mode))
+    (should-not confirmed)))
+
+(ert-deftest prrr-thread-test-capture-allow-empty ()
+  (prrr-thread-test--with-capture (:allow-empty t)
+    (prrr-comment-confirm)
+    (should (equal "" (car (car confirmed))))))
+
+(ert-deftest prrr-thread-test-capture-abort ()
+  (prrr-thread-test--with-capture (:body "Draft")
+    (should (equal "Draft" (buffer-string)))
+    (let ((capture (current-buffer)))
+      (prrr-comment-abort)
+      (should-not (buffer-live-p capture)))
+    (should-not confirmed)))
+
+(ert-deftest prrr-thread-test-capture-toggle-immediate ()
+  (prrr-thread-test--with-capture (:immediate t)
+    (should (string-match-p "publish now" (prrr-comment--header)))
+    (prrr-comment-toggle-immediate)
+    (insert "Later.")
+    (prrr-comment-confirm)
+    (should (equal '("Later." nil) (seq-take (car confirmed) 2)))))
+
+(ert-deftest prrr-thread-test-capture-fixed-choice ()
+  (prrr-thread-test--with-capture (:immediate t :immediate-allowed nil)
+    (should-error (prrr-comment-toggle-immediate) :type 'user-error)
+    (should-not (string-match-p "publish now" (prrr-comment--header)))))
+
+(ert-deftest prrr-thread-test-capture-keeps-text-when-sending-fails ()
+  "Review Focus 5: when the command refuses the text, nothing is lost."
+  (let ((origin (generate-new-buffer "prrr-test-origin")))
+    (unwind-protect
+        (with-current-buffer origin
+          (with-current-buffer (prrr-comment-capture "x" (lambda (_text _now) (user-error "No")))
+            (insert "Keep me.")
+            (should-error (prrr-comment-confirm) :type 'user-error)
+            (should (equal "Keep me." (buffer-string)))
+            (kill-buffer)))
+      (kill-buffer origin))))
+
+(defun prrr-thread-test--draw (extra)
+  "Draw two file sections in the current buffer, after an EXTRA one when non-nil.
+Like a redraw of the Review Buffer: everything is erased first."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (magit-insert-section (prrr-thread-test-root)
+      (when extra
+        (magit-insert-section (note 'extra) (insert "a new section\n")))
+      (magit-insert-section (file "a.el") (insert "a heading\na one\na two\n"))
+      (magit-insert-section (file "b.el") (insert "b heading\nb one\nb two\n")))))
+
+(defmacro prrr-thread-test--with-redrawn-capture (finish)
+  "Capture from line \"b one\", redraw the origin, then run FINISH.
+FINISH is the command that ends the capture; point must come back."
+  `(let ((origin (generate-new-buffer "prrr-test-origin")))
+     (unwind-protect
+         (progn
+           (switch-to-buffer origin)
+           (magit-section-mode)
+           (prrr-thread-test--draw nil)
+           (goto-char (point-min))
+           (search-forward "b one")
+           (backward-char 2)
+           (with-current-buffer (prrr-comment-capture "b.el" #'ignore)
+             (insert "Text.")
+             (with-current-buffer origin (prrr-thread-test--draw t))
+             (,finish))
+           (should (eq (current-buffer) origin))
+           (should (equal "b one" (buffer-substring (line-beginning-position)
+                                                    (line-end-position))))
+           (should (= 3 (current-column))))
+       (kill-buffer origin))))
+
+(ert-deftest prrr-thread-test-capture-confirm-survives-a-redraw ()
+  "SPEC 7: confirm returns point to the anchor, even after the Outbox redrew the buffer."
+  (prrr-thread-test--with-redrawn-capture prrr-comment-confirm))
+
+(ert-deftest prrr-thread-test-capture-abort-survives-a-redraw ()
+  (prrr-thread-test--with-redrawn-capture prrr-comment-abort))
+
+(ert-deftest prrr-thread-test-capture-origin-killed ()
+  "Review Focus 5: confirming after the Review Buffer is gone still sends."
+  (let ((confirmed nil)
+        (origin (generate-new-buffer "prrr-test-origin")))
+    (with-current-buffer origin
+      (with-current-buffer (prrr-comment-capture "x" (lambda (text _now) (push text confirmed)))
+        (kill-buffer origin)
+        (insert "Still sent.")
+        (prrr-comment-confirm)))
+    (should (equal '("Still sent.") confirmed))))
 
 (provide 'prrr-thread-test)
 ;;; prrr-thread-test.el ends here
