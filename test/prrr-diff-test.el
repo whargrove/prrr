@@ -125,7 +125,6 @@
                                                  (prrr-diff-test--file "b" 1)
                                                  (prrr-diff-test--file "c" 1))
                                            '("b"))))))
-```
 
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here
