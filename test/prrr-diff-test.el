@@ -732,7 +732,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
   (should (eq 'magit-dispatch (keymap-lookup prrr-diff-mode-map "h"))))
 
 (ert-deftest prrr-diff-test-later-keys-do-nothing-yet ()
-  "Magit's commit, stage, discard and friends never run in a Review Buffer.
+  "Magit's diff arguments, log and friends never run in a Review Buffer.
 Checked by the effective binding on a file heading, a hunk line and a
 Thread, where section keymaps apply on top of the mode's."
   (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
@@ -743,8 +743,11 @@ Thread, where section keymaps apply on top of the mode's."
                                              (hunk-line . ,(oref hunk content))
                                              (thread . ,(oref thread start))))
         (goto-char position)
-        (dolist (key '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L"))
+        (dolist (key prrr-diff--later-keys)
           (should (equal (list where key 'undefined)
+                         (list where key (key-binding (kbd key))))))
+        (pcase-dolist (`(,key . ,command) prrr-diff--review-keys)
+          (should (equal (list where key command)
                          (list where key (key-binding (kbd key))))))))))
 
 (ert-deftest prrr-diff-test-previous-thread-washes-files-before-point ()

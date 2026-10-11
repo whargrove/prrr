@@ -393,32 +393,44 @@ Buffer that child may be a File Comment."
 
 ;;;; Mode and refresh
 
-(defconst prrr-diff--later-keys
-  '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L")
-  "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
-They are `undefined' until then, so magit's commit, stage, discard or
-rebase never run from a Review Buffer.")
+(defconst prrr-diff--review-keys
+  '(("c" . prrr-comment) ("C" . prrr-comment-file) ("r" . prrr-reply)
+    ("e" . prrr-edit-comment) ("k" . prrr-delete-comment)
+    ("d" . prrr-discussion-comment) ("R" . prrr-toggle-resolved)
+    ("s" . prrr-comment-suggest))
+  "The commenting and reviewing keys of a Review Buffer (SPEC section 9).
+They are bound in the section keymaps too, which win over the mode's
+and in which magit binds several of them.")
 
-(defun prrr-diff--undefine-later-keys (map)
-  "Bind every key of `prrr-diff--later-keys' in MAP to `undefined'; return MAP."
+(defconst prrr-diff--later-keys
+  '("D" "." "m" ">" "<" "S" "O" "@" "L")
+  "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
+They are `undefined' until then, so magit's diff arguments or log never
+run from a Review Buffer.")
+
+(defun prrr-diff--bind-review-keys (map)
+  "Bind the review keys in MAP and make the later keys `undefined'; return MAP.
+They are `prrr-diff--review-keys' and `prrr-diff--later-keys'."
+  (pcase-dolist (`(,key . ,command) prrr-diff--review-keys)
+    (keymap-set map key command))
   (dolist (key prrr-diff--later-keys)
     (keymap-set map key #'undefined))
   map)
 
 (defvar prrr-diff-file-section-map
-  (prrr-diff--undefine-later-keys (define-keymap :parent magit-file-section-map))
+  (prrr-diff--bind-review-keys (define-keymap :parent magit-file-section-map))
   "Keymap of a Review Buffer's `file' sections.
 A section's keymap is a text property, which wins over
-`prrr-diff-mode-map'; magit's, which applies by type name, binds keys
-of `prrr-diff--later-keys' such as `C'.")
+`prrr-diff-mode-map'; magit's, which applies by type name,
+binds keys of `prrr-diff--review-keys' such as `C'.")
 
 (defvar prrr-diff-hunk-section-map
-  (prrr-diff--undefine-later-keys (define-keymap :parent magit-hunk-section-map))
+  (prrr-diff--bind-review-keys (define-keymap :parent magit-hunk-section-map))
   "Keymap of a Review Buffer's `hunk' sections.
 See `prrr-diff-file-section-map' for why it exists.")
 
 (defvar prrr-diff-mode-map
-  (prrr-diff--undefine-later-keys
+  (prrr-diff--bind-review-keys
    (define-keymap
      :parent magit-diff-mode-map
      "]" #'prrr-next-thread
@@ -438,8 +450,8 @@ See `prrr-diff-file-section-map' for why it exists.")
      "?" #'prrr-menu
      "C-o" #'prrr-menu))
   "Keys of the Review Buffer (SPEC section 9).
-The keys of `prrr-diff--later-keys' are `undefined' here and in the
-section keymaps.")
+The keys of `prrr-diff--review-keys' and `prrr-diff--later-keys' are bound
+here and in the section keymaps.")
 
 (define-derived-mode prrr-diff-mode magit-diff-mode "prrr"
   "Review one pull request: its diff with Threads inline.

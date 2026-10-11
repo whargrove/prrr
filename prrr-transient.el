@@ -33,6 +33,7 @@
 (require 'prrr-stack)
 (require 'prrr-diff)
 (require 'prrr-sync)
+(require 'prrr-review)
 
 (defun prrr-transient--shown (what value)
   "Describe a toggle for WHAT that is on when VALUE is non-nil."
@@ -76,7 +77,17 @@
 ;;;###autoload (autoload 'prrr-menu "prrr-transient" nil t)
 (transient-define-prefix prrr-menu ()
   "Act on the Review Buffer (SPEC section 9).
-Milestones 4 to 7 add the Comment, Range, Stack, Review and Agent groups."
+Milestones 5 to 7 add the Range, Stack and Agent groups."
+  [["Comment"
+    ("-i" "publish immediately" "--immediate")
+    ("c" "on line or region" prrr-comment)
+    ("C" "on file" prrr-comment-file)
+    ("r" "reply" prrr-reply)
+    ("e" "edit" prrr-edit-comment)
+    ("k" "delete" prrr-delete-comment)
+    ("d" "discussion" prrr-discussion-comment)
+    ("R" "resolve or unresolve" prrr-toggle-resolved)
+    ("s" "suggest a change" prrr-comment-suggest)]]
   [["Navigate"
     ("]" "next Thread" prrr-next-thread)
     ("[" "previous Thread" prrr-previous-thread)
