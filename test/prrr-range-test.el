@@ -30,6 +30,7 @@
 (require 'prrr-test-helper)
 (require 'prrr-diff-test)
 (require 'prrr-range)
+(require 'prrr-transient)
 
 (defun prrr-range-test--line ()
   "Return the text of the line at point."
@@ -300,6 +301,27 @@ lives inside the fixture's .git, so it goes when the fixture goes."
           (kill-buffer (prrr-diff-open (prrr-diff-test--pullreq)))
           (should (equal (list first) (process-lines "git" "-C" repo "rev-parse"
                                                      (format "refs/prrr/1/%s" first)))))))))
+
+;;;; Keys
+
+(ert-deftest prrr-range-test-keys-and-menus-agree ()
+  "SPEC section 9: D opens the Range menu; . m > < are keys and in the main menu."
+  (pcase-dolist (`(,key . ,command) '(("D" . prrr-range) ("." . prrr-goto-default-range)
+                                      ("m" . prrr-mark-seen) (">" . prrr-stack-up)
+                                      ("<" . prrr-stack-down)))
+    (should (eq command (keymap-lookup prrr-diff-mode-map key)))
+    (should (eq command (keymap-lookup prrr-diff-hunk-section-map key)))
+    (let ((suffix (transient-get-suffix 'prrr-menu key)))
+      (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))
+                                     :command)))))
+  (pcase-dolist (`(,key . ,command) '(("d" . prrr-goto-default-range)
+                                      ("r" . prrr-show-since-review)
+                                      ("o" . prrr-show-since-opened)
+                                      ("c" . prrr-show-commit)
+                                      ("b" . prrr-show-between)))
+    (let ((suffix (transient-get-suffix 'prrr-range key)))
+      (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))
+                                     :command))))))
 
 (provide 'prrr-range-test)
 ;;; prrr-range-test.el ends here

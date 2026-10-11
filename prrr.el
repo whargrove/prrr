@@ -69,6 +69,11 @@
 (autoload 'prrr-toggle-resolved "prrr-review" "Resolve the Thread at point, or unresolve it." t)
 (autoload 'prrr-submit "prrr-transient" "Submit your Pending Review with a Verdict, or discard it." t)
 (autoload 'prrr-outbox "prrr-transient" "Act on this pull request's unsent writes." t)
+(autoload 'prrr-range "prrr-transient" "Choose the Range the Review Buffer shows." t)
+(autoload 'prrr-show-since-review "prrr-range" "Show what changed since your latest review." t)
+(autoload 'prrr-show-since-opened "prrr-range" "Show what changed since you last saw this pull request." t)
+(autoload 'prrr-show-commit "prrr-range" "Show one commit of the pull request." t)
+(autoload 'prrr-show-between "prrr-range" "Show the diff between two commits of the pull request." t)
 
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))
