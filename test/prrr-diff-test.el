@@ -906,5 +906,39 @@ FROM and TO are the texts of the lines."
       (goto-char (oref (cadr (oref thread children)) start))
       (should (equal "PRRC_kwDOexample0000002" (prrr-comment-comment-id (prrr-diff-comment-at-point))))
       (should (equal "PRRT_kwDOexample0000001" (prrr-thread-thread-id (prrr-diff-thread-at-point)))))))
+;;;; Unsent writes and suggestions
+
+(ert-deftest prrr-diff-test-suggestion-against-anchored-lines ()
+  "A suggestion on a right-side Thread is a mini diff against its lines."
+  (prrr-diff-test--with-buffer
+      (progn (prrr-diff-test--store-fixture)
+             (prrr-db-insert (prrr-comment-create
+                              :comment-id "C_SUGGEST" :thread-id "PRRT_kwDOexample0000001"
+                              :pr-id prrr-diff-test--pr :author "example-carol"
+                              :body "```suggestion\nline 12\n```"
+                              :created-at "2026-09-05T00:00:00Z" :state 'submitted
+                              :local-state 'sent)))
+    (prrr-diff-test--hunks "src/example.el")
+    (goto-char (point-min))
+    (re-search-forward "^      Suggested change:\n      -line twelve\n      \\+line 12$")))
+
+(ert-deftest prrr-diff-test-header-counts-the-outbox ()
+  "SPEC section 6: the header counts the Outbox; unsent Discussion Comments show."
+  (prrr-diff-test--with-buffer
+      (progn
+        (prrr-diff-test--store-fixture)
+        (prrr-db-insert (prrr-outbox-create :id "1" :pr-id prrr-diff-test--pr :kind 'viewed
+                                            :payload '(:path "a.el" :viewed t) :attempts 0))
+        (prrr-db-insert (prrr-outbox-create :id "2" :pr-id prrr-diff-test--pr :kind 'discussion
+                                            :payload '(:comment "local:D" :body "Thanks!")
+                                            :attempts 1 :last-error "offline")))
+    (let ((status (prrr-diff-test--status-line)))
+      (should (string-match-p "Pending Review: 1 comment" status))
+      (should (string-match-p "Outbox: 1 unsent, 1 failed, O to act" status)))
+    (let ((discussion (magit-get-section '((discussion) (prrr-header) (diffbuf)))))
+      (should (string-match-p "Discussion (1)" (prrr-diff-test--text discussion)))
+      (should (string-match-p "Your Discussion Comment  failed: offline"
+                              (prrr-diff-test--text discussion))))))
+
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

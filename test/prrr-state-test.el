@@ -935,5 +935,26 @@
   (should (equal "```suggestion\nline twelve\nline 13\n```\n"
                  (prrr-state-suggestion-body '((?+ . "line twelve") (?\s . "line 13")))))
   (should-error (prrr-state-suggestion-body '((?- . "line 12"))) :type 'user-error))
+;;;; Suggestions
+
+(ert-deftest prrr-state-test-split-suggestions ()
+  (should (equal '((text . "Try this:") (suggestion "a" "b") (text . "Thanks."))
+                 (prrr-state-split-suggestions "Try this:\n```suggestion\na\nb\n```\nThanks.")))
+  (should (equal '((suggestion "a") (suggestion "b"))
+                 (prrr-state-split-suggestions "```suggestion\na\n```\n```suggestion\nb\n```")))
+  (should (equal '((text . "plain\n\nmore")) (prrr-state-split-suggestions "plain\n\nmore\n")))
+  (should-not (prrr-state-split-suggestions "")))
+
+(ert-deftest prrr-state-test-split-suggestions-empty-block ()
+  "An empty block deletes the lines; one with an empty line replaces them by it."
+  (should (equal '((suggestion)) (prrr-state-split-suggestions "```suggestion\n```")))
+  (should (equal '((suggestion "")) (prrr-state-split-suggestions "```suggestion\n\n```"))))
+
+(ert-deftest prrr-state-test-suggestion-diff ()
+  (should (equal '((?\s . "a") (?- . "b") (?+ . "B") (?\s . "c"))
+                 (prrr-state-suggestion-diff '("a" "b" "c") '("a" "B" "c"))))
+  (should (equal '((?- . "x")) (prrr-state-suggestion-diff '("x") nil)))
+  (should (equal '((?+ . "y")) (prrr-state-suggestion-diff nil '("y")))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

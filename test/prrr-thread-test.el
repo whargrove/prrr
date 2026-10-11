@@ -106,7 +106,7 @@ BODY sees `section', the first child of the root."
       (prrr-thread-insert (prrr-thread-create :thread-id "T_9" :pr-id "PR_1" :path "src/old.el"
                                               :line nil :original-line 40 :side 'left
                                               :subject-type 'line :outdated-p t)
-                          nil t)
+                          nil :with-path t)
     (should (eq 'thread (oref section type)))
     (should (looking-at "    Thread  src/old.el, line 40, left  0 comments$"))))
 
@@ -117,6 +117,66 @@ BODY sees `section', the first child of the root."
     (should (eq 'thread (oref section type)))
     (forward-line)
     (should (looking-at "    ghost  2026-09-02$"))))
+
+;;;; Unsent writes, agents and suggestions
+
+(defun prrr-thread-test--row (id &optional error)
+  "A queued write with ID, failed with ERROR when non-nil."
+  (prrr-outbox-create :id id :pr-id "PR_1" :kind 'edit :payload nil
+                      :created-at "2026-10-10T12:00:00Z" :attempts (if error 1 0)
+                      :last-error error))
+
+(ert-deftest prrr-thread-test-unsent-and-failed ()
+  (let ((writes (make-hash-table :test #'equal)))
+    (puthash "C_1" (prrr-thread-test--row "1") writes)
+    (puthash "C_2" (prrr-thread-test--row "2" "GitHub returned HTTP 502") writes)
+    (prrr-thread-test--with-render
+        (prrr-thread-insert (prrr-test-thread)
+                            (list (prrr-thread-test--comment)
+                                  (prrr-thread-test--comment :id "C_2" :author "example-me"))
+                            :writes writes)
+      (should (eq 'thread (oref section type)))
+      (forward-line)
+      (should (looking-at "    example-bob  2026-09-02  unsent$"))
+      (should (eq 'prrr-unsent (get-text-property (- (line-end-position) 2) 'font-lock-face)))
+      (forward-line 2)
+      (should (looking-at "    example-me  2026-09-02  failed: GitHub returned HTTP 502$"))
+      (should (eq 'prrr-failed (get-text-property (- (line-end-position) 2) 'font-lock-face))))))
+
+(ert-deftest prrr-thread-test-agent-comment ()
+  (let ((comment (prrr-thread-test--comment)))
+    (setf (prrr-comment-agent-p comment) t)
+    (prrr-thread-test--with-render
+        (prrr-thread-insert (prrr-test-thread) (list comment))
+      (should (eq 'thread (oref section type)))
+      (forward-line)
+      (should (looking-at "    example-bob  2026-09-02  agent$")))))
+
+(ert-deftest prrr-thread-test-suggestion-as-mini-diff ()
+  (prrr-thread-test--with-render
+      (prrr-thread-insert (prrr-test-thread)
+                          (list (prrr-thread-test--comment
+                                 :body "Rename it:\n```suggestion\nline 12\n```\nThanks."))
+                          :lines '("line twelve"))
+    (should (eq 'thread (oref section type)))
+    (should (equal '("    Thread  line 12  1 comment"
+                     "    example-bob  2026-09-02"
+                     "      Rename it:"
+                     "      Suggested change:"
+                     "      -line twelve"
+                     "      +line 12"
+                     "      Thanks.")
+                   (prrr-thread-test--lines)))
+    (goto-char (point-min))
+    (re-search-forward "^      \\+line 12")
+    (should (eq 'magit-diff-added (get-text-property (- (point) 2) 'font-lock-face)))))
+
+(ert-deftest prrr-thread-test-unsent-discussion-comment ()
+  (prrr-thread-test--with-render
+      (prrr-thread-insert-unsent-post "Thanks!" (prrr-thread-test--row "9"))
+    (should (eq 'unsent-post (oref section type)))
+    (should (equal '("    Your Discussion Comment  unsent" "      Thanks!")
+                   (prrr-thread-test--lines)))))
 
 (provide 'prrr-thread-test)
 ;;; prrr-thread-test.el ends here

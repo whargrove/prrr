@@ -174,13 +174,25 @@ nil when forge recorded no base commit or it is not in the repository."
 
 ;;;; Washing
 
-(defun prrr-diff--insert-anchored (anchors side line comments)
+(defun prrr-diff--anchored-lines (thread right-lines)
+  "Return the text of THREAD's lines that RIGHT-LINES holds, in order.
+RIGHT-LINES maps new-file line numbers to their text."
+  (let ((line (prrr-thread-line thread)))
+    (delq nil (mapcar (lambda (number) (gethash number right-lines))
+                      (number-sequence (or (prrr-thread-start-line thread) line) line)))))
+
+(defun prrr-diff--insert-anchored (anchors side line comments right-lines)
   "Insert the Threads ANCHORS holds for LINE of SIDE, and remove them.
-COMMENTS maps Thread ids to their Review Comments."
+COMMENTS maps Thread ids to their Review Comments.  RIGHT-LINES maps
+the new-file numbers of the hunk's lines so far to their text, against
+which a right-side Thread's suggestions are shown."
   (when line
     (let ((key (cons side line)))
       (dolist (thread (gethash key anchors))
-        (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)))
+        (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
+                            :writes (plist-get prrr-diff--data :writes)
+                            :lines (and (eq side 'right)
+                                        (prrr-diff--anchored-lines thread right-lines))))
       (remhash key anchors))))
 
 (defun prrr-diff--wash-hunk (anchors comments)
@@ -200,7 +212,8 @@ there was a hunk."
            (about (match-string 2))
            (combined (length= ranges 3))
            (old (car (car ranges)))
-           (new (car (car (last ranges)))))
+           (new (car (car (last ranges))))
+           (right-lines (and (> (hash-table-count anchors) 0) (make-hash-table))))
       (magit-delete-line)
       (magit-insert-section section (hunk (cons about ranges) nil
                                           :combined combined
@@ -216,9 +229,12 @@ there was a hunk."
               (?\s (setq old-line old new-line new) (cl-incf old) (cl-incf new))
               (?- (setq old-line old) (cl-incf old))
               (?+ (setq new-line new) (cl-incf new)))
+            (when (and right-lines new-line)
+              (puthash new-line (buffer-substring-no-properties (1+ (point)) (line-end-position))
+                       right-lines))
             (forward-line)
-            (prrr-diff--insert-anchored anchors 'left old-line comments)
-            (prrr-diff--insert-anchored anchors 'right new-line comments)))))
+            (prrr-diff--insert-anchored anchors 'left old-line comments right-lines)
+            (prrr-diff--insert-anchored anchors 'right new-line comments right-lines)))))
     t))
 
 (defun prrr-diff--insert-group (type title threads comments)
@@ -232,7 +248,8 @@ any file names each Thread's file."
                     'font-lock-face 'magit-section-secondary-heading))
       (dolist (thread threads)
         (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
-                            (eq type 'outdated-files))))))
+                            :with-path (eq type 'outdated-files)
+                            :writes (plist-get prrr-diff--data :writes))))))
 
 (defun prrr-diff--insert-note (text)
   "Insert TEXT as a dimmed, indented line."
@@ -251,7 +268,8 @@ becomes a one-line note."
   (let ((anchors (make-hash-table :test #'equal))
         (lines (and threads (prrr-file-threads-lines threads))))
     (dolist (thread (and threads (prrr-file-threads-file-comments threads)))
-      (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)))
+      (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
+                          :writes (plist-get prrr-diff--data :writes)))
     (dolist (thread lines)
       (let ((key (prrr-state-thread-anchor thread)))
         (puthash key (append (gethash key anchors) (list thread)) anchors)))
@@ -512,14 +530,27 @@ Threads whose file is not in the diff."
   "Return the first seven characters of OID."
   (substring oid 0 (min 7 (length oid))))
 
+
+(defun prrr-diff--outbox-status (data)
+  "Describe the Outbox of the review DATA for the header, or return nil."
+  (let* ((outbox (plist-get data :outbox))
+         (failed (seq-count #'prrr-outbox-last-error outbox))
+         (unsent (- (length outbox) failed)))
+    (when outbox
+      (concat "Outbox: "
+              (string-join (delq nil (list (and (> unsent 0) (format "%d unsent" unsent))
+                                           (and (> failed 0) (format "%d failed, O to act" failed))))
+                           ", ")))))
+
 (defun prrr-diff--status-line (pullreq base head data)
   "Return the header's status line for PULLREQ.
 BASE and HEAD are the diffed oids, either may be nil; DATA is the
-stored review data.  Names the Range, the Pending Review's comments,
-what the last refetch said, and whether GitHub's head differs from the
-local one."
+review data shown.  Names the Range, the Pending Review's comments, the
+Outbox, a queued Submit, what the last refetch said, and whether
+GitHub's head differs from the local one."
   (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
          (github-head (plist-get status :head-oid))
+         (submit (plist-get data :submit))
          (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
                              (plist-get data :comments))))
     (string-join
@@ -528,8 +559,13 @@ local one."
                      (format "Range: default, %s..%s" (prrr-diff--short base)
                              (prrr-diff--short head))
                    "Range: unavailable")
-                 (and (plist-get data :pending-review)
+                 (and (or (plist-get data :pending-review) (> pending 0))
                       (format "Pending Review: %d comment%s" pending (if (= pending 1) "" "s")))
+                 (prrr-diff--outbox-status data)
+                 (and submit
+                      (format "submitting (%s)…"
+                              (plist-get (prrr-outbox-payload submit) :verdict)))
+                 (prrr-sync-outbox-describe)
                  (prrr-sync-describe status "refreshing…")
                  (and github-head head (not (equal github-head head))
                       (format "GitHub's head is %s: run forge-pull, then g"
@@ -539,7 +575,8 @@ local one."
 (defun prrr-diff--insert-header (pullreq base head data)
   "Insert the header of PULLREQ's Review Buffer.
 The title, a status line (`prrr-diff--status-line' of BASE, HEAD and
-DATA), and hidden `description' and `discussion' sections."
+DATA), and hidden `description' and `discussion' sections.  The
+discussion ends with DATA's unsent Discussion Comments."
   (magit-insert-section (prrr-header)
     (magit-insert-heading
       (propertize (format "#%d %s" (oref pullreq number) (oref pullreq title))
@@ -552,13 +589,16 @@ DATA), and hidden `description' and `discussion' sections."
       (if (string-empty-p (string-trim (or (oref pullreq body) "")))
           (prrr-diff--insert-note "No description")
         (forge-insert-post pullreq nil)))
-    (let ((posts (prrr-diff--posts pullreq)))
+    (let ((posts (prrr-diff--posts pullreq))
+          (unsent (plist-get data :discussion)))
       (magit-insert-section section (discussion nil t)
         ;; Without this, forge's `forge-discussion-section-map' applies.
         (oset section keymap nil)
-        (magit-insert-heading (format "Discussion (%d)" (length posts)))
+        (magit-insert-heading (format "Discussion (%d)" (+ (length posts) (length unsent))))
         (dolist (post posts)
-          (forge-insert-post post pullreq))))
+          (forge-insert-post post pullreq))
+        (pcase-dolist (`(,_id ,body ,row) unsent)
+          (prrr-thread-insert-unsent-post body row))))
     (insert "\n")))
 
 (defun prrr-diff-refresh-buffer ()

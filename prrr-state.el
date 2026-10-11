@@ -782,5 +782,44 @@ the new file."
   (when (seq-some (lambda (line) (eq (car line) ?-)) lines)
     (user-error "A suggestion replaces lines of the new file; the region has removed lines"))
   (concat "```suggestion\n" (mapconcat #'cdr lines "\n") "\n```\n"))
+;;;; Suggestions
+
+(defun prrr-state-split-suggestions (body)
+  "Split BODY into its prose and its suggestion blocks, in order.
+Return a list of (text . STRING) and (suggestion . LINES) pairs, LINES
+being the suggested lines, nil for a block that deletes the anchored
+lines.  A block opens with a line \"```suggestion\" and closes with a
+line \"```\"."
+  (let ((parts nil) (start 0))
+    (while (string-match "^```suggestion[ \t]*\n\\(\\(?:.*\n\\)*?\\)```[ \t]*$" body start)
+      (let ((text (substring body start (match-beginning 0)))
+            (lines (match-string 1 body)))
+        (setq start (match-end 0))
+        (unless (string-empty-p (string-trim text))
+          (push (cons 'text (string-trim text)) parts))
+        (push (cons 'suggestion (and (not (string-empty-p lines))
+                                     (split-string (string-remove-suffix "\n" lines) "\n")))
+              parts)))
+    (let ((rest (string-trim (substring body start))))
+      (unless (string-empty-p rest)
+        (push (cons 'text rest) parts)))
+    (nreverse parts)))
+
+(defun prrr-state-suggestion-diff (old new)
+  "Return the mini diff from the lines OLD to the lines NEW.
+A list of (CHAR . LINE): ?\\s for a line both keep at the start or the
+end, ?- for one only OLD has, ?+ for one only NEW has."
+  (let ((head 0) (tail 0))
+    (while (and (< head (length old)) (< head (length new))
+                (equal (nth head old) (nth head new)))
+      (cl-incf head))
+    (while (and (< tail (- (length old) head)) (< tail (- (length new) head))
+                (equal (nth (- (length old) tail 1) old) (nth (- (length new) tail 1) new)))
+      (cl-incf tail))
+    (append (mapcar (lambda (line) (cons ?\s line)) (seq-take old head))
+            (mapcar (lambda (line) (cons ?- line)) (seq-subseq old head (- (length old) tail)))
+            (mapcar (lambda (line) (cons ?+ line)) (seq-subseq new head (- (length new) tail)))
+            (mapcar (lambda (line) (cons ?\s line)) (seq-subseq old (- (length old) tail))))))
+
 (provide 'prrr-state)
 ;;; prrr-state.el ends here
