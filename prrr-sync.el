@@ -34,6 +34,11 @@
 ;; in order per PR, a second apart, retrying failures on the next
 ;; write, the next refetch or `prrr-sync-retry'.  Its rules are pure
 ;; functions in prrr-state.el.
+;;
+;; The Bookmark, the head the viewer last saw, is recorded here too,
+;; and so is pinning: every commit a Range may start at later is kept
+;; under refs/prrr/ so that neither a force-push nor git's garbage
+;; collection takes it away.
 
 ;;; Code:
 
@@ -42,6 +47,7 @@
 (require 'parse-time)
 (require 'eieio)
 (require 'magit-mode)
+(require 'magit-git)
 (require 'forge)
 (require 'prrr-db)
 (require 'prrr-github)
@@ -878,6 +884,27 @@ Outbox refetches it once it has nothing more to send."
                          (prrr-sync-retry pr-id buffer))))))
                fail))))
         t))))
+
+;;;; Bookmark and pinned commits
+
+(defun prrr-sync-pin (number oid)
+  "Keep the commit OID of PR NUMBER from git's garbage collection.
+It is pinned as the ref refs/prrr/NUMBER/OID in the repository of
+`default-directory', which forge's fetches leave alone, so a commit
+that a force-push left behind stays for the Ranges that start at it
+\(SPEC section 8).  Return non-nil when pinned, nil when OID is not
+in the repository."
+  (and oid (magit-git-success "update-ref" (format "refs/prrr/%d/%s" number oid) oid)))
+
+(defun prrr-sync-record-bookmark (pullreq oid)
+  "Record OID as the head of PULLREQ the viewer last saw, and pin it.
+The Bookmark (table `pr-bookmark') is where the since-opened Range
+starts.  The Review Buffer records it when it closes, on Submit and
+on `prrr-mark-seen', never on open."
+  (prrr-db-insert (prrr-bookmark-create :pr-id (oref pullreq their-id)
+                                        :last-opened-head-oid oid
+                                        :last-opened-at (prrr-sync--timestamp)))
+  (prrr-sync-pin (oref pullreq number) oid))
 
 ;;;; Commands
 

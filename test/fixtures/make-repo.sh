@@ -3,7 +3,7 @@
 #
 # main:  base -- later on main            (base-rev is main's tip)
 #           \
-#            head = refs/pullreqs/1
+#            first -- head = refs/pullreqs/1
 #
 # head changes, relative to base:
 #   README.md          lines 1 and 3 rewritten, a line added (4 lines)
@@ -12,6 +12,8 @@
 #   src/example.el     line 12 and line 30 rewritten (two hunks)
 #   src/moved-from.el  renamed to src/moved-to.el, unchanged
 #   src/old.el         deleted (50 lines)
+# The PR has two commits: "first" makes every change but line 30's,
+# "head" rewrites line 30.
 # "later on main" adds CHANGELOG, which the PR's diff must not show.
 set -eu
 dir=$1
@@ -33,13 +35,16 @@ printf '\000\001\002' > data.bin
 git add -A
 git commit -q -m base
 git checkout -q -b feature
-sed -i.bak -e 's/^line 12$/line twelve/' -e 's/^line 30$/line thirty/' src/example.el
+sed -i.bak -e 's/^line 12$/line twelve/' src/example.el
 rm src/example.el.bak
 printf 'Better title\n\nSome text,\nand more.\n' > README.md
 git rm -q src/old.el
 printf 'Notes\nA second note.\n' > docs/notes.md
 git mv src/moved-from.el src/moved-to.el
 printf '\000\001\003' > data.bin
+git commit -q -a -m first
+sed -i.bak -e 's/^line 30$/line thirty/' src/example.el
+rm src/example.el.bak
 git commit -q -a -m head
 git update-ref refs/pullreqs/1 HEAD
 git checkout -q main
