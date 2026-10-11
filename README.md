@@ -228,8 +228,8 @@ kept in prrr's database, so they survive restarting Emacs.
 
 Publishing a single comment at once while you have a pending review
 depends on GitHub accepting it; if GitHub refuses, the comment stays
-in the Outbox with GitHub's reason, and you can add it to your pending
-review instead.
+in the Outbox with GitHub's reason. To put it in your pending review
+instead, drop it with `O k` and write the comment again without `C-u`.
 
 ## Development
 
