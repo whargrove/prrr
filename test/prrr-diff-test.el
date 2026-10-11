@@ -30,6 +30,7 @@
 (require 'seq)
 (require 'prrr-test-helper)
 (require 'prrr-diff)
+(require 'prrr-github)
 
 ;;;; Changed files
 
@@ -128,3 +129,164 @@
 
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here
+
+;;;; Review Buffer
+
+(defconst prrr-diff-test--pr "PR_kwDOexample0000001"
+  "The PR of the review-data fixture.")
+
+(defun prrr-diff-test--pullreq ()
+  "The fixture repository's pull request, as forge would hold it."
+  (forge-pullreq :id "forge-1" :number 1 :title "Example change" :their-id prrr-diff-test--pr
+                 :base-rev prrr-test-repo-base :author "example-alice"
+                 :created "2026-09-01T00:00:00Z" :body "Why this change."))
+
+(defun prrr-diff-test--store-fixture ()
+  "Store the review-data fixture for the fixture PR."
+  (prrr-db-replace-review-data
+   prrr-diff-test--pr
+   (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-diff-test--pr
+                                   "2026-10-10T12:00:00Z")))
+
+(defmacro prrr-diff-test--with-buffer (setup &rest body)
+  "Open the fixture PR's Review Buffer and run BODY in it.
+SETUP runs first, inside the fixture repository and a fresh database."
+  (declare (indent 1))
+  `(prrr-db-with-test-db
+     (prrr-test-with-repo
+       ,setup
+       (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
+         (unwind-protect
+             (with-current-buffer buffer ,@body)
+           (kill-buffer buffer))))))
+
+(defun prrr-diff-test--file-section (path)
+  "Return the `file' section of PATH in the current Review Buffer."
+  (magit-get-section `((file . ,path) (diffbuf))))
+
+(defun prrr-diff-test--files ()
+  "Return the paths of the `file' sections, in order."
+  (mapcar (lambda (section) (oref section value))
+          (seq-filter (lambda (section) (eq (oref section type) 'file))
+                      (oref magit-root-section children))))
+
+(defun prrr-diff-test--text (section)
+  "Return SECTION's text without properties."
+  (buffer-substring-no-properties (oref section start) (oref section end)))
+
+(ert-deftest prrr-diff-test-files-from-merge-base ()
+  (prrr-diff-test--with-buffer nil
+    (should (eq 'prrr-diff-mode major-mode))
+    (should (equal '("README.md" "data.bin" "docs/notes.md" "src/example.el"
+                     "src/moved-to.el" "src/old.el")
+                   (prrr-diff-test--files)))
+    (should (equal (format "%s..%s"
+                           (car (process-lines "git" "rev-parse" "main~1"))
+                           (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+                   magit-buffer-diff-range))
+    (should (eq 'committed magit-buffer-diff-type))))
+
+(ert-deftest prrr-diff-test-eager-files-washed-others-deferred ()
+  (let ((prrr-eager-files 2))
+    (prrr-diff-test--with-buffer nil
+      (let ((readme (prrr-diff-test--file-section "README.md"))
+            (notes (prrr-diff-test--file-section "docs/notes.md")))
+        (should-not (oref readme hidden))
+        (should (eq 'hunk (oref (car (oref readme children)) type)))
+        (should (oref notes hidden))
+        (should (oref notes washer))
+        (should-not (oref notes children))))))
+
+(ert-deftest prrr-diff-test-lazy-file-washes-on-expand ()
+  (let ((prrr-eager-files 0))
+    (prrr-diff-test--with-buffer nil
+      (let ((notes (prrr-diff-test--file-section "docs/notes.md")))
+        (magit-section-show notes)
+        (should-not (oref notes washer))
+        (should (equal '(hunk) (mapcar (lambda (child) (oref child type))
+                                       (oref notes children))))
+        (should (string-match-p "^\\+A second note\\.$" (prrr-diff-test--text notes)))))))
+
+(ert-deftest prrr-diff-test-bodies-without-hunks ()
+  "Review Focus 2: binary files and pure renames get a one-line body."
+  (let ((prrr-eager-files 100))
+    (prrr-diff-test--with-buffer nil
+      (let ((binary (prrr-diff-test--file-section "data.bin"))
+            (moved (prrr-diff-test--file-section "src/moved-to.el"))
+            (old (prrr-diff-test--file-section "src/old.el")))
+        (should (string-match-p "^    Binary file, not shown$" (prrr-diff-test--text binary)))
+        (should (string-match-p "^renamed +src/moved-from\\.el -> src/moved-to\\.el"
+                                (prrr-diff-test--text moved)))
+        (should (string-match-p "^    No changed lines$" (prrr-diff-test--text moved)))
+        (should (string-match-p "^deleted +src/old\\.el" (prrr-diff-test--text old)))
+        (should (eq 'hunk (oref (car (oref old children)) type)))
+        (dolist (section (list binary moved old))
+          (should-not (seq-find (lambda (child) (eq (oref child type) 'file))
+                                (oref section children))))))))
+
+(ert-deftest prrr-diff-test-viewed-file-folded-and-marked ()
+  (let ((prrr-eager-files 100))
+    (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+      (let ((example (prrr-diff-test--file-section "src/example.el"))
+            (readme (prrr-diff-test--file-section "README.md")))
+        (should (oref example hidden))
+        (should (string-match-p "✓ viewed" (prrr-diff-test--text example)))
+        ;; DISMISSED means the file changed since it was viewed: not folded.
+        (should-not (oref readme hidden))
+        (should-not (string-match-p "viewed" (prrr-diff-test--text readme)))))))
+
+(ert-deftest prrr-diff-test-positions-after-lazy-wash ()
+  "Review Focus 3: expanding a file keeps every later section's positions right."
+  (let ((prrr-eager-files 0))
+    (prrr-diff-test--with-buffer nil
+      (magit-section-show (prrr-diff-test--file-section "docs/notes.md"))
+      (magit-map-sections
+       (lambda (section)
+         (let ((content (oref section content)))
+           (when content
+             (should (markerp content))
+             (should (<= (oref section start) content (oref section end)))))))
+      (let ((old (prrr-diff-test--file-section "src/old.el")))
+        (magit-section-show old)
+        (magit-section-hide old)
+        (goto-char (oref old start))
+        (should (looking-at "deleted +src/old\\.el"))
+        (should (invisible-p (oref old content)))
+        (should-not (invisible-p (oref old start)))))))
+
+(ert-deftest prrr-diff-test-missing-base-note ()
+  "Review Focus 1: no base commit renders a note instead of files."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (let ((buffer (prrr-diff-setup-buffer
+                     (forge-pullreq :id "forge-1" :number 1 :title "T" :their-id "PR_1"
+                                    :base-rev nil :body nil))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should-not (prrr-diff-test--files))
+              (should (string-match-p "base commit .* not available locally"
+                                      (buffer-string))))
+          (kill-buffer buffer))))))
+
+(ert-deftest prrr-diff-test-missing-head-note ()
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")
+      (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (string-match-p "refs/pullreqs/1 is missing" (buffer-string))))
+          (kill-buffer buffer))))))
+
+(ert-deftest prrr-diff-test-one-buffer-per-pr ()
+  (prrr-diff-test--with-buffer nil
+    (should (eq (current-buffer) (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))))
+
+(ert-deftest prrr-diff-test-refresh-keeps-expanded-lazy-file ()
+  (let ((prrr-eager-files 0))
+    (prrr-diff-test--with-buffer nil
+      (magit-section-show (prrr-diff-test--file-section "docs/notes.md"))
+      (magit-refresh-buffer)
+      (let ((notes (prrr-diff-test--file-section "docs/notes.md")))
+        (should-not (oref notes hidden))
+        (should (oref notes children))))))
