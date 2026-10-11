@@ -837,16 +837,12 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                        (cadr captured)))
         (should (prrr-db-get 'review-comment "PRRC_kwDOexampleNew04"))))))
 
-(defclass prrr-sync-test--topic ()
-  ((number :initarg :number))
-  "A stand-in for a forge topic.")
-
 (ert-deftest prrr-sync-test-outbox-discussion-pulls-the-topic ()
   (prrr-db-with-test-db
     (prrr-test-with-outbox
       (let ((pulled nil))
         (with-temp-buffer
-          (setq-local forge-buffer-topic (prrr-sync-test--topic :number 7))
+          (setq-local forge-buffer-topic 'example-topic)
           (cl-letf (((symbol-function 'forge-pull-topic)
                      (lambda (topic) (interactive) (setq pulled topic))))
             (prrr-test-with-ghub-dispatch '((addComment . ((data (addComment (clientMutationId))))))
@@ -854,7 +850,7 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                                '(:body "Thanks!") (current-buffer))
               (should (equal prrr-sync-test--pr
                              (alist-get 'subjectId (prrr-sync-test--input 'addComment)))))))
-        (should (eql 7 pulled))
+        (should (eq 'example-topic pulled))
         (should-not (prrr-db-outbox-rows))))))
 
 (ert-deftest prrr-sync-test-outbox-edit-amends-an-unsent-comment ()

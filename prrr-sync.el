@@ -758,7 +758,7 @@ Only when the PR's Review Buffer is live, since forge needs it."
       (with-current-buffer buffer
         (when-let ((topic (bound-and-true-p forge-buffer-topic)))
           (condition-case err
-              (funcall-interactively #'forge-pull-topic (oref topic number))
+              (funcall-interactively #'forge-pull-topic topic)
             (error (message "prrr: forge could not pull the PR: %s"
                             (error-message-string err)))))))))
 
