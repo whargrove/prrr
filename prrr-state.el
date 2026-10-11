@@ -448,22 +448,25 @@ GitHub sent no side.  A range Thread is shown after its last line."
 (defconst prrr-state-outbox-kinds
   '(thread publish reply publish-reply edit delete resolve viewed discussion
     submit discard)
-  "Kinds of queued write, and the payload plist of each.
-Every payload also has :target, the plist (:host :owner :name :number
-:pr-id :me) of the PR.
-  thread          :thread :comment (local ids) :body :commit :anchor
-  publish         as `thread', published at once
-  reply           :thread-id :comment (local id) :body
-  publish-reply   as `reply', published at once
-  edit            :comment-id :body
-  delete          :comment-id
-  resolve         :thread-id and :resolved-p
-  viewed          :path and :viewed-p
-  discussion      :body
-  submit          :event and :body
-  discard         no further keys
-:anchor is a plist of :path :line :side, and optionally :start-line
-:start-side :subject-type.")
+  "Kinds of write the Outbox sends, and the payload of each.
+Every payload has :target, the PR as the Outbox reaches it:
+\(:host :owner :name :number :pr-id :me), :me being the viewer's login.
+  thread         a new Thread in the Pending Review: :thread and
+                 :comment, the local ids of the Thread and its first
+                 comment; :anchor (see `prrr-state-anchor'); :body;
+                 :commit, the head the user commented on.
+  publish        the same, published at once (Immediate Publish).
+  reply          a reply in the Pending Review: :thread-id, :comment
+                 (its local id), :body.
+  publish-reply  the same, published at once.
+  edit           :comment-id, :body.
+  delete         :comment-id.
+  resolve        :thread-id, :resolved (non-nil to resolve).
+  viewed         :path, :viewed (non-nil to mark Viewed).
+  discussion     a Discussion Comment: :comment (its local id), :body.
+  submit         :verdict (`approve', `request-changes' or `comment'),
+                 :body, :commit.
+  discard        nothing more.")
 
 (defconst prrr-state-local-prefix "local:"
   "Prefix of the ids prrr gives what it created before GitHub names it.")
@@ -474,7 +477,8 @@ Every payload also has :target, the plist (:host :owner :name :number
 
 (defconst prrr-state-creation-kinds
   '(thread publish reply publish-reply discussion submit)
-  "Kinds of write that create content, which GitHub rate-limits.")
+  "Kinds of write that create content on GitHub.
+GitHub allows 80 content creations a minute (SPEC section 4).")
 
 (defconst prrr-state-creations-per-minute 80
   "Most content creations the Outbox sends in any minute.")

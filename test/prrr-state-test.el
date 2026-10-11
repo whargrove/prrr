@@ -721,7 +721,7 @@
 (defconst prrr-state-test--target
   '(:host "api.github.com" :owner "example-org" :name "example-repo" :number 1
     :pr-id "PR_1" :me "example-me")
-  "The target every test write carries.")
+  "The target of the test writes.")
 
 (defun prrr-state-test--write (id pr-id kind payload &optional last-error)
   "A queued write ID of PR-ID with KIND, PAYLOAD and LAST-ERROR."
