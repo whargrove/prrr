@@ -715,5 +715,21 @@ SETUP runs first, inside the fixture repository and a fresh database.
   (dolist (key '("c" "C" "r" "e" "k" "d" "R" "s" "D" "." "m" ">" "<" "S" "O" "@" "L"))
     (should (eq 'undefined (keymap-lookup prrr-diff-mode-map key)))))
 
+(ert-deftest prrr-diff-test-previous-thread-washes-files-before-point ()
+  "[ reaches Threads in unwashed files above point, whose washing shifts point."
+  (let ((prrr-eager-files 0))
+    (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+      (goto-char (point-max))
+      (let ((seen nil))
+        (dotimes (_ 5)
+          (prrr-previous-thread)
+          (should-not (invisible-p (point)))
+          (push (cdr (prrr-diff-test--at)) seen))
+        (should (equal '("PRRT_kwDOexample0000003" "PRRT_kwDOexample0000005"
+                         "PRRT_kwDOexample0000001" "PRRT_kwDOexample0000004"
+                         "PRRT_kwDOexample0000002")
+                       (nreverse seen))))
+      (should-error (prrr-previous-thread) :type 'user-error))))
+
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

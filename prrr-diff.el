@@ -47,7 +47,6 @@
 (require 'prrr-thread)
 (require 'prrr)
 (require 'prrr-sync)
-(require 'prrr-github)
 
 (declare-function prrr-menu "prrr-transient" ())
 
@@ -698,7 +697,10 @@ washed yet is expanded when it holds such a Thread, and the target is
 revealed wherever it is folded.  Signal a `user-error' when there is
 none."
   (prrr-diff--require-pullreq)
-  (let* ((here (line-beginning-position))
+  ;; HERE is a marker that advances with insertions at it: washing a file
+  ;; above point (or one ending at point) must not leave HERE behind its
+  ;; Threads.
+  (let* ((here (copy-marker (line-beginning-position) t))
          (containers (append (prrr-diff--files)
                              (seq-filter (lambda (section)
                                            (eq (oref section type) 'outdated-files))
@@ -721,6 +723,7 @@ none."
                   (when candidates
                     (throw 'found (if forward (car candidates) (car (last candidates))))))))
             nil)))
+    (set-marker here nil)
     (unless found
       (user-error (if forward "No next Thread" "No previous Thread")))
     (prrr-diff--reveal found)
