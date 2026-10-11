@@ -563,8 +563,58 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
                                              :commit "2222"))
         (should-not prrr-test-requests)
-        (should (string-prefix-p "Your Pending Review is on 1111, not on the head shown (2222)"
+        (should (string-prefix-p "Pending Review is on 1111: copy this comment"
                                  (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-outbox-refuses-a-thread-for-a-review-found-on-another-commit ()
+  "A Pending Review found at GitHub, not stored, refuses a Thread on another commit too."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'prrr-github-find-pending-review)
+                 (lambda (_host _owner _name _number _me callback _errorback)
+                   (funcall callback (prrr-pending-review-create
+                                      :pr-id prrr-sync-test--pr :review-id "PRR_found"
+                                      :commit-oid "1111")))))
+        (prrr-test-with-ghub-dispatch nil
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit "2222"))
+          (should-not prrr-test-requests)
+          (should (string-prefix-p "Pending Review is on 1111: copy this comment"
+                                   (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))
+          (should (= 1 (length (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-refused-thread-is-not-a-creation ()
+  "A Thread the Outbox refuses never reaches GitHub, so it does not use the creation budget."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "2222"))
+        (should-not prrr-sync--outbox-creations)))))
+
+(ert-deftest prrr-sync-test-sent-thread-is-a-creation ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch
+          `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "1111"))
+        (should (= 1 (length prrr-sync--outbox-creations)))))))
+
+(ert-deftest prrr-sync-test-outbox-reply-creates-the-pending-review-on-its-commit ()
+  "A reply with no Pending Review creates one on the head the reply was written at."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "pending-review-none"))
+            (addPullRequestReview . ,(prrr-test-fixture "create-review"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-sync-test--write 'reply (list :thread-id "PRRT_kwDOexampleThread1" :body "Yes."
+                                            :commit prrr-test-head))
+        (should (equal prrr-test-head
+                       (alist-get 'commitOID (prrr-sync-test--input 'addPullRequestReview))))))))
 
 (ert-deftest prrr-sync-test-outbox-creates-the-pending-review ()
   "SPEC section 7: the first pending comment creates the Pending Review, after looking."

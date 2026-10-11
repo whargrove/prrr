@@ -117,7 +117,8 @@ The reply joins your Pending Review; IMMEDIATE is as for `prrr-comment'."
      (format "Reply on %s" (prrr-thread-label thread))
      (lambda (text now)
        (prrr-review--write pullreq (if now 'publish-reply 'reply)
-                           (list :thread-id (prrr-thread-thread-id thread) :body text)))
+                           (list :thread-id (prrr-thread-thread-id thread) :body text
+                                 :commit (prrr-diff-head))))
      :immediate immediate)))
 
 (defun prrr-review--own-comment ()

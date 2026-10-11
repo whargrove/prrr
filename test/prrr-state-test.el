@@ -1230,6 +1230,27 @@ BODY, REPLY-TO and CREATED-AT are its fields."
     (should (equal "queued" (prrr-state-review-commit (list :outbox (list thread)))))
     (should-not (prrr-state-review-commit nil))))
 
+(ert-deftest prrr-state-test-review-commit-counts-a-queued-reply ()
+  "A reply with no Pending Review implies one on the reply's commit.
+A reply that carries no commit (queued before replies did) implies none."
+  (let ((reply (prrr-state-test--write "1" "PR_1" 'reply '(:commit "at-reply")))
+        (old (prrr-state-test--write "2" "PR_1" 'reply nil))
+        (thread (prrr-state-test--write "3" "PR_1" 'thread '(:commit "at-thread"))))
+    (should (equal "at-reply" (prrr-state-review-commit (list :outbox (list old reply)))))
+    (should (equal "at-reply" (prrr-state-review-commit (list :outbox (list reply thread)))))
+    (should (equal "at-thread" (prrr-state-review-commit (list :outbox (list thread reply)))))
+    (should-not (prrr-state-review-commit (list :outbox (list old))))))
+
+(ert-deftest prrr-state-test-outbox-commit-problem ()
+  (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    (should-not (prrr-state-outbox-commit-problem nil a))
+    (should-not (prrr-state-outbox-commit-problem a a))
+    (let ((problem (prrr-state-outbox-commit-problem a b)))
+      (should (string-prefix-p "Pending Review is on aaaaaaa" problem))
+      (should (string-match-p "drop it with O k" problem))
+      (should-not (string-match-p "C-c C-i" problem)))))
+
 (ert-deftest prrr-state-test-review-commit-problem ()
   (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))

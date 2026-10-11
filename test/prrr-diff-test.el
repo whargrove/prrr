@@ -70,7 +70,7 @@
 (ert-deftest prrr-diff-test-changes-from-git ()
   "The PR's files from its merge base; main's later CHANGELOG is not one."
   (prrr-test-with-repo
-    (let* ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+    (let* ((head (prrr-diff-test--rev "refs/pullreqs/1"))
            (base (car (process-lines "git" "merge-base" "main" head)))
            (files (prrr-diff--changes base head)))
       (should (equal '("README.md" "data.bin" "docs/notes.md" "src/example.el"
@@ -83,8 +83,8 @@
 
 (ert-deftest prrr-diff-test-merge-base ()
   (prrr-test-with-repo
-    (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
-          (expected (car (process-lines "git" "rev-parse" "main~1"))))
+    (let ((head (prrr-diff-test--rev "refs/pullreqs/1"))
+          (expected (prrr-diff-test--rev "main~1")))
       (should (equal expected
                      (prrr-diff--merge-base
                       (forge-pullreq :id "f" :number 1 :base-rev prrr-test-repo-base) head)))
@@ -146,7 +146,7 @@ the user started in this buffer would be."
   (let ((data (prrr-github-decode-review-data (prrr-test-fixture "review-data")
                                               prrr-diff-test--pr "2026-10-10T12:00:00Z")))
     (setf (prrr-pending-review-commit-oid (plist-get data :pending-review))
-          (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+          (prrr-diff-test--rev "refs/pullreqs/1"))
     (prrr-db-replace-review-data prrr-diff-test--pr data)))
 
 (defvar prrr-diff-test--posts nil
@@ -188,8 +188,8 @@ SETUP runs first, inside the fixture repository and a fresh database.
                      "src/moved-to.el" "src/old.el")
                    (prrr-diff-test--files)))
     (should (equal (format "%s..%s"
-                           (car (process-lines "git" "rev-parse" "main~1"))
-                           (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+                           (prrr-diff-test--rev "main~1")
+                           (prrr-diff-test--rev "refs/pullreqs/1"))
                    magit-buffer-diff-range))
     (should (eq 'committed magit-buffer-diff-type))))
 
@@ -482,8 +482,8 @@ SETUP runs first, inside the fixture repository and a fresh database.
     (should (looking-at "#1 Example change$"))
     (should (string-match-p
              (format "\\`Range: default, %s\\.\\.%s"
-                     (substring (car (process-lines "git" "rev-parse" "main~1")) 0 7)
-                     (substring (car (process-lines "git" "rev-parse" "refs/pullreqs/1")) 0 7))
+                     (substring (prrr-diff-test--rev "main~1") 0 7)
+                     (substring (prrr-diff-test--rev "refs/pullreqs/1") 0 7))
              (prrr-diff-test--status-line)))))
 
 (ert-deftest prrr-diff-test-header-pending-review ()

@@ -625,17 +625,12 @@ restart, is not sent again blindly (`prrr-state-outbox-unconfirmed-p').
 The send ends when GitHub answers, or after `prrr-sync-timeout'
 seconds without an answer (`prrr-sync--outbox-timed-out')."
   (let* ((token (cl-incf prrr-sync--outbox-token))
-         (now (float-time))
          (done (lambda (&optional result) (prrr-sync--outbox-succeeded row token result)))
          (fail (lambda (failure) (prrr-sync--outbox-failed row token failure))))
     (setf (prrr-outbox-payload row) (plist-put (copy-sequence (prrr-outbox-payload row))
                                                :sent-at (prrr-sync--timestamp)))
     (prrr-db-insert row)
     (setq prrr-sync--outbox-sending row)
-    (when (memq (prrr-outbox-kind row) prrr-state-creation-kinds)
-      (setq prrr-sync--outbox-creations
-            (cons now (seq-filter (lambda (time) (> time (- now 60)))
-                                  prrr-sync--outbox-creations))))
     (run-at-time prrr-sync-timeout nil #'prrr-sync--outbox-timed-out row token)
     (prrr-sync--guarded fail
       (prrr-sync--outbox-run row done fail))))
@@ -653,13 +648,30 @@ ended."
     (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
     (prrr-sync--outbox-pump)))
 
-(defun prrr-sync--mutate (start then fail)
+(defun prrr-sync--note-creation ()
+  "Count the sending write as a content creation, if its kind is one.
+Called when its mutation starts, so a write the Outbox refuses before
+it reaches GitHub does not use up the per-minute budget
+\(`prrr-state-creations-per-minute')."
+  (when (and prrr-sync--outbox-sending
+             (memq (prrr-outbox-kind prrr-sync--outbox-sending) prrr-state-creation-kinds))
+    (let ((now (float-time)))
+      (setq prrr-sync--outbox-creations
+            (cons now (seq-filter (lambda (time) (> time (- now 60)))
+                                  prrr-sync--outbox-creations))))))
+
+(defun prrr-sync--mutate (start then fail &optional setup)
   "Run a mutation once `prrr-sync--mutation-spacing' allows.
 START is called with a callback and an errorback.  THEN receives what
-the callback receives, FAIL what the errorback receives."
+the callback receives, FAIL what the errorback receives.  Unless SETUP
+is non-nil, the mutation is the sending write's own and counts as a
+content creation when it starts (`prrr-sync--note-creation'); SETUP
+marks one that only prepares for the write, such as creating the
+Pending Review."
   (let* ((stamp (lambda () (setq prrr-sync--outbox-mutated-at (float-time))))
          (go (lambda ()
                (prrr-sync--guarded fail
+                 (unless setup (prrr-sync--note-creation))
                  (funcall start
                           (lambda (&optional result) (funcall stamp) (funcall then result))
                           (lambda (failure) (funcall stamp) (funcall fail failure))))))
@@ -693,7 +705,7 @@ failure."
                    (lambda (review)
                      (prrr-db-insert review)
                      (funcall then review))
-                   fail))))
+                   fail t))))
        fail))))
 
 (defun prrr-sync--outbox-run (row done fail)
@@ -701,7 +713,7 @@ failure."
 DONE receives GitHub's answer, a plist or nil; FAIL a classified failure.
 A new Thread fails when the Pending Review it joins is on another
 commit than the one its lines were numbered at
-\(`prrr-state-review-commit-problem')."
+\(`prrr-state-outbox-commit-problem')."
   (let* ((payload (prrr-outbox-payload row))
          (target (plist-get payload :target))
          (host (plist-get target :host))
@@ -721,7 +733,7 @@ commit than the one its lines were numbered at
         (lambda (review)
           (let ((review-id (prrr-pending-review-review-id review)))
             (if-let* ((problem (and (eq kind 'thread)
-                                    (prrr-state-review-commit-problem
+                                    (prrr-state-outbox-commit-problem
                                      (prrr-pending-review-commit-oid review) commit))))
                 (funcall fail (list :kind 'error :message problem :reset-at nil))
               (prrr-sync--mutate

@@ -1080,12 +1080,29 @@ META is a `prrr-pr-meta' or nil.  A Pending Review does not count."
   "Return the commit of the viewer's Pending Review in review DATA, or nil.
 DATA is as `prrr-state-outbox-view' returns.  That is the stored
 Pending Review's commit; without one, the commit of the first queued
-new Thread, whose sending creates the Pending Review on it."
+new Thread or reply, whose sending creates the Pending Review on it.
+A reply carries the head it was written at, so the review it creates
+is on that commit, not on whatever GitHub's head is by then.  A reply
+queued without a commit (before replies carried one) implies none:
+its review's commit is unknown, so it is skipped, and a Thread
+behind it is judged by the Outbox against the review found then."
   (or (when-let* ((review (plist-get data :pending-review)))
         (prrr-pending-review-commit-oid review))
-      (when-let* ((row (seq-find (lambda (row) (eq (prrr-outbox-kind row) 'thread))
-                                 (plist-get data :outbox))))
-        (plist-get (prrr-outbox-payload row) :commit))))
+      (seq-some (lambda (row)
+                  (and (memq (prrr-outbox-kind row) '(thread reply))
+                       (plist-get (prrr-outbox-payload row) :commit)))
+                (plist-get data :outbox))))
+
+(defun prrr-state-outbox-commit-problem (review-commit commit)
+  "Return why the Outbox cannot send a new Thread on COMMIT, or nil.
+REVIEW-COMMIT is the commit of the Pending Review it would join.  The
+Thread was already accepted, so unlike `prrr-state-review-commit-problem'
+this tells the user how to get rid of the stuck write: submitting the
+review (S) would only queue behind it."
+  (when (and review-commit commit (not (equal review-commit commit)))
+    (format (concat "Pending Review is on %s: copy this comment, drop it with O k, "
+                    "then submit or discard the review")
+            (prrr-state-short-oid review-commit))))
 
 (defun prrr-state-review-commit-problem (review-commit commit)
   "Return why a new Thread on COMMIT cannot join a Pending Review on REVIEW-COMMIT.
