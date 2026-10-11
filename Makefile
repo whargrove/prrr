@@ -40,9 +40,11 @@ test:
 # Build a throwaway compiled copy so the working tree stays free of .elc.
 bench:
 	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT && \
-	  cp $(SRC) bench/*.el "$$dir" && \
-	  $(BENCH) -L "$$dir" -f batch-byte-compile $(addprefix "$$dir"/,$(SRC)) "$$dir"/prrr-queue-bench.el && \
-	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-queue-bench.elc -f prrr-queue-bench-run
+	  cp $(SRC) bench/*.el bench/*.sh "$$dir" && \
+	  $(BENCH) -L "$$dir" -f batch-byte-compile $(addprefix "$$dir"/,$(SRC)) \
+	    "$$dir"/prrr-queue-bench.el "$$dir"/prrr-diff-bench.el && \
+	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-queue-bench.elc -f prrr-queue-bench-run && \
+	  $(BENCH) -L "$$dir" -l "$$dir"/prrr-diff-bench.elc -f prrr-diff-bench-run
 
 clean:
 	rm -f *.elc test/*.elc bench/*.elc
