@@ -976,5 +976,92 @@
                  (prrr-state-outbox-describe
                   (prrr-state-test--write "1" "PR_1" 'viewed '(:path "a.el" :viewed t))))))
 
+;;;; Ranges
+
+(defun prrr-state-test--range (kind &optional start end)
+  "A Range of KIND from START to END."
+  (prrr-range-create :kind kind :start start :end end))
+
+(ert-deftest prrr-state-test-range-ends ()
+  (should (equal '("base" . "head")
+                 (prrr-state-range-ends (prrr-state-test--range 'default) "base" "head")))
+  (should (equal '("seen" . "head")
+                 (prrr-state-range-ends (prrr-state-test--range 'since-opened "seen")
+                                        "base" "head")))
+  (should (equal '("parent" . "commit")
+                 (prrr-state-range-ends (prrr-state-test--range 'commit "parent" "commit")
+                                        "base" "head"))))
+
+(ert-deftest prrr-state-test-range-github-side ()
+  "SPEC section 8: GitHub numbers the right side at head, the left at the merge base."
+  (let ((default (prrr-state-test--range 'default))
+        (since (prrr-state-test--range 'since-review "r"))
+        (commit (prrr-state-test--range 'commit "p" "c")))
+    (should (prrr-state-range-github-side-p default 'left))
+    (should (prrr-state-range-github-side-p default 'right))
+    (should-not (prrr-state-range-github-side-p since 'left))
+    (should (prrr-state-range-github-side-p since 'right))
+    (should-not (prrr-state-range-github-side-p commit 'left))
+    (should-not (prrr-state-range-github-side-p commit 'right))))
+
+(ert-deftest prrr-state-test-anchor-problem ()
+  "Review Focus 3: only lines numbered as GitHub numbers them take comments."
+  (let ((right '(:path "a.el" :line 3 :side right :subject-type line))
+        (left '(:path "a.el" :line 3 :side left :subject-type line))
+        (mixed '(:path "a.el" :line 4 :side right :start-line 2 :start-side left
+                 :subject-type line))
+        (file '(:path "a.el" :subject-type file))
+        (default (prrr-state-test--range 'default))
+        (since (prrr-state-test--range 'since-opened "s"))
+        (between (prrr-state-test--range 'between "a" "b")))
+    (dolist (anchor (list right left mixed file))
+      (should-not (prrr-state-anchor-problem default anchor)))
+    (should-not (prrr-state-anchor-problem since right))
+    (should-not (prrr-state-anchor-problem since file))
+    (should (equal "Read-only in the since-opened Range: press . to comment in the default Range"
+                   (prrr-state-anchor-problem since left)))
+    (should (prrr-state-anchor-problem since mixed))
+    (dolist (anchor (list right left file))
+      (should (prrr-state-anchor-problem between anchor)))))
+
+(ert-deftest prrr-state-test-head-notice ()
+  "SPEC section 8: the buffer says the head moved instead of redrawing."
+  (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    (should-not (prrr-state-head-notice a a a))
+    (should-not (prrr-state-head-notice a a nil))
+    (should-not (prrr-state-head-notice a nil nil))
+    (should (equal "head moved, press g" (prrr-state-head-notice a b b)))
+    (should (equal "head moved, press g" (prrr-state-head-notice a b nil)))
+    (should (equal "head moved, press g" (prrr-state-head-notice a b a)))
+    (should (equal "head moved to bbbbbbb on GitHub: run forge-pull, then g"
+                   (prrr-state-head-notice a a b)))))
+
+(ert-deftest prrr-state-test-since-review-start ()
+  (should (equal "abc" (prrr-state-since-review-start
+                        (prrr-test-meta :viewer-latest-review
+                                        '("APPROVED" "2026-09-02T00:00:00Z" "abc")))))
+  (should-not (prrr-state-since-review-start
+               (prrr-test-meta :viewer-latest-review '("PENDING" nil "abc"))))
+  (should-not (prrr-state-since-review-start (prrr-test-meta)))
+  (should-not (prrr-state-since-review-start nil)))
+
+(ert-deftest prrr-state-test-review-commit ()
+  "Bead prrr-836: the Pending Review's commit, stored or about to be created."
+  (let ((thread (prrr-state-test--write "1" "PR_1" 'thread '(:commit "queued")))
+        (review (prrr-pending-review-create :pr-id "PR_1" :review-id "R" :commit-oid "stored")))
+    (should (equal "stored" (prrr-state-review-commit
+                             (list :pending-review review :outbox (list thread)))))
+    (should (equal "queued" (prrr-state-review-commit (list :outbox (list thread)))))
+    (should-not (prrr-state-review-commit nil))))
+
+(ert-deftest prrr-state-test-review-commit-problem ()
+  (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    (should-not (prrr-state-review-commit-problem nil a))
+    (should-not (prrr-state-review-commit-problem a a))
+    (should (string-prefix-p "Your Pending Review is on aaaaaaa, not on the head shown (bbbbbbb)"
+                             (prrr-state-review-commit-problem a b)))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here
