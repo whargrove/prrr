@@ -45,6 +45,7 @@
 (require 'prrr-db)
 (require 'prrr-state)
 (require 'prrr-thread)
+(require 'prrr-sync)
 
 (defcustom prrr-eager-files 30
   "Most files washed when a Review Buffer opens.
@@ -443,12 +444,61 @@ Threads whose file is not in the diff."
               (prrr-diff--wash-file file threads comments base head))))))
     (cdr layout)))
 
-(defun prrr-diff--insert-header (pullreq _base _head _data)
-  "Insert the header of PULLREQ's Review Buffer."
+(defun prrr-diff--posts (pullreq)
+  "Return PULLREQ's Discussion Comments, oldest first."
+  (oref pullreq posts))
+
+(defun prrr-diff--short (oid)
+  "Return the first seven characters of OID."
+  (substring oid 0 (min 7 (length oid))))
+
+(defun prrr-diff--status-line (pullreq base head data)
+  "Return the header's status line for PULLREQ.
+BASE and HEAD are the diffed oids, either may be nil; DATA is the
+stored review data.  Names the Range, the Pending Review's comments,
+what the last refetch said, and whether GitHub's head differs from the
+local one."
+  (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
+         (github-head (plist-get status :head-oid))
+         (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
+                             (plist-get data :comments))))
+    (string-join
+     (delq nil
+           (list (if base
+                     (format "Range: default, %s..%s" (prrr-diff--short base)
+                             (prrr-diff--short head))
+                   "Range: unavailable")
+                 (and (plist-get data :pending-review)
+                      (format "Pending Review: %d comment%s" pending (if (= pending 1) "" "s")))
+                 (prrr-sync-describe status "refreshing…")
+                 (and github-head head (not (equal github-head head))
+                      (format "GitHub's head is %s: run forge-pull, then g"
+                              (prrr-diff--short github-head)))))
+     "  ·  ")))
+
+(defun prrr-diff--insert-header (pullreq base head data)
+  "Insert the header of PULLREQ's Review Buffer.
+The title, a status line (`prrr-diff--status-line' of BASE, HEAD and
+DATA), and hidden `description' and `discussion' sections."
   (magit-insert-section (prrr-header)
     (magit-insert-heading
       (propertize (format "#%d %s" (oref pullreq number) (oref pullreq title))
                   'font-lock-face 'magit-section-heading))
+    (insert (propertize (prrr-diff--status-line pullreq base head data)
+                        'font-lock-face 'magit-dimmed)
+            "\n")
+    (magit-insert-section (description nil t)
+      (magit-insert-heading "Description")
+      (if (string-empty-p (string-trim (or (oref pullreq body) "")))
+          (prrr-diff--insert-note "No description")
+        (forge-insert-post pullreq nil)))
+    (let ((posts (prrr-diff--posts pullreq)))
+      (magit-insert-section section (discussion nil t)
+        ;; Without this, forge's `forge-discussion-section-map' applies.
+        (oset section keymap nil)
+        (magit-insert-heading (format "Discussion (%d)" (length posts)))
+        (dolist (post posts)
+          (forge-insert-post post pullreq))))
     (insert "\n")))
 
 (defun prrr-diff-refresh-buffer ()

@@ -145,17 +145,23 @@
    (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-diff-test--pr
                                    "2026-10-10T12:00:00Z")))
 
+(defvar prrr-diff-test--posts nil
+  "The Discussion Comments `prrr-diff--posts' returns in tests.")
+
 (defmacro prrr-diff-test--with-buffer (setup &rest body)
   "Open the fixture PR's Review Buffer and run BODY in it.
-SETUP runs first, inside the fixture repository and a fresh database."
+SETUP runs first, inside the fixture repository and a fresh database.
+`prrr-diff--posts' returns `prrr-diff-test--posts'."
   (declare (indent 1))
   `(prrr-db-with-test-db
      (prrr-test-with-repo
        ,setup
-       (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
-         (unwind-protect
-             (with-current-buffer buffer ,@body)
-           (kill-buffer buffer))))))
+       (cl-letf (((symbol-function 'prrr-diff--posts)
+                  (lambda (_pullreq) prrr-diff-test--posts)))
+         (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
+           (unwind-protect
+               (with-current-buffer buffer ,@body)
+             (kill-buffer buffer)))))))
 
 (defun prrr-diff-test--file-section (path)
   "Return the `file' section of PATH in the current Review Buffer."
@@ -255,25 +261,27 @@ SETUP runs first, inside the fixture repository and a fresh database."
   "Review Focus 1: no base commit renders a note instead of files."
   (prrr-db-with-test-db
     (prrr-test-with-repo
-      (let ((buffer (prrr-diff-setup-buffer
-                     (forge-pullreq :id "forge-1" :number 1 :title "T" :their-id "PR_1"
-                                    :base-rev nil :body nil))))
-        (unwind-protect
-            (with-current-buffer buffer
-              (should-not (prrr-diff-test--files))
-              (should (string-match-p "base commit .* not available locally"
-                                      (buffer-string))))
-          (kill-buffer buffer))))))
+      (cl-letf (((symbol-function 'prrr-diff--posts) #'ignore))
+        (let ((buffer (prrr-diff-setup-buffer
+                       (forge-pullreq :id "forge-1" :number 1 :title "T" :their-id "PR_1"
+                                      :base-rev nil :body nil))))
+          (unwind-protect
+              (with-current-buffer buffer
+                (should-not (prrr-diff-test--files))
+                (should (string-match-p "base commit .* not available locally"
+                                        (buffer-string))))
+            (kill-buffer buffer)))))))
 
 (ert-deftest prrr-diff-test-missing-head-note ()
   (prrr-db-with-test-db
     (prrr-test-with-repo
       (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")
-      (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
-        (unwind-protect
-            (with-current-buffer buffer
-              (should (string-match-p "refs/pullreqs/1 is missing" (buffer-string))))
-          (kill-buffer buffer))))))
+      (cl-letf (((symbol-function 'prrr-diff--posts) #'ignore))
+        (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
+          (unwind-protect
+              (with-current-buffer buffer
+                (should (string-match-p "refs/pullreqs/1 is missing" (buffer-string))))
+            (kill-buffer buffer)))))))
 
 (ert-deftest prrr-diff-test-one-buffer-per-pr ()
   (prrr-diff-test--with-buffer nil
@@ -455,6 +463,79 @@ SETUP runs first, inside the fixture repository and a fresh database."
         (should (string-match-p "example\\.el\\.~" (buffer-name)))
         (should (= 12 (line-number-at-pos)))
         (kill-buffer)))))
+
+;;;; Header
+
+(defun prrr-diff-test--status-line ()
+  "Return the header's status line."
+  (save-excursion
+    (goto-char (oref (magit-get-section '((prrr-header) (diffbuf))) content))
+    (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+
+(ert-deftest prrr-diff-test-header-title-and-range ()
+  (prrr-diff-test--with-buffer nil
+    (goto-char (point-min))
+    (should (looking-at "#1 Example change$"))
+    (should (string-match-p
+             (format "\\`Range: default, %s\\.\\.%s"
+                     (substring (car (process-lines "git" "rev-parse" "main~1")) 0 7)
+                     (substring (car (process-lines "git" "rev-parse" "refs/pullreqs/1")) 0 7))
+             (prrr-diff-test--status-line)))))
+
+(ert-deftest prrr-diff-test-header-pending-review ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (should (string-match-p "Pending Review: 1 comment\\b" (prrr-diff-test--status-line)))))
+
+(ert-deftest prrr-diff-test-header-shows-refetch-status ()
+  "Review Focus 5: the header says why the data may be old."
+  (let ((prrr-sync--status (make-hash-table :test #'equal)))
+    (puthash (cons 'review prrr-diff-test--pr)
+             (list :state 'pulling :attempted-at (prrr-sync--timestamp)) prrr-sync--status)
+    (prrr-diff-test--with-buffer nil
+      (should (string-match-p "refreshing…" (prrr-diff-test--status-line)))
+      (puthash (cons 'review prrr-diff-test--pr) '(:state offline) prrr-sync--status)
+      (magit-refresh-buffer)
+      (should (string-match-p "offline" (prrr-diff-test--status-line))))))
+
+(ert-deftest prrr-diff-test-header-github-head-differs ()
+  "Review Focus 1: GitHub's head is ahead of the local ref."
+  (let ((prrr-sync--status (make-hash-table :test #'equal)))
+    (puthash (cons 'review prrr-diff-test--pr)
+             '(:state ok :head-oid "2222222222222222222222222222222222222222")
+             prrr-sync--status)
+    (prrr-diff-test--with-buffer nil
+      (should (string-match-p "GitHub's head is 2222222: run forge-pull, then g"
+                              (prrr-diff-test--status-line))))))
+
+(ert-deftest prrr-diff-test-header-description-and-discussion ()
+  (let ((prrr-diff-test--posts
+         (list (forge-pullreq-post :id "post-1" :author "example-bob"
+                                   :created "2026-09-03T00:00:00Z" :body "Nice."))))
+    (prrr-diff-test--with-buffer nil
+      (let ((description (magit-get-section '((description) (prrr-header) (diffbuf))))
+            (discussion (magit-get-section '((discussion) (prrr-header) (diffbuf)))))
+        (should (oref description hidden))
+        (should (string-match-p "Why this change\\." (prrr-diff-test--text description)))
+        (should (oref discussion hidden))
+        (should (string-match-p "\\`Discussion (1)" (prrr-diff-test--text discussion)))
+        (should (string-match-p "Nice\\." (prrr-diff-test--text discussion)))
+        (should-not (oref discussion keymap))))))
+
+(ert-deftest prrr-diff-test-header-empty-description ()
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (cl-letf (((symbol-function 'prrr-diff--posts) #'ignore))
+        (let ((buffer (prrr-diff-setup-buffer
+                       (forge-pullreq :id "forge-1" :number 1 :title "T" :their-id "PR_1"
+                                      :base-rev prrr-test-repo-base :author "example-alice"
+                                      :created "2026-09-01T00:00:00Z" :body ""))))
+          (unwind-protect
+              (with-current-buffer buffer
+                (should (string-match-p
+                         "No description"
+                         (prrr-diff-test--text
+                          (magit-get-section '((description) (prrr-header) (diffbuf)))))))
+            (kill-buffer buffer)))))))
 
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here
