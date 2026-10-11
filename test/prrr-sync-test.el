@@ -1612,12 +1612,23 @@ the comment records it once."
     (prrr-test-with-repo
       (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
             (pullreq (forge-pullreq :id "forge-1" :number 1 :their-id "PR_1")))
-        (prrr-sync-record-bookmark pullreq head)
+        (should (prrr-sync-record-bookmark pullreq head))
         (let ((bookmark (prrr-db-get 'pr-bookmark "PR_1")))
           (should (equal head (prrr-bookmark-last-opened-head-oid bookmark)))
           (should (prrr-bookmark-last-opened-at bookmark)))
         (should (equal (list head)
                        (process-lines "git" "rev-parse" (format "refs/prrr/1/%s" head))))))))
+
+(ert-deftest prrr-sync-test-record-bookmark-of-a-missing-commit ()
+  "The Bookmark is recorded even when its commit cannot be pinned."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (let ((missing "2222222222222222222222222222222222222222"))
+        (should-not (prrr-sync-record-bookmark
+                     (forge-pullreq :id "forge-1" :number 1 :their-id "PR_1") missing))
+        (should (equal missing (prrr-bookmark-last-opened-head-oid
+                                (prrr-db-get 'pr-bookmark "PR_1"))))
+        (should-not (process-lines "git" "for-each-ref" "refs/prrr/"))))))
 
 (defun prrr-sync-test--pin-refs ()
   "Return the sorted names of the pins in the repository of `default-directory'."
