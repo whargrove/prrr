@@ -186,7 +186,8 @@ The reply joins your Pending Review; IMMEDIATE is as for `prrr-comment'."
   "Capture a summary and submit the Pending Review with VERDICT.
 VERDICT is `approve', `request-changes' or `comment'.  The header
 counts the pending comments and those an agent wrote; Submit asks
-again when there are agent comments (SPEC section 7)."
+again when there are agent comments (SPEC section 7).  Submitting
+records the head shown as the Bookmark (SPEC section 8)."
   (let* ((pullreq (prrr-diff-pullreq))
          (head (prrr-diff-head))
          (pending (prrr-review--pending (prrr-sync-review-data (oref pullreq their-id))))
@@ -206,7 +207,8 @@ again when there are agent comments (SPEC section 7)."
                   (not (yes-or-no-p (format "Submit %d comment%s an agent wrote? "
                                             agents (if (= agents 1) "" "s")))))
          (user-error "Not submitted"))
-       (prrr-review--write pullreq 'submit (list :verdict verdict :body text :commit head)))
+       (prrr-review--write pullreq 'submit (list :verdict verdict :body text :commit head))
+       (prrr-sync-record-bookmark pullreq head))
      :immediate-allowed nil :allow-empty t)))
 
 ;;;###autoload

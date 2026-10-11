@@ -262,6 +262,15 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
     (should (equal "APPROVE" (alist-get 'event (alist-get 'input (cdr (assq 'submitPullRequestReview prrr-test-variables))))))
     (should-not (prrr-db-get 'pending-review prrr-diff-test--pr))))
 
+(ert-deftest prrr-review-test-submit-records-the-bookmark ()
+  "SPEC section 8: Submit records the head shown as the Bookmark."
+  (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
+    (prrr-submit-approve)
+    (prrr-review-test--send "")
+    (should (equal (prrr-diff-head)
+                   (prrr-bookmark-last-opened-head-oid
+                    (prrr-db-get 'pr-bookmark prrr-diff-test--pr))))))
+
 (ert-deftest prrr-review-test-submit-asks-about-agent-comments ()
   (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
     (let ((comment (prrr-db-get 'review-comment "PRRC_kwDOexample0000006")))

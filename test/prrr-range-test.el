@@ -250,5 +250,56 @@ lives inside the fixture's .git, so it goes when the fixture goes."
       (should (member "README.md" (prrr-diff-test--files)))
       (should-not (string-match-p "+line thirty" (buffer-string))))))
 
+;;;; Bookmark
+
+(defun prrr-range-test--bookmark ()
+  "Return the head the fixture PR's Bookmark holds, or nil."
+  (when-let* ((bookmark (prrr-db-get 'pr-bookmark prrr-diff-test--pr)))
+    (prrr-bookmark-last-opened-head-oid bookmark)))
+
+(ert-deftest prrr-range-test-bookmark-on-kill-not-on-open ()
+  "SPEC section 8: the Bookmark is recorded when the visit ends, never on open."
+  (prrr-diff-test--with-buffer nil
+    (should-not (prrr-range-test--bookmark))
+    (let ((head (prrr-diff-head))
+          (repo default-directory))
+      (kill-buffer (current-buffer))
+      (should (equal head (prrr-range-test--bookmark)))
+      (should (equal (list head) (process-lines "git" "-C" repo "rev-parse"
+                                                (format "refs/prrr/1/%s" head)))))))
+
+(ert-deftest prrr-range-test-bookmark-on-quit ()
+  (prrr-diff-test--with-buffer nil
+    (let ((head (prrr-diff-head)))
+      (quit-window nil (get-buffer-window (current-buffer)))
+      (should (equal head (prrr-range-test--bookmark))))))
+
+(ert-deftest prrr-range-test-bookmark-is-the-head-shown ()
+  "Review Focus 1: the head the user saw, not the one forge fetched meanwhile."
+  (prrr-diff-test--with-buffer nil
+    (let ((head (prrr-diff-head)))
+      (call-process "git" nil nil nil "update-ref" "refs/pullreqs/1"
+                    (prrr-diff-test--rev "refs/pullreqs/1~1"))
+      (magit-refresh-buffer)
+      (kill-buffer (current-buffer))
+      (should (equal head (prrr-range-test--bookmark))))))
+
+(ert-deftest prrr-range-test-mark-seen ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-mark-seen)
+    (should (equal (prrr-diff-head) (prrr-range-test--bookmark)))))
+
+(ert-deftest prrr-range-test-open-pins-the-review-commit ()
+  "SPEC section 8: the commit of my latest review is pinned when the PR opens."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (prrr-diff-test--with-open-stubs
+        (let ((first (prrr-diff-test--rev "refs/pullreqs/1~1"))
+              (repo default-directory))
+          (prrr-range-test--store-review first)
+          (kill-buffer (prrr-diff-open (prrr-diff-test--pullreq)))
+          (should (equal (list first) (process-lines "git" "-C" repo "rev-parse"
+                                                     (format "refs/prrr/1/%s" first)))))))))
+
 (provide 'prrr-range-test)
 ;;; prrr-range-test.el ends here

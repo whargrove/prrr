@@ -484,7 +484,21 @@ here and in the section keymaps.")
               '(file thread file-comment review-comment description discussion
                      not-in-range outdated outdated-files))
   ;; magit's hunk fontifier walks every line of a hunk, Threads included.
-  (setq-local magit-diff-fontify-hunk nil))
+  (setq-local magit-diff-fontify-hunk nil)
+  ;; Leaving the buffer, by killing it or quitting its window, ends a
+  ;; visit: since-opened starts from what the visit showed.
+  (add-hook 'kill-buffer-hook #'prrr-diff--record-bookmark nil t)
+  (add-hook 'quit-window-hook #'prrr-diff--record-bookmark nil t))
+
+(defun prrr-diff--record-bookmark ()
+  "Record the head this Review Buffer shows as its pull request's Bookmark.
+Run when the buffer is killed or its window quit (SPEC section 8).  A
+failure is reported, not raised, so the buffer still goes."
+  (when (and prrr-diff--pullreq prrr-diff--head)
+    (condition-case err
+        (prrr-sync-record-bookmark prrr-diff--pullreq prrr-diff--head)
+      (error (message "prrr: the Bookmark was not recorded: %s"
+                      (error-message-string err))))))
 
 (defun prrr-diff--head-ref (pullreq)
   "Return the ref forge fetches PULLREQ's head to."
@@ -726,7 +740,8 @@ so forge's commands, and `prrr-current-pullreq', act on PULLREQ."
 (defun prrr-diff-open (pullreq)
   "Show the Review Buffer of PULLREQ and refetch its review data in the background.
 The buffer renders at once from the database and refreshes when the
-refetch ends.  When forge has not fetched the PR's head ref, offer to
+refetch ends.  The commit of the viewer's latest review is pinned
+\(`prrr-sync-pin').  When forge has not fetched the PR's head ref, offer to
 run `forge-pull' and signal a `user-error' instead of opening.  Return
 the buffer."
   (let ((ref (prrr-diff--head-ref pullreq)))
@@ -736,6 +751,11 @@ the buffer."
       (user-error (concat "%s is missing: open the pull request again once forge has fetched it"
                           " (if it stays missing, run `forge-add-pullreq-refspec')")
                   ref)))
+  ;; prrr learns the viewer's review commit when it pulls the Review
+  ;; Queue; pinning it here keeps since-review working after a force-push.
+  (prrr-sync-pin (oref pullreq number)
+                 (prrr-state-since-review-start
+                  (prrr-db-get 'pullreq-meta (oref pullreq their-id))))
   ;; The refetch starts before the one render, so the header says
   ;; "refreshing…" from the start; its answer refreshes from a timer,
   ;; never during the render.

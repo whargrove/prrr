@@ -205,5 +205,17 @@ then TO among the commits after it."
   (prrr-diff-pullreq)
   (prrr-range--switch (prrr-range-create :kind 'between :start from :end to)))
 
+;;;; Bookmark
+
+(defun prrr-mark-seen ()
+  "Record the head shown as seen: the since-opened Range starts there now.
+prrr also records it when you leave the Review Buffer and when you
+submit, never when you open it (SPEC section 8)."
+  (interactive)
+  (let ((pullreq (prrr-diff-pullreq))
+        (head (or (prrr-diff-head) (user-error "The pull request's head is missing"))))
+    (prrr-sync-record-bookmark pullreq head)
+    (message "Marked %s seen" (prrr-state-short-oid head))))
+
 (provide 'prrr-range)
 ;;; prrr-range.el ends here
