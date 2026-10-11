@@ -60,8 +60,8 @@ depends only on the files above it.
 | `prrr-sync.el`      | Freshness rules: pull queue inputs, refetch per PR, outbox retry, Bookmark and ref pinning.                                  | prrr-db, prrr-github, forge, magit-mode |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
 | `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
-| `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state  |
-| `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | prrr-diff                              |
+| `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync |
+| `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, Outbox rows; the comment capture buffer.                                  | magit-section, prrr-db                 |
 | `prrr-range.el`     | Range kinds, switching, since-review and since-opened computation, force-push handling.                                      | prrr-sync, prrr-diff                   |
 | `prrr-review.el`    | Pending Review lifecycle: add, edit, delete, reply, Immediate Publish, Submit with Verdict, discard.                         | prrr-github, prrr-sync, prrr-thread    |
 | `prrr-stack.el`     | Stack chain computation and navigation.                                                                                      | prrr-state, prrr-diff                  |
@@ -79,6 +79,9 @@ Rules:
 - Nothing outside `prrr-db.el` writes SQL.
 - Buffers never hold state that the database does not: a Review Buffer is a
   view over database rows plus local git.
+- `prrr-thread.el` renders and `prrr-diff.el` places: a Thread's look does
+  not depend on the diff, so the capture buffer of milestone 4 takes its
+  anchor as an argument.
 
 ## 3. Data model and database (prrr-t9q.7)
 
@@ -244,19 +247,23 @@ file list 65 ms at 417 files, 355 ms at 2,516; per-file wash 2 to 7 ms.
 Threads whose anchor is not in the current Range go into a folded
 `not-in-range` section at the end of the file; outdated Threads into a
 folded `outdated` section; Threads on files no longer in the diff into a
-buffer-level folded `outdated-files` section. The header holds folded
+buffer-level folded `outdated-files` section. A `discussion` section's keymap is cleared, since forge's `forge-discussion-section-map` would otherwise apply by type name. The header holds folded
 `description` and `discussion` sections (forge's `body` and `posts`) and a
 one-line status: PR, Range, Pending Review count, Outbox count, refresh
 state, and "head moved, press g" when applicable.
 
 **Magit coupling.** prrr ships its own copy of `magit-diff-wash-hunk`
-(extended to insert `thread` children), defines a `prrr-diff-mode`-scoped
-`&context` method for `magit-section-paint`, and advises
-`magit-diff-hunk-line` and `magit-diff--hunk-section` (the only two internals
-touched) to tolerate child sections. `magit-diff-fontify-hunk` is forced nil
-in prrr buffers. The package pins `magit >= 4.7` and CI tests against MELPA
-magit; a maintainer note documents the three touch points so a magit change
-is found by the test suite, not by users.
+(extended to insert `thread` children) and washes deferred files with
+`magit-git-insert` plus narrowing, because `magit-git-wash` and
+`magit-diff-wash-diffs` cannot run in a deferred body. It defines a
+`prrr-diff-mode`-scoped `&context` method for `magit-section-paint`, and
+advises `magit-diff-hunk-line` and `magit-diff--hunk-section` to tolerate
+child sections. After each render it turns every section's integer
+`content` into a marker, because `magit-section-inhibit-markers` `delay`
+converts only `start` and `end`. `magit-diff-fontify-hunk` is forced nil in
+prrr buffers, and Threads have their own `RET`, because magit's has no
+diff scope on them. The package pins `magit >= 4.7` and CI tests against
+MELPA magit, so a magit change is found by the test suite, not by users.
 
 **Refresh.** `g` re-runs the open and preserves expanded files, folded
 Threads, and Viewed, through `magit-section-visibility-cache` restricted to
@@ -266,7 +273,7 @@ the per-PR refetch.
 
 **Magit features that keep working.** `TAB`, `n`/`p`, `M-n`/`M-p`, `^`,
 `RET` (visits the blob at the right line, including after a Thread), `j`
-jump, `1`-`4` section levels, ediff from a hunk.
+jump, `1`-`4` section levels, ediff from a hunk with `E`.
 
 **Syntax highlighting** (`prrr-treesit.el`). Applied when a file section is
 expanded, never while collapsed: one `treesit` parser per file section per
@@ -404,7 +411,7 @@ menu key inside the magit-status section, where `?` belongs to magit.
 | `?` / `C-o` | `prrr-menu`                                         | main transient                                                                        |
 
 Preserved from magit: `TAB`, `S-TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`,
-`q`, `1`-`4`, `C-c C-e` ediff, `h`. Overridden magit keys (`c`, `d`, `e`,
+`q`, `1`-`4`, `E` ediff, `h`. Overridden magit keys (`c`, `d`, `e`,
 `k`, `s`, `z`, `D`, `b`, `B`, `o`, `v`, `L`, `S`, `O`, `G`) are commit, diff,
 ediff, delete, stage, stash, diff args, branch, bisect, submodule, revert,
 log, and refresh-all, none of which belong in a review buffer.
@@ -418,7 +425,7 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 
 | Key       | Command                                                             |
 |-----------|---------------------------------------------------------------------|
-| `RET`     | `prrr-review` (open Review Buffer at default Range; until milestone 3, `prrr-open-topic`)                 |
+| `RET`     | `prrr-review` (open Review Buffer at default Range)                 |
 | `o`       | `prrr-open-topic`                                                   |
 | `b`       | `prrr-browse`                                                       |
 | `B`       | `prrr-checkout`                                                     |

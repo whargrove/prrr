@@ -4,13 +4,15 @@ Review GitHub pull requests in Emacs, on top of [magit](https://magit.vc)
 and [forge](https://github.com/magit/forge).
 
 prrr puts the pull requests that need you in your magit-status buffer,
-oldest first, with Stacks of dependent PRs kept together. Upcoming
-milestones add a Review Buffer that shows the diff with existing threads
-inline, line and range comments, a pending review submitted in one batch,
-and "what changed since my last review".
+oldest first, with Stacks of dependent PRs kept together. Press `RET` on
+one to open its Review Buffer: the diff from the PR's merge base to its
+head, with existing threads inline, files folding away once viewed, and
+one key to jump between files and threads. Upcoming milestones add line
+and range comments, a pending review submitted in one batch, and "what
+changed since my last review".
 
-> **Status:** early development. The Review Queue works. The Review
-> Buffer, commenting and submitting are next. See the milestones in
+> **Status:** early development. The Review Queue and a read-only Review
+> Buffer work. Commenting and submitting are next. See the milestones in
 > [`SPEC.md`](SPEC.md#15-milestones).
 
 ## Requirements
@@ -90,7 +92,7 @@ tries the teams again the next day, or when you run `prrr-refresh-teams`.
 
 | Key   | Command           | Does                                                |
 |-------|-------------------|-----------------------------------------------------|
-| `RET` | `prrr-open-topic` | Open the PR (forge's topic buffer for now)          |
+| `RET` | `prrr-review`     | Open the PR's Review Buffer                         |
 | `o`   | `prrr-open-topic` | Open forge's topic buffer                           |
 | `b`   | `prrr-browse`     | Open the PR on GitHub                               |
 | `B`   | `prrr-checkout`   | Check out the PR's branch                           |
@@ -103,6 +105,7 @@ forge's own pull request keys, such as `C-c C-c`, also work on a row.
 
 ### Commands
 
+- `prrr-review`: open a pull request's Review Buffer (with `C-u`, always ask which).
 - `prrr-queue`: show the Review Queue of the current repository.
 - `prrr-pull`: pull now.
 - `prrr-refresh-teams`: fetch your GitHub teams again (done daily anyway).
@@ -116,10 +119,62 @@ forge's own pull request keys, such as `C-c C-c`, also work on a row.
 | `prrr-sync-timeout`      | `60`    | Seconds a pull waits for GitHub before `offline` |
 | `prrr-queue-show-drafts` | `t`     | Show draft PRs                                  |
 | `prrr-queue-show-served` | `t`     | Show the Served partition                       |
+| `prrr-eager-files`       | `30`    | Files expanded when a Review Buffer opens       |
+| `prrr-eager-lines`       | `2000`  | Changed lines expanded when it opens            |
 | `prrr-database-file`     | `prrr-database.sqlite` in `user-emacs-directory` | prrr's own database |
 
 prrr keeps its data in its own SQLite file and never writes to forge's
 database.
+
+## The Review Buffer
+
+`M-x prrr-review` (or `RET` on a queue row) opens a pull request's Review
+Buffer. It diffs the PR's head, which forge fetches to `refs/pullreqs/N`,
+against its merge base with the base branch. If that ref is missing, prrr
+offers to run `forge-pull`. When it stays missing, run
+`forge-add-pullreq-refspec` and pull again.
+
+The buffer opens at once from prrr's database and refetches the threads,
+your pending review and the Viewed flags in the background. The header
+says `refreshing…` meanwhile, and `offline` or `rate limited until 14:05`
+when that fails. The header shows the title, the range, your pending
+review's comment count, and a warning when GitHub has a newer head than
+your local ref. Folded below it are the description and the discussion.
+
+Large diffs stay fast. The first files, up to `prrr-eager-files` files or
+`prrr-eager-lines` changed lines, are shown expanded. Every other file
+loads when you first expand it.
+
+Threads sit right after the line they comment on. A thread on a line that
+is not in the diff goes to a folded "Not in this diff" group at the end
+of its file. Outdated threads go to a folded "Outdated" group. Threads on
+files no longer in the diff go to a group at the end of the buffer.
+Resolved threads start folded. `RET` on a thread visits the line it is
+anchored to.
+
+Files you marked Viewed, here or on GitHub, are folded and marked `✓
+viewed`. `g` redraws and keeps what you expanded and folded.
+
+### Keys in the Review Buffer
+
+| Key       | Command                                             | Does                                       |
+|-----------|-----------------------------------------------------|--------------------------------------------|
+| `]` / `[` | `prrr-next-thread` / `prrr-previous-thread`         | Next or previous thread                    |
+| `}` / `{` | `prrr-next-unresolved` / `prrr-previous-unresolved` | Next or previous unresolved thread         |
+| `J` / `K` | `prrr-next-file` / `prrr-previous-file`             | Next or previous file                      |
+| `j`       | `prrr-jump-to-file`                                 | Jump to a file, with completion            |
+| `v`       | `prrr-toggle-viewed`                                | Mark the file Viewed on GitHub and fold it |
+| `z` / `Z` | `prrr-collapse-all` / `prrr-expand-all`             | Fold or expand every file                  |
+| `o`       | `prrr-open-topic`                                   | forge's topic buffer                       |
+| `b`       | `prrr-browse`                                       | Open the PR on GitHub                      |
+| `B`       | `prrr-checkout`                                     | Check out the PR's branch                  |
+| `g`       | `magit-refresh`                                     | Redraw from the database                   |
+| `G`       | `prrr-refetch`                                      | Refetch threads and Viewed flags now       |
+| `?`, `C-o`| `prrr-menu`                                         | Menu with the same keys                    |
+
+magit's `TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`, `1`-`4`, `E` (ediff), `h`
+and `q` work as in any magit diff. Keys that later milestones use for
+commenting and reviewing (`c`, `r`, `e`, `k`, `s`, `S`, …) do nothing yet.
 
 ## Development
 
