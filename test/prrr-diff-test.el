@@ -288,5 +288,155 @@ SETUP runs first, inside the fixture repository and a fresh database."
         (should-not (oref notes hidden))
         (should (oref notes children))))))
 
+;;;; Threads
+
+(defun prrr-diff-test--hunks (path)
+  "Return the hunk sections of PATH, expanding the file."
+  (let ((file (prrr-diff-test--file-section path)))
+    (magit-section-show file)
+    (seq-filter (lambda (child) (eq (oref child type) 'hunk)) (oref file children))))
+
+(defun prrr-diff-test--line-before (section)
+  "Return the text of the line before SECTION."
+  (save-excursion
+    (goto-char (oref section start))
+    (forward-line -1)
+    (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+
+(defun prrr-diff-test--store-extra-threads ()
+  "Store Threads the fixture lacks: not in range, on the left side, on a gone file."
+  (dolist (thread (list (prrr-thread-create :thread-id "T_NIR" :pr-id prrr-diff-test--pr
+                                            :path "src/example.el" :line 20 :side 'right
+                                            :subject-type 'line)
+                        (prrr-thread-create :thread-id "T_LEFT" :pr-id prrr-diff-test--pr
+                                            :path "src/example.el" :line 30 :side 'left
+                                            :subject-type 'line)
+                        (prrr-thread-create :thread-id "T_GONE" :pr-id prrr-diff-test--pr
+                                            :path "src/gone.el" :line 2 :side 'right
+                                            :subject-type 'line)))
+    (prrr-db-insert thread)))
+
+(ert-deftest prrr-diff-test-thread-after-its-line ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let* ((hunks (prrr-diff-test--hunks "src/example.el"))
+           (first (car (oref (car hunks) children)))
+           (pending (car (oref (cadr hunks) children))))
+      (should (eq 'thread (oref first type)))
+      (should (equal "PRRT_kwDOexample0000001" (oref first value)))
+      (should (equal "+line twelve" (prrr-diff-test--line-before first)))
+      (should (equal "PRRT_kwDOexample0000005" (oref pending value)))
+      (should (equal "+line thirty" (prrr-diff-test--line-before pending))))))
+
+(ert-deftest prrr-diff-test-left-thread-after-removed-line ()
+  (prrr-diff-test--with-buffer (progn (prrr-diff-test--store-fixture)
+                                      (prrr-diff-test--store-extra-threads))
+    (let ((left (seq-find (lambda (child) (equal "T_LEFT" (oref child value)))
+                          (oref (cadr (prrr-diff-test--hunks "src/example.el")) children))))
+      (should (equal "-line 30" (prrr-diff-test--line-before left))))))
+
+(ert-deftest prrr-diff-test-range-thread-after-last-line-and-folded ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let ((thread (car (oref (car (prrr-diff-test--hunks "README.md")) children))))
+      (should (equal "PRRT_kwDOexample0000002" (oref thread value)))
+      (should (equal "+Some text," (prrr-diff-test--line-before thread)))
+      (should (oref thread hidden)))))
+
+(ert-deftest prrr-diff-test-file-comment-comes-first ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let ((file (prrr-diff-test--file-section "docs/notes.md")))
+      (magit-section-show file)
+      (should (equal '(file-comment hunk)
+                     (mapcar (lambda (child) (oref child type)) (oref file children)))))))
+
+(ert-deftest prrr-diff-test-thread-not-in-range ()
+  "Review Focus 1: a Thread whose line is not in the diff is kept, folded away."
+  (prrr-diff-test--with-buffer (progn (prrr-diff-test--store-fixture)
+                                      (prrr-diff-test--store-extra-threads))
+    (let* ((file (prrr-diff-test--file-section "src/example.el"))
+           (group (progn (magit-section-show file)
+                         (seq-find (lambda (child) (eq (oref child type) 'not-in-range))
+                                   (oref file children)))))
+      (should group)
+      (should (oref group hidden))
+      (should (equal '("T_NIR") (mapcar (lambda (child) (oref child value))
+                                        (oref group children)))))))
+
+(ert-deftest prrr-diff-test-outdated-thread-grouped ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let* ((file (prrr-diff-test--file-section "src/old.el"))
+           (group (progn (magit-section-show file)
+                         (seq-find (lambda (child) (eq (oref child type) 'outdated))
+                                   (oref file children)))))
+      (should (oref group hidden))
+      (should (equal '("PRRT_kwDOexample0000003")
+                     (mapcar (lambda (child) (oref child value)) (oref group children)))))))
+
+(ert-deftest prrr-diff-test-threads-on-files-not-in-diff ()
+  (prrr-diff-test--with-buffer (progn (prrr-diff-test--store-fixture)
+                                      (prrr-diff-test--store-extra-threads))
+    (let ((group (magit-get-section '((outdated-files) (diffbuf)))))
+      (should (oref group hidden))
+      (should (equal '("T_GONE") (mapcar (lambda (child) (oref child value))
+                                         (oref group children))))
+      (should (string-match-p "src/gone\\.el, line 2" (prrr-diff-test--text group))))))
+
+(ert-deftest prrr-diff-test-heading-counts-threads ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (should (string-match-p "src/example\\.el  2 threads"
+                            (prrr-diff-test--text (prrr-diff-test--file-section "src/example.el"))))))
+
+(ert-deftest prrr-diff-test-ret-after-thread ()
+  "Review Focus 4: a diff line after a Thread maps to its own file line."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let* ((hunk (car (prrr-diff-test--hunks "src/example.el")))
+           (thread (car (oref hunk children))))
+      (goto-char (oref thread end))
+      (should (looking-at " line 13$"))
+      (should (= 13 (magit-diff-hunk-line hunk nil)))
+      (goto-char (oref thread start))
+      (forward-line 2)
+      (should (= 12 (magit-diff-hunk-line hunk nil))))))
+
+(ert-deftest prrr-diff-test-thread-visit ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let ((thread (car (oref (car (prrr-diff-test--hunks "src/example.el")) children))))
+      (goto-char (oref thread start))
+      (prrr-thread-visit)
+      (with-current-buffer (window-buffer)
+        (should (string-match-p "example\\.el\\.~" (buffer-name)))
+        (should (= 12 (line-number-at-pos)))
+        (kill-buffer)))))
+
+(ert-deftest prrr-diff-test-ret-on-file-with-file-comment ()
+  "The RET of magit on a file heading skips a File Comment to the first hunk."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let ((file (prrr-diff-test--file-section "docs/notes.md")))
+      (magit-section-show file)
+      (goto-char (oref file start))
+      (magit-diff-visit-file (magit-file-at-point))
+      (with-current-buffer (window-buffer)
+        (should (string-match-p "notes\\.md\\.~" (buffer-name)))
+        (kill-buffer)))))
+
+(ert-deftest prrr-diff-test-paint-keeps-thread-faces ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let* ((hunk (car (prrr-diff-test--hunks "src/example.el")))
+           (thread (car (oref hunk children))))
+      (goto-char (oref hunk content))
+      (magit-section-update-highlight t)
+      (should (eq 'prrr-thread-heading
+                  (get-text-property (+ (oref thread start) 4) 'font-lock-face)))
+      (should (memq (get-text-property (oref thread end) 'font-lock-face)
+                    '(magit-diff-context magit-diff-context-highlight))))))
+
+(ert-deftest prrr-diff-test-refresh-keeps-thread-fold ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (magit-section-hide (car (oref (car (prrr-diff-test--hunks "src/example.el")) children)))
+    (magit-refresh-buffer)
+    (let ((file (prrr-diff-test--file-section "src/example.el")))
+      (should-not (oref file hidden))
+      (should (oref (car (oref (car (prrr-diff-test--hunks "src/example.el")) children))
+                    hidden)))))
+
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

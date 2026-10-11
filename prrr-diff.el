@@ -156,11 +156,29 @@ nil when forge recorded no base commit or it is not in the repository."
 (defvar-local prrr-diff--head nil
   "Oid of the head the diff ends at, or nil; set by each refresh.")
 
+(defvar-local prrr-diff--threads nil
+  "Hash table from Thread id to the `prrr-thread' shown; set by each refresh.")
+
+(defvar-local prrr-diff--file-threads nil
+  "Hash table from path to its `prrr-file-threads'; set by each refresh.")
+
 ;;;; Washing
 
-(defun prrr-diff--wash-hunk ()
-  "Wash the hunk at point as `magit-diff-wash-hunk' does.
-Return non-nil when there was a hunk."
+(defun prrr-diff--insert-anchored (anchors side line comments)
+  "Insert the Threads ANCHORS holds for LINE of SIDE, and remove them.
+COMMENTS maps Thread ids to their Review Comments."
+  (when line
+    (let ((key (cons side line)))
+      (dolist (thread (gethash key anchors))
+        (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)))
+      (remhash key anchors))))
+
+(defun prrr-diff--wash-hunk (anchors comments)
+  "Wash the hunk at point as `magit-diff-wash-hunk' does, with its Threads.
+After each diff line, the Threads ANCHORS holds for that line are
+inserted as children of the hunk (`prrr-diff--insert-anchored').
+COMMENTS maps Thread ids to their Review Comments.  Return non-nil when
+there was a hunk."
   (when (looking-at "^@\\{2,\\} \\(.+?\\) @\\{2,\\}\\(?: \\(.*\\)\\)?")
     (let* ((heading (match-string 0))
            (ranges (mapcar (lambda (str)
@@ -170,7 +188,9 @@ Return non-nil when there was a hunk."
                                (if (length= range 1) (nconc range (list 1)) range)))
                            (split-string (match-string 1))))
            (about (match-string 2))
-           (combined (length= ranges 3)))
+           (combined (length= ranges 3))
+           (old (car (car ranges)))
+           (new (car (car (last ranges)))))
       (magit-delete-line)
       (magit-insert-section (hunk (cons about ranges) nil
                                   :combined combined
@@ -180,34 +200,74 @@ Return non-nil when there was a hunk."
         (magit-insert-heading
           (propertize (concat heading "\n") 'font-lock-face 'magit-diff-hunk-heading))
         (while (not (or (eobp) (looking-at "^[^-+\s\\]")))
-          (forward-line))))
+          (let ((old-line nil) (new-line nil))
+            (pcase (char-after)
+              (?\s (setq old-line old new-line new) (cl-incf old) (cl-incf new))
+              (?- (setq old-line old) (cl-incf old))
+              (?+ (setq new-line new) (cl-incf new)))
+            (forward-line)
+            (prrr-diff--insert-anchored anchors 'left old-line comments)
+            (prrr-diff--insert-anchored anchors 'right new-line comments)))))
     t))
+
+(defun prrr-diff--insert-group (type title threads comments)
+  "Insert THREADS in a hidden section of TYPE headed TITLE, unless there are none.
+COMMENTS maps Thread ids to their Review Comments.  A group outside
+any file names each Thread's file."
+  (when threads
+    (magit-insert-section ((eval type) nil t)
+      (magit-insert-heading
+        (propertize (format "%s%s (%d)\n" prrr-thread-indent title (length threads))
+                    'font-lock-face 'magit-section-secondary-heading))
+      (dolist (thread threads)
+        (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
+                            (eq type 'outdated-files))))))
 
 (defun prrr-diff--insert-note (text)
   "Insert TEXT as a dimmed, indented line."
   (insert (propertize (concat prrr-thread-indent text "\n") 'font-lock-face 'magit-dimmed)))
 
-(defun prrr-diff--wash-file (file base head)
-  "Insert the hunks of FILE, a `prrr-diff-file', from BASE to HEAD at point.
-Runs inside a deferred section body, where `magit-git-wash' cannot be
-used, so the diff is inserted, narrowed to, stripped of its header and
-washed hunk by hunk.  A diff without hunks becomes a one-line note."
-  (let ((beg (point)))
-    (apply #'magit-git-insert "diff" "--no-ext-diff" "--no-color" "-p" "-M" base head "--"
-           (delq nil (list (prrr-diff-file-orig file) (prrr-diff-file-path file))))
-    (save-restriction
-      (narrow-to-region beg (point))
-      (goto-char beg)
-      (if (re-search-forward "^@@" nil t)
-          (progn
-            (delete-region beg (match-beginning 0))
-            (goto-char beg)
-            (magit-wash-sequence #'prrr-diff--wash-hunk))
-        (delete-region beg (point-max))
-        (prrr-diff--insert-note (if (prrr-diff-file-binary-p file)
-                                    "Binary file, not shown"
-                                  "No changed lines")))
-      (goto-char (point-max)))))
+(defun prrr-diff--wash-file (file threads comments base head)
+  "Insert FILE's diff from BASE to HEAD, with its Threads, at point.
+FILE is a `prrr-diff-file'; THREADS its `prrr-file-threads' or nil;
+COMMENTS maps Thread ids to their Review Comments.  File Comments come
+first, then the hunks with their Threads, then two hidden groups: the
+Threads whose line is not in this diff (`not-in-range') and the
+outdated ones (`outdated').  Runs inside a deferred section body, where
+`magit-git-wash' cannot be used, so the diff is inserted, narrowed to,
+stripped of its header and washed hunk by hunk.  A diff without hunks
+becomes a one-line note."
+  (let ((anchors (make-hash-table :test #'equal))
+        (lines (and threads (prrr-file-threads-lines threads))))
+    (dolist (thread (and threads (prrr-file-threads-file-comments threads)))
+      (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)))
+    (dolist (thread lines)
+      (let ((key (prrr-state-thread-anchor thread)))
+        (puthash key (append (gethash key anchors) (list thread)) anchors)))
+    (let ((beg (point)))
+      (apply #'magit-git-insert "diff" "--no-ext-diff" "--no-color" "-p" "-M" base head "--"
+             (delq nil (list (prrr-diff-file-orig file) (prrr-diff-file-path file))))
+      (save-restriction
+        (narrow-to-region beg (point))
+        (goto-char beg)
+        (if (re-search-forward "^@@" nil t)
+            (progn
+              (delete-region beg (match-beginning 0))
+              (goto-char beg)
+              (magit-wash-sequence (lambda () (prrr-diff--wash-hunk anchors comments))))
+          (delete-region beg (point-max))
+          (prrr-diff--insert-note (if (prrr-diff-file-binary-p file)
+                                      "Binary file, not shown"
+                                    "No changed lines")))
+        (goto-char (point-max))))
+    (prrr-diff--insert-group 'not-in-range "Not in this diff"
+                             (seq-filter (lambda (thread)
+                                           (gethash (prrr-state-thread-anchor thread) anchors))
+                                         lines)
+                             comments)
+    (prrr-diff--insert-group 'outdated "Outdated"
+                             (and threads (prrr-file-threads-outdated threads))
+                             comments)))
 
 (defun prrr-diff--content-markers ()
   "Make every section's content position a marker.
@@ -220,6 +280,84 @@ and then folding and RET act on the wrong lines."
      (let ((content (oref section content)))
        (when (integerp content)
          (oset section content (copy-marker content)))))))
+
+;;;; Magit coupling
+
+(cl-defmethod magit-section-paint ((section magit-hunk-section) highlight
+                                   &context (major-mode prrr-diff-mode))
+  "Paint the diff lines of SECTION in MAJOR-MODE `prrr-diff-mode', not its Threads.
+magit's method paints every line after point up to the section's end.
+It runs once per run of diff lines, with the end moved to the next
+child, starting on the line before the run.  HIGHLIGHT is passed on."
+  (let ((children (oref section children)))
+    (if (not children)
+        (cl-call-next-method)
+      (let ((end (oref section end))
+            (from (point)))
+        (unwind-protect
+            (dolist (stop (append (mapcar (lambda (child) (oref child start)) children)
+                                  (list end)))
+              (save-excursion
+                (goto-char from)
+                (oset section end stop)
+                (cl-call-next-method section highlight))
+              (when-let ((child (seq-find (lambda (child) (= (oref child start) stop))
+                                          children)))
+                ;; magit's method skips the line point is on: the
+                ;; child's last line, so painting resumes after it.
+                (setq from (save-excursion (goto-char (oref child end))
+                                           (forward-line -1)
+                                           (point)))))
+          (oset section end end))))))
+
+(defun prrr-diff--hunk-line (orig section goto-from)
+  "Call ORIG, `magit-diff-hunk-line', counting only SECTION's diff lines.
+In a Review Buffer a hunk's Thread children are not diff lines, and a
+point inside one counts as the diff line the Thread follows.
+GOTO-FROM is as for ORIG."
+  (if (not (and (derived-mode-p 'prrr-diff-mode) (oref section children)))
+      (funcall orig section goto-from)
+    (save-excursion
+      (goto-char (line-beginning-position))
+      (let ((at (magit-section-at)))
+        (unless (eq at section)
+          (while (and at (not (eq (oref at parent) section)))
+            (setq at (oref at parent)))
+          (when at
+            (goto-char (oref at start))
+            (forward-line -1))))
+      (let ((content (oref section content)))
+        (when (< (point) content)
+          (goto-char content)
+          (re-search-forward "^[-+]")
+          (goto-char (line-beginning-position)))
+        (let ((target (point))
+              (offset 0))
+          (goto-char content)
+          (while (< (point) target)
+            (when (and (eq (magit-section-at) section)
+                       (not (eq (char-after) (if goto-from ?+ ?-))))
+              (cl-incf offset))
+            (forward-line))
+          (+ (car (if goto-from (oref section from-range) (oref section to-range)))
+             offset))))))
+
+(defun prrr-diff--hunk-section (orig)
+  "Call ORIG, `magit-diff--hunk-section', skipping a File Comment.
+magit takes a file's first child for its first hunk; in a Review
+Buffer that child may be a File Comment."
+  (let ((section (funcall orig)))
+    (if (and section
+             (derived-mode-p 'prrr-diff-mode)
+             (not (eq (oref section type) 'hunk)))
+        (seq-find (lambda (child)
+                    (and (eq (oref child type) 'hunk)
+                         (not (equal (oref child value) '(chmod)))))
+                  (oref (oref section parent) children))
+      section)))
+
+(advice-add 'magit-diff-hunk-line :around #'prrr-diff--hunk-line)
+(advice-add 'magit-diff--hunk-section :around #'prrr-diff--hunk-section)
 
 ;;;; Mode and refresh
 
@@ -249,30 +387,58 @@ A `dismissed' file changed since it was viewed, so it does not count."
   (mapcar #'prrr-viewed-path
           (seq-filter (lambda (row) (eq (prrr-viewed-state row) 'viewed)) viewed)))
 
-(defun prrr-diff--file-heading (file viewed-p)
-  "Return the heading of FILE, a `prrr-diff-file', marked when VIEWED-P."
-  (concat (magit-format-file 'diff (prrr-diff-file-path file) 'magit-diff-file-heading
-                             (prrr-diff-file-status file) (prrr-diff-file-orig file))
-          (and viewed-p (propertize "  ✓ viewed" 'font-lock-face 'prrr-diff-viewed))
-          "\n"))
+(defun prrr-diff--comments-table (comments)
+  "Return a hash table from Thread id to its COMMENTS, in their order."
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (comment (reverse comments))
+      (push comment (gethash (prrr-comment-thread-id comment) table)))
+    table))
+
+(defun prrr-diff--thread-count (threads)
+  "Return how many Threads THREADS, a `prrr-file-threads' or nil, holds."
+  (if threads
+      (+ (length (prrr-file-threads-file-comments threads))
+         (length (prrr-file-threads-lines threads))
+         (length (prrr-file-threads-outdated threads)))
+    0))
+
+(defun prrr-diff--file-heading (file threads viewed-p)
+  "Return the heading of FILE with the count of its THREADS, marked when VIEWED-P."
+  (let ((count (prrr-diff--thread-count threads)))
+    (concat (magit-format-file 'diff (prrr-diff-file-path file) 'magit-diff-file-heading
+                               (prrr-diff-file-status file) (prrr-diff-file-orig file))
+            (and (> count 0) (format "  %d thread%s" count (if (= count 1) "" "s")))
+            (and viewed-p (propertize "  ✓ viewed" 'font-lock-face 'prrr-diff-viewed))
+            "\n")))
 
 (defun prrr-diff--insert-files (base head data)
   "Insert one `file' section per file changed from BASE to HEAD.
 DATA is the PR's stored review data (`prrr-db-review-data').  Viewed
-files start hidden; the eager budget decides for the others."
+files start hidden; the eager budget decides for the others.  Sets
+`prrr-diff--threads' and `prrr-diff--file-threads'.  Return the
+Threads whose file is not in the diff."
   (let* ((files (prrr-diff--changes base head))
+         (layout (prrr-state-thread-layout (plist-get data :threads)
+                                           (mapcar #'prrr-diff-file-path files)))
+         (comments (prrr-diff--comments-table (plist-get data :comments)))
          (viewed (prrr-diff--viewed-paths (plist-get data :viewed)))
          (eager (prrr-diff--eager-paths files viewed)))
+    (setq prrr-diff--file-threads (car layout)
+          prrr-diff--threads (make-hash-table :test #'equal))
+    (dolist (thread (plist-get data :threads))
+      (puthash (prrr-thread-thread-id thread) thread prrr-diff--threads))
     (if (null files)
         (prrr-diff--insert-note "No changes")
       (dolist (file files)
-        (let ((path (prrr-diff-file-path file)))
+        (let* ((path (prrr-diff-file-path file))
+               (threads (gethash path (car layout))))
           (magit-insert-section (file path (not (member path eager))
                                       :source (prrr-diff-file-orig file)
                                       :binary (prrr-diff-file-binary-p file))
-            (magit-insert-heading (prrr-diff--file-heading file (member path viewed)))
+            (magit-insert-heading (prrr-diff--file-heading file threads (member path viewed)))
             (magit-insert-section-body
-              (prrr-diff--wash-file file base head))))))))
+              (prrr-diff--wash-file file threads comments base head))))))
+    (cdr layout)))
 
 (defun prrr-diff--insert-header (pullreq _base _head _data)
   "Insert the header of PULLREQ's Review Buffer."
@@ -303,7 +469,9 @@ The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'."
              (prrr-diff--insert-note
               (format "The base commit %s is not available locally: run `forge-pull', then g"
                       (or (oref pullreq base-rev) "(unknown)"))))
-            (t (prrr-diff--insert-files base head data))))
+            (t (prrr-diff--insert-group 'outdated-files "Threads on files not in this diff"
+                                        (prrr-diff--insert-files base head data)
+                                        (prrr-diff--comments-table (plist-get data :comments))))))
     (prrr-diff--content-markers)))
 
 (defun prrr-diff--buffer-name (pullreq)
