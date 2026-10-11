@@ -537,5 +537,75 @@ SETUP runs first, inside the fixture repository and a fresh database.
                           (magit-get-section '((description) (prrr-header) (diffbuf)))))))
             (kill-buffer buffer)))))))
 
+;;;; Opening
+
+(defmacro prrr-diff-test--with-open-stubs (&rest body)
+  "Run BODY with the network and forge's database stubbed for opening.
+`prrr-sync-refetch' records its calls in `refetches'; posts are empty."
+  (declare (indent 0))
+  `(let ((refetches nil)
+         (get-repository (symbol-function 'forge-get-repository)))
+     (cl-letf (((symbol-function 'prrr-sync-refetch)
+                (lambda (repo pullreq buffer) (push (list repo pullreq buffer) refetches) t))
+               ;; Only prrr's own lookup by pull request is stubbed: forge's mode
+               ;; hook asks for the repository of the buffer and needs a real answer.
+               ((symbol-function 'forge-get-repository)
+                (lambda (&rest args)
+                  (if (forge-pullreq-p (car args)) 'example-repo (apply get-repository args))))
+               ((symbol-function 'prrr-diff--posts) #'ignore))
+       ,@body)))
+
+(ert-deftest prrr-diff-test-open-shows-buffer-and-refetches ()
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (prrr-diff-test--with-open-stubs
+        (let* ((pullreq (prrr-diff-test--pullreq))
+               (buffer (prrr-diff-open pullreq)))
+          (unwind-protect
+              (progn
+                (should (eq 'prrr-diff-mode (buffer-local-value 'major-mode buffer)))
+                (should (equal (list (list 'example-repo pullreq buffer)) refetches))
+                ;; Review Focus 5: a redraw never refetches.
+                (with-current-buffer buffer (magit-refresh-buffer))
+                (should (= 1 (length refetches)))
+                (with-current-buffer buffer
+                  ;; Away from the "#1" in the title, which forge would parse.
+                  (goto-char (point-max))
+                  (should (eq pullreq (prrr-current-pullreq)))))
+            (kill-buffer buffer)))))))
+
+(ert-deftest prrr-diff-test-review-missing-ref-offers-pull ()
+  "Review Focus 1: no Review Buffer without the PR's head."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")
+      (prrr-diff-test--with-open-stubs
+        (let ((pulled nil))
+          (cl-letf (((symbol-function 'forge-pull) (lambda (&rest _) (interactive) (setq pulled t))))
+            (cl-letf (((symbol-function 'y-or-n-p) #'ignore))
+              (should-error (prrr-diff-open (prrr-diff-test--pullreq)) :type 'user-error)
+              (should-not pulled))
+            (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+              (should-error (prrr-diff-open (prrr-diff-test--pullreq)) :type 'user-error)
+              (should pulled))
+            (should-not refetches)
+            (should-not (get-buffer (prrr-diff--buffer-name (prrr-diff-test--pullreq))))))))))
+
+(ert-deftest prrr-diff-test-refetch-command ()
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (prrr-diff-test--with-open-stubs
+        (let ((buffer (prrr-diff-open (prrr-diff-test--pullreq))))
+          (unwind-protect
+              (with-current-buffer buffer
+                (setq refetches nil)
+                (prrr-refetch)
+                (should (= 1 (length refetches))))
+            (kill-buffer buffer)))))))
+
+(ert-deftest prrr-diff-test-refetch-outside-review-buffer ()
+  (with-temp-buffer
+    (should-error (prrr-refetch) :type 'user-error)))
+
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

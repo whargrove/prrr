@@ -62,7 +62,7 @@
    ("-d" prrr-queue-toggle-drafts)
    ("-s" prrr-queue-toggle-served)]
   [["Pull request"
-    ("RET" "open topic" prrr-open-topic)
+    ("RET" "review" prrr-review)
     ("o" "open topic" prrr-open-topic)
     ("b" "browse on GitHub" prrr-browse)
     ("B" "checkout" prrr-checkout)]

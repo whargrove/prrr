@@ -104,10 +104,9 @@
   "C-o" #'prrr-queue-menu)
 
 (defvar-keymap prrr-queue-section-map
-  :doc "Keys on a Review Queue row (SPEC section 9).
-RET opens forge's topic buffer until the Review Buffer arrives."
+  :doc "Keys on a Review Queue row (SPEC section 9)."
   :parent prrr-queue-heading-map
-  "RET" #'prrr-open-topic
+  "RET" #'prrr-review
   "o" #'prrr-open-topic
   "b" #'prrr-browse
   "B" #'prrr-checkout

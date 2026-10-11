@@ -34,6 +34,7 @@
 ;; loads nothing else: every other command is reached through an
 ;; autoload, so `(require 'prrr)' at startup costs no forge, magit or
 ;; database load.  Turn the Review Queue on with `prrr-queue-mode'.
+;; `prrr-review' is the way into the Review Buffer.
 
 ;;; Code:
 
@@ -52,12 +53,16 @@
 (autoload 'prrr-refresh-teams "prrr-sync" "Fetch the viewer's Teams again." t)
 (autoload 'prrr-stack-up "prrr-stack" "Move to the next PR up the current Stack." t)
 (autoload 'prrr-stack-down "prrr-stack" "Move to the next PR down the current Stack." t)
+(autoload 'prrr-refetch "prrr-diff" "Refetch this pull request's review data now." t)
 (autoload 'prrr-queue-menu "prrr-transient" "Show the Review Queue commands." t)
 
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))
 (declare-function forge-browse-pullreq "forge-commands" (pull-request))
 (declare-function forge-checkout-pullreq "forge-commands" (pullreq))
+(declare-function forge-read-pullreq "forge-pullreq" (prompt))
+(declare-function forge-get-pullreq "forge-core" (&rest args))
+(declare-function prrr-diff-open "prrr-diff" (pullreq))
 
 (defun prrr-current-pullreq ()
   "Return forge's pull request at point or being visited.
@@ -83,6 +88,19 @@ Signal a `user-error' when there is none."
   "Check out the current pull request's branch with forge."
   (interactive)
   (forge-checkout-pullreq (prrr-current-pullreq)))
+
+;;;###autoload
+(defun prrr-review (pullreq)
+  "Review PULLREQ in its Review Buffer.
+Interactively, the pull request at point, else one read with forge's
+reader; with a prefix argument, always read one."
+  (interactive
+   (progn
+     (require 'forge)
+     (list (or (and (not current-prefix-arg) (forge-current-pullreq))
+               (forge-get-pullreq (forge-read-pullreq "Review pull request: "))))))
+  (require 'prrr-diff)
+  (prrr-diff-open pullreq))
 
 (provide 'prrr)
 ;;; prrr.el ends here

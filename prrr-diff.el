@@ -548,5 +548,44 @@ so forge's commands, and `prrr-current-pullreq', act on PULLREQ."
     (magit-buffer-diff-files nil)
     (magit-buffer-revision nil)))
 
+;;;; Opening
+
+(defun prrr-diff-open (pullreq)
+  "Show the Review Buffer of PULLREQ and refetch its review data in the background.
+The buffer renders at once from the database and refreshes when the
+refetch ends.  When forge has not fetched the PR's head ref, offer to
+run `forge-pull' and signal a `user-error' instead of opening.  Return
+the buffer."
+  (let ((ref (prrr-diff--head-ref pullreq)))
+    (unless (magit-rev-verify ref)
+      (when (y-or-n-p (format "%s is missing; run `forge-pull' now? " ref))
+        (call-interactively #'forge-pull))
+      (user-error (concat "%s is missing: open the pull request again once forge has fetched it"
+                          " (if it stays missing, run `forge-add-pullreq-refspec')")
+                  ref)))
+  (let ((buffer (prrr-diff-setup-buffer pullreq)))
+    (prrr-sync-refetch (forge-get-repository pullreq) pullreq buffer)
+    buffer))
+
+(defun prrr-diff--require-pullreq ()
+  "Return the current Review Buffer's pull request.
+Signal a `user-error' outside a Review Buffer."
+  (or (and (derived-mode-p 'prrr-diff-mode) prrr-diff--pullreq)
+      (user-error "Not in a Review Buffer")))
+
+;;;###autoload
+(defun prrr-refetch ()
+  "Refetch this pull request's Threads, Pending Review and Viewed flags now.
+The buffer shows \"refreshing…\" until the answer arrives, then redraws.
+`g' redraws from the database without fetching."
+  (interactive)
+  (let ((pullreq (prrr-diff--require-pullreq)))
+    (if (prrr-sync-refetch (forge-get-repository pullreq) pullreq (current-buffer))
+        (magit-refresh-buffer)
+      (message "Not refetching: %s"
+               (or (prrr-sync-describe (prrr-sync-review-status (oref pullreq their-id))
+                                       "a refetch is running")
+                   "try again shortly")))))
+
 (provide 'prrr-diff)
 ;;; prrr-diff.el ends here

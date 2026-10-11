@@ -28,6 +28,7 @@
 (require 'forge)          ; loaded before the stubs below replace its functions
 (require 'prrr-test-helper)
 (require 'prrr)
+(require 'prrr-diff)
 
 (ert-deftest prrr-test-require-prrr-does-not-load-forge ()
   "Loading prrr.el (prrr-knu.6) loads neither forge, magit nor the database."
@@ -79,6 +80,25 @@
       (prrr-checkout))
     (should (equal (list (cons 'checkout pullreq) (cons 'browse pullreq) (cons 'visit pullreq))
                    calls))))
+
+(ert-deftest prrr-test-review-reads-pullreq-without-one-at-point ()
+  (let ((pullreq (forge-pullreq :id "forge-9" :number 9))
+        (opened nil))
+    (cl-letf (((symbol-function 'forge-current-pullreq) #'ignore)
+              ((symbol-function 'forge-read-pullreq) (lambda (&rest _) "forge-9"))
+              ((symbol-function 'forge-get-pullreq) (lambda (id) (and (equal id "forge-9") pullreq)))
+              ((symbol-function 'prrr-diff-open) (lambda (pr) (setq opened pr))))
+      (call-interactively #'prrr-review))
+    (should (eq pullreq opened))))
+
+(ert-deftest prrr-test-review-uses-pullreq-at-point ()
+  (let ((pullreq (forge-pullreq :id "forge-3" :number 3))
+        (opened nil))
+    (cl-letf (((symbol-function 'forge-current-pullreq) (lambda (&rest _) pullreq))
+              ((symbol-function 'forge-read-pullreq) (lambda (&rest _) (ert-fail "prompted")))
+              ((symbol-function 'prrr-diff-open) (lambda (pr) (setq opened pr))))
+      (call-interactively #'prrr-review))
+    (should (eq pullreq opened))))
 
 (provide 'prrr-test)
 ;;; prrr-test.el ends here
