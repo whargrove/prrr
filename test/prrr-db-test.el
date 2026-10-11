@@ -293,5 +293,68 @@
     (should (equal '(:threads nil :comments nil :pending-review nil :viewed nil)
                    (prrr-db-review-data "PR_never")))))
 
+;;;; The Outbox
+
+(defun prrr-db-test--write (id pr-id kind payload &optional last-error)
+  "A queued write ID of PR-ID with KIND, PAYLOAD and LAST-ERROR."
+  (prrr-outbox-create :id id :pr-id pr-id :kind kind :payload payload
+                      :created-at "2026-10-10T12:00:00Z" :attempts 0
+                      :last-error last-error))
+
+(ert-deftest prrr-db-test-outbox-rows-oldest-first ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-db-test--write "2" "PR_1" 'viewed '(:path "b")))
+    (prrr-db-insert (prrr-db-test--write "1" "PR_1" 'viewed '(:path "a")))
+    (prrr-db-insert (prrr-db-test--write "3" "PR_2" 'viewed '(:path "c")))
+    ;; Replacing a row moves it to the end of rowid order, not of the Outbox.
+    (prrr-db-insert (prrr-db-test--write "1" "PR_1" 'viewed '(:path "a") "offline"))
+    (should (equal '("1" "2" "3") (mapcar #'prrr-outbox-id (prrr-db-outbox-rows))))
+    (should (equal '("1" "2") (mapcar #'prrr-outbox-id (prrr-db-outbox-rows "PR_1"))))
+    (should (equal '(:path "a") (prrr-outbox-payload (car (prrr-db-outbox-rows)))))))
+
+(ert-deftest prrr-db-test-outbox-clear-errors ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-db-test--write "1" "PR_1" 'viewed nil "offline"))
+    (prrr-db-insert (prrr-db-test--write "2" "PR_2" 'viewed nil "offline"))
+    (prrr-db-outbox-clear-errors "PR_1")
+    (should (equal '(nil "offline") (mapcar #'prrr-outbox-last-error (prrr-db-outbox-rows))))
+    (prrr-db-outbox-clear-errors)
+    (should (equal '(nil nil) (mapcar #'prrr-outbox-last-error (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-db-test-outbox-done ()
+  "The write leaves, its rows arrive, and the PR's other writes learn GitHub's ids."
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-db-test--write "1" "PR_1" 'thread '(:thread "local:T" :comment "local:C")))
+    (prrr-db-insert (prrr-db-test--write "2" "PR_1" 'reply '(:thread-id "local:T" :comment "local:R")))
+    (prrr-db-insert (prrr-db-test--write "3" "PR_2" 'reply '(:thread-id "local:T")))
+    (prrr-db-insert (prrr-test-thread :id "GONE"))
+    (prrr-db-outbox-done "1"
+                         :insert (list (prrr-test-thread :id "PRRT_1"))
+                         :delete '((thread :thread-id "GONE"))
+                         :renames '(("local:T" . "PRRT_1")))
+    (should (equal '("2" "3") (mapcar #'prrr-outbox-id (prrr-db-outbox-rows))))
+    (should (equal '(:thread-id "PRRT_1" :comment "local:R")
+                   (prrr-outbox-payload (prrr-db-get 'outbox "2"))))
+    (should (equal '(:thread-id "local:T") (prrr-outbox-payload (prrr-db-get 'outbox "3"))))
+    (should (equal '("PRRT_1") (mapcar #'prrr-thread-thread-id (prrr-db-select 'thread))))))
+
+(ert-deftest prrr-db-test-review-data-keeps-the-outbox ()
+  "Bead prrr-8ok: a refetch replaces GitHub's rows, not the queued writes."
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-db-test--write "1" prrr-db-test--pr 'reply
+                                         '(:thread-id "local:T" :comment "local:R")))
+    (prrr-db-replace-review-data prrr-db-test--pr (prrr-db-test--review-data)
+                                 '(("local:T" . "PRRT_kwDOexample0000005")))
+    (should (equal '(:thread-id "PRRT_kwDOexample0000005" :comment "local:R")
+                   (prrr-outbox-payload (car (prrr-db-outbox-rows prrr-db-test--pr)))))))
+
+(ert-deftest prrr-db-test-new-columns-round-trip ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-thread-create :thread-id "T" :pr-id "PR_1" :resolvable-p t))
+    (prrr-db-insert (prrr-comment-create :comment-id "C" :thread-id "T" :pr-id "PR_1"
+                                         :database-id "1001"))
+    (should (prrr-thread-resolvable-p (prrr-db-get 'thread "T")))
+    (should (equal "1001" (prrr-comment-database-id (prrr-db-get 'review-comment "C"))))))
+
 (provide 'prrr-db-test)
 ;;; prrr-db-test.el ends here
