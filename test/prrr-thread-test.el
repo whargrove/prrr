@@ -178,5 +178,108 @@ BODY sees `section', the first child of the root."
     (should (equal '("    Your Discussion Comment  unsent" "      Thanks!")
                    (prrr-thread-test--lines)))))
 
+
+;;;; The capture buffer
+
+(defmacro prrr-thread-test--with-capture (args &rest body)
+  "Open a capture buffer from a scratch buffer and run BODY in it.
+ARGS follow the label and the confirm function of `prrr-comment-capture'.
+`confirmed' collects (TEXT IMMEDIATE BUFFER) of each confirm and
+`origin' is the scratch buffer."
+  (declare (indent 1))
+  `(let ((confirmed nil)
+         (origin (generate-new-buffer "prrr-test-origin")))
+     (unwind-protect
+         (with-current-buffer origin
+           (insert "line one\nline two\n")
+           (goto-char 10)
+           (let ((capture (apply #'prrr-comment-capture "src/a.el:3 right"
+                                 (lambda (text immediate)
+                                   (push (list text immediate (current-buffer)) confirmed))
+                                 (list ,@args))))
+             (with-current-buffer capture
+               ,@body)))
+       (dolist (buffer (buffer-list))
+         (when (string-prefix-p "*prrr comment*" (buffer-name buffer))
+           (kill-buffer buffer)))
+       (kill-buffer origin))))
+
+(ert-deftest prrr-thread-test-capture-confirm ()
+  (prrr-thread-test--with-capture ()
+    (should (eq 'prrr-comment-mode major-mode))
+    (should (derived-mode-p 'text-mode))
+    (should (string-match-p "src/a\\.el:3 right" (prrr-comment--header)))
+    (should (string-match-p "Pending Review" (prrr-comment--header)))
+    (insert "  Looks odd.  \n")
+    (let ((capture (current-buffer)))
+      (prrr-comment-confirm)
+      (should-not (buffer-live-p capture)))
+    (should (equal (list (list "Looks odd." nil origin)) confirmed))
+    (should (eq (current-buffer) origin))
+    (should (= 10 (point)))))
+
+(ert-deftest prrr-thread-test-capture-keys ()
+  (prrr-thread-test--with-capture ()
+    (should (eq 'prrr-comment-confirm (key-binding (kbd "C-c C-c"))))
+    (should (eq 'prrr-comment-abort (key-binding (kbd "C-c C-k"))))
+    (should (eq 'prrr-comment-toggle-immediate (key-binding (kbd "C-c C-i"))))))
+
+(ert-deftest prrr-thread-test-capture-empty-refused ()
+  "Review Focus 5: an empty comment is refused and the buffer stays."
+  (prrr-thread-test--with-capture ()
+    (insert "  \n")
+    (should-error (prrr-comment-confirm) :type 'user-error)
+    (should (eq major-mode 'prrr-comment-mode))
+    (should-not confirmed)))
+
+(ert-deftest prrr-thread-test-capture-allow-empty ()
+  (prrr-thread-test--with-capture (:allow-empty t)
+    (prrr-comment-confirm)
+    (should (equal "" (car (car confirmed))))))
+
+(ert-deftest prrr-thread-test-capture-abort ()
+  (prrr-thread-test--with-capture (:body "Draft")
+    (should (equal "Draft" (buffer-string)))
+    (let ((capture (current-buffer)))
+      (prrr-comment-abort)
+      (should-not (buffer-live-p capture)))
+    (should-not confirmed)))
+
+(ert-deftest prrr-thread-test-capture-toggle-immediate ()
+  (prrr-thread-test--with-capture (:immediate t)
+    (should (string-match-p "publish now" (prrr-comment--header)))
+    (prrr-comment-toggle-immediate)
+    (insert "Later.")
+    (prrr-comment-confirm)
+    (should (equal '("Later." nil) (seq-take (car confirmed) 2)))))
+
+(ert-deftest prrr-thread-test-capture-fixed-choice ()
+  (prrr-thread-test--with-capture (:immediate t :immediate-allowed nil)
+    (should-error (prrr-comment-toggle-immediate) :type 'user-error)
+    (should-not (string-match-p "publish now" (prrr-comment--header)))))
+
+(ert-deftest prrr-thread-test-capture-keeps-text-when-sending-fails ()
+  "Review Focus 5: when the command refuses the text, nothing is lost."
+  (let ((origin (generate-new-buffer "prrr-test-origin")))
+    (unwind-protect
+        (with-current-buffer origin
+          (with-current-buffer (prrr-comment-capture "x" (lambda (_text _now) (user-error "No")))
+            (insert "Keep me.")
+            (should-error (prrr-comment-confirm) :type 'user-error)
+            (should (equal "Keep me." (buffer-string)))
+            (kill-buffer)))
+      (kill-buffer origin))))
+
+(ert-deftest prrr-thread-test-capture-origin-killed ()
+  "Review Focus 5: confirming after the Review Buffer is gone still sends."
+  (let ((confirmed nil)
+        (origin (generate-new-buffer "prrr-test-origin")))
+    (with-current-buffer origin
+      (with-current-buffer (prrr-comment-capture "x" (lambda (text _now) (push text confirmed)))
+        (kill-buffer origin)
+        (insert "Still sent.")
+        (prrr-comment-confirm)))
+    (should (equal '("Still sent.") confirmed))))
+
 (provide 'prrr-thread-test)
 ;;; prrr-thread-test.el ends here

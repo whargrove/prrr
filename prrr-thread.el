@@ -27,6 +27,9 @@
 ;; A comment or Thread the Outbox has not sent shows `unsent', or `failed:' and
 ;; GitHub's words; a suggestion block shows as a mini diff against the
 ;; anchored lines.
+;; The capture buffer, `prrr-comment-mode', is here too: it takes a label and a
+;; function to call with the text, so it never needs to know about the diff
+;; (SPEC section 2).
 
 ;;; Code:
 
@@ -237,6 +240,138 @@ A Thread inside a hunk visits the diff line it follows, through magit's
                    (forward-line -1)))
         (goto-char (oref file start)))
       (call-interactively #'magit-diff-visit-file))))
+;;;; The capture buffer
+
+(defvar-keymap prrr-comment-mode-map
+  :doc "Keys of a buffer in which a comment is written."
+  "C-c C-c" #'prrr-comment-confirm
+  "C-c C-k" #'prrr-comment-abort
+  "C-c C-i" #'prrr-comment-toggle-immediate)
+
+(defalias 'prrr-comment--parent-mode
+  (if (require 'markdown-mode nil t) 'gfm-mode 'text-mode)
+  "The mode `prrr-comment-mode' derives from.
+GitHub's Markdown mode when markdown-mode is installed, which forge
+requires, else `text-mode'.")
+
+(define-derived-mode prrr-comment-mode prrr-comment--parent-mode "prrr-comment"
+  "Write a comment for prrr.
+\\<prrr-comment-mode-map>\\[prrr-comment-confirm] sends the comment, \\[prrr-comment-abort] drops it.
+\\[prrr-comment-toggle-immediate] switches between the Pending Review and
+Immediate Publish.
+
+\\{prrr-comment-mode-map}"
+  :interactive nil
+  :group 'prrr
+  (setq-local header-line-format '(:eval (prrr-comment--header))))
+
+(defvar-local prrr-comment--label nil
+  "What the comment is about, as the header line says.")
+
+(defvar-local prrr-comment--on-confirm nil
+  "Function called with the text and the immediate choice on confirm.")
+
+(defvar-local prrr-comment--immediate nil
+  "Non-nil when the comment is published at once.")
+
+(defvar-local prrr-comment--immediate-allowed t
+  "Non-nil when the user may change `prrr-comment--immediate'.")
+
+(defvar-local prrr-comment--allow-empty nil
+  "Non-nil when an empty text may be confirmed.")
+
+(defvar-local prrr-comment--origin nil
+  "Marker where the capture was started.")
+
+(defvar-local prrr-comment--windows nil
+  "The window configuration to restore when the capture ends.")
+
+(defun prrr-comment--header ()
+  "Return the header line of a capture buffer."
+  (concat " " prrr-comment--label
+          (and prrr-comment--immediate-allowed
+               (if prrr-comment--immediate "  ·  publish now" "  ·  Pending Review"))
+          (substitute-command-keys
+           (concat "  ·  \\<prrr-comment-mode-map>\\[prrr-comment-confirm] send, "
+                   "\\[prrr-comment-abort] cancel"
+                   (and prrr-comment--immediate-allowed
+                        ", \\[prrr-comment-toggle-immediate] publish now or later")))))
+
+(cl-defun prrr-comment-capture (label on-confirm &key body immediate (immediate-allowed t)
+                                      allow-empty)
+  "Open a buffer to write a comment about LABEL, and return it.
+LABEL says what the comment is about, as `prrr-state-anchor-label' or
+`prrr-thread-label' do; the header line shows it.  BODY is the initial
+text.  IMMEDIATE is the initial choice between the Pending Review (nil)
+and Immediate Publish; IMMEDIATE-ALLOWED nil fixes it.  ALLOW-EMPTY
+non-nil lets an empty text be confirmed.
+
+On confirm, ON-CONFIRM is called with the trimmed text and the
+immediate choice, in the buffer the capture started from; then the
+capture buffer closes and the windows, with point where it was, come
+back.  When ON-CONFIRM signals, the capture buffer stays, so no text is
+lost."
+  (let ((origin (point-marker))
+        (windows (current-window-configuration))
+        (buffer (generate-new-buffer "*prrr comment*")))
+    (with-current-buffer buffer
+      (prrr-comment-mode)
+      (setq prrr-comment--label label
+            prrr-comment--on-confirm on-confirm
+            prrr-comment--immediate immediate
+            prrr-comment--immediate-allowed immediate-allowed
+            prrr-comment--allow-empty allow-empty
+            prrr-comment--origin origin
+            prrr-comment--windows windows)
+      (when body
+        (insert body)))
+    (pop-to-buffer buffer '((display-buffer-in-side-window) (side . bottom)
+                            (window-height . 0.3)))
+    buffer))
+
+(defun prrr-comment--close ()
+  "Kill the current capture buffer and bring the windows back."
+  (let ((windows prrr-comment--windows)
+        (origin prrr-comment--origin))
+    (kill-buffer (current-buffer))
+    (when windows
+      (set-window-configuration windows))
+    (when (and origin (buffer-live-p (marker-buffer origin)))
+      (set-buffer (marker-buffer origin))
+      (goto-char origin))))
+
+(defun prrr-comment-confirm ()
+  "Send the comment of this buffer and close it."
+  (interactive)
+  (let ((text (string-trim (buffer-string)))
+        (on-confirm prrr-comment--on-confirm)
+        (immediate prrr-comment--immediate)
+        (origin prrr-comment--origin))
+    (when (and (string-empty-p text) (not prrr-comment--allow-empty))
+      (user-error (substitute-command-keys
+                   "Nothing to send; \\<prrr-comment-mode-map>\\[prrr-comment-abort] cancels")))
+    (if (and origin (buffer-live-p (marker-buffer origin)))
+        (with-current-buffer (marker-buffer origin)
+          (funcall on-confirm text immediate))
+      (funcall on-confirm text immediate))
+    (prrr-comment--close)))
+
+(defun prrr-comment-abort ()
+  "Drop the comment of this buffer and close it."
+  (interactive)
+  (prrr-comment--close)
+  (message "Comment dropped"))
+
+(defun prrr-comment-toggle-immediate ()
+  "Switch this comment between the Pending Review and Immediate Publish."
+  (interactive)
+  (unless prrr-comment--immediate-allowed
+    (user-error "This one cannot switch between Pending Review and Immediate Publish"))
+  (setq prrr-comment--immediate (not prrr-comment--immediate))
+  (force-mode-line-update)
+  (message (if prrr-comment--immediate
+               "Publish at once"
+             "Add to the Pending Review")))
 
 (provide 'prrr-thread)
 ;;; prrr-thread.el ends here
