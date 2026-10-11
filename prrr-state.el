@@ -890,6 +890,21 @@ take comments and show their Threads inline (SPEC section 8)."
       (eq (prrr-range-kind range) 'default)
     (null (prrr-range-end range))))
 
+(defun prrr-state-inline-sides (range shown github)
+  "Return the sides, among `left' and `right', whose line Threads show inline.
+RANGE is the Range shown and SHOWN the PR head the buffer shows.
+GITHUB is the head the review data was fetched at, or nil when
+unknown.  A Thread's line is GitHub's number at GITHUB, so the right
+side is placed only when RANGE numbers it as GitHub does
+\(`prrr-state-range-github-side-p') and GITHUB is SHOWN or unknown.
+Every other line Thread goes to \"Not in this diff\" rather than onto
+a wrong line.  This governs placement only: a new comment is numbered
+at its own commit (`prrr-state-anchor-problem')."
+  (seq-filter (lambda (side)
+                (and (prrr-state-range-github-side-p range side)
+                     (or (eq side 'left) (null github) (equal github shown))))
+              '(left right)))
+
 (defun prrr-state-anchor-problem (range anchor)
   "Return why RANGE refuses a comment on ANCHOR, or nil when it takes one.
 ANCHOR is as `prrr-state-anchor' or `prrr-state-file-anchor' returns.

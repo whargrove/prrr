@@ -1004,6 +1004,20 @@
     (should-not (prrr-state-range-github-side-p commit 'left))
     (should-not (prrr-state-range-github-side-p commit 'right))))
 
+(ert-deftest prrr-state-test-inline-sides ()
+  "Review Focus 3: Threads go inline only on lines GitHub's numbers fit."
+  (let ((default (prrr-state-test--range 'default))
+        (since (prrr-state-test--range 'since-review "r"))
+        (commit (prrr-state-test--range 'commit "p" "c")))
+    (should (equal '(left right) (prrr-state-inline-sides default "h" nil)))
+    (should (equal '(left right) (prrr-state-inline-sides default "h" "h")))
+    (should (equal '(right) (prrr-state-inline-sides since "h" "h")))
+    (should-not (prrr-state-inline-sides commit "h" "h"))
+    ;; The review data was fetched at another head: its right-side
+    ;; numbers are not those of the head shown.
+    (should (equal '(left) (prrr-state-inline-sides default "h" "g")))
+    (should-not (prrr-state-inline-sides since "h" "g"))))
+
 (ert-deftest prrr-state-test-anchor-problem ()
   "Review Focus 3: only lines numbered as GitHub numbers them take comments."
   (let ((right '(:path "a.el" :line 3 :side right :subject-type line))

@@ -57,12 +57,14 @@ and PULLREQ."
 (defun prrr-stack--move (direction)
   "Move to the PR next to the current one in its Stack, in DIRECTION.
 In a Review Buffer, open that PR's Review Buffer in the same window;
-in the Review Queue, move point to its row."
+in the Review Queue, move point to its row.  Moving leaves the current
+Review Buffer, so its Bookmark is recorded (`prrr-diff-record-bookmark')."
   (let ((none (if (eq direction 'up) "Top of the Stack" "Bottom of the Stack")))
     (if (derived-mode-p 'prrr-diff-mode)
         (let ((next (or (prrr-stack--neighbour (prrr-diff-pullreq) direction)
                         (user-error "%s" none)))
               (magit-display-buffer-function #'prrr-stack--display-here))
+          (prrr-diff-record-bookmark)
           (prrr-diff-open next))
       (unless (prrr-queue-move-in-stack direction)
         (user-error "%s" none)))))

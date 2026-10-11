@@ -208,7 +208,13 @@ records the head shown as the Bookmark (SPEC section 8)."
                                             agents (if (= agents 1) "" "s")))))
          (user-error "Not submitted"))
        (prrr-review--write pullreq 'submit (list :verdict verdict :body text :commit head))
-       (prrr-sync-record-bookmark pullreq head))
+       ;; The Submit is queued: a failure from here on must not keep
+       ;; the capture open, where confirming again would queue another.
+       (when head
+         (condition-case err
+             (prrr-sync-record-bookmark pullreq head)
+           (error (message "prrr: the Bookmark was not recorded: %s"
+                           (error-message-string err))))))
      :immediate-allowed nil :allow-empty t)))
 
 ;;;###autoload

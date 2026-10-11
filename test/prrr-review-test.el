@@ -271,6 +271,31 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
                    (prrr-bookmark-last-opened-head-oid
                     (prrr-db-get 'pr-bookmark prrr-diff-test--pr))))))
 
+(ert-deftest prrr-review-test-submit-without-a-head-keeps-the-bookmark ()
+  "With no head shown, Submit has nothing to record and keeps the Bookmark."
+  (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
+    (let ((head (prrr-diff-head)))
+      (prrr-sync-record-bookmark (prrr-diff-pullreq) head)
+      (cl-letf (((symbol-function 'prrr-diff-head) #'ignore))
+        (prrr-submit-approve))
+      (prrr-review-test--send "")
+      (should (assq 'submitPullRequestReview prrr-test-variables))
+      (should (equal head (prrr-bookmark-last-opened-head-oid
+                           (prrr-db-get 'pr-bookmark prrr-diff-test--pr)))))))
+
+(ert-deftest prrr-review-test-submit-bookmark-failure-is-reported ()
+  "The Submit is queued before the Bookmark, so a Bookmark failure never signals."
+  (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
+    (let ((messages nil))
+      (prrr-submit-approve)
+      (cl-letf (((symbol-function 'prrr-sync-record-bookmark)
+                 (lambda (&rest _) (error "Disk full")))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format-message format args) messages))))
+        (prrr-review-test--send ""))
+      (should (assq 'submitPullRequestReview prrr-test-variables))
+      (should (member "prrr: the Bookmark was not recorded: Disk full" messages)))))
+
 (ert-deftest prrr-review-test-submit-asks-about-agent-comments ()
   (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
     (let ((comment (prrr-db-get 'review-comment "PRRC_kwDOexample0000006")))

@@ -527,6 +527,31 @@ SETUP runs first, inside the fixture repository and a fresh database.
       (should-not (string-match-p "+line thirty" (buffer-string)))
       (should-not (string-match-p "head moved" (prrr-diff-test--status-line))))))
 
+(ert-deftest prrr-diff-test-threads-off-line-when-github-head-differs ()
+  "Review Focus 3: Threads numbered at another head are never inline on a wrong line."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (let ((prrr-sync--status (make-hash-table :test #'equal))
+          (first (prrr-diff-test--rev "refs/pullreqs/1~1")))
+      ;; forge fetches a new head and a refetch numbers the Threads at it,
+      ;; while the buffer keeps showing the old head.
+      (call-process "git" nil nil nil "update-ref" "refs/pullreqs/1" first)
+      (puthash (cons 'review prrr-diff-test--pr) (list :state 'ok :head-oid first)
+               prrr-sync--status)
+      (magit-refresh-buffer)
+      (should-not (oref (car (prrr-diff-test--hunks "src/example.el")) children))
+      (should (equal '("PRRT_kwDOexample0000001" "PRRT_kwDOexample0000005")
+                     (prrr-diff-test--group "src/example.el" 'not-in-range)))
+      ;; Commenting is unchanged: a new Thread is numbered at its own commit.
+      (should-not (prrr-state-anchor-problem
+                   prrr-diff--range '(:path "src/example.el" :line 12 :side right
+                                            :subject-type line)))
+      ;; g shows the head the Threads are numbered at: back inline.
+      (prrr-refresh)
+      (should (equal '("PRRT_kwDOexample0000001")
+                     (mapcar (lambda (child) (oref child value))
+                             (oref (car (prrr-diff-test--hunks "src/example.el"))
+                                   children)))))))
+
 (ert-deftest prrr-diff-test-reopen-takes-the-new-head ()
   (prrr-diff-test--with-buffer nil
     (let ((first (prrr-diff-test--rev "refs/pullreqs/1~1")))

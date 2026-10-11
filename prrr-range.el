@@ -169,7 +169,8 @@ Buffer, when you submit, and with `prrr-mark-seen'."
 
 (defun prrr-range--read-commit (prompt commits)
   "Read one of COMMITS, (OID . SUBJECT) pairs, with PROMPT; return its oid.
-The choices keep the order of COMMITS."
+The choices keep the order of COMMITS.  An empty answer chooses
+nothing: signal a `user-error'."
   (let* ((choices (mapcar (lambda (commit)
                             (cons (format "%s %s" (prrr-state-short-oid (car commit)) (cdr commit))
                                   (car commit)))
@@ -179,7 +180,8 @@ The choices keep the order of COMMITS."
                       '(metadata (display-sort-function . identity)
                                  (cycle-sort-function . identity))
                     (complete-with-action action choices string predicate)))))
-    (cdr (assoc (completing-read prompt table nil t) choices))))
+    (or (cdr (assoc (completing-read prompt table nil t) choices))
+        (user-error "No commit chosen"))))
 
 (defun prrr-show-commit (oid)
   "Show the PR's commit OID against its parent; the Range is read-only.

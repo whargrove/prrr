@@ -85,6 +85,15 @@ The fixture PR's base is main, its head branch feature."
         (prrr-stack-down)
         (should (eq bottom (prrr-diff-pullreq)))))))
 
+(ert-deftest prrr-stack-test-moving-records-the-bookmark ()
+  "SPEC section 8: stepping to the next PR leaves this one, so its Bookmark is recorded."
+  (prrr-stack-test--with-stack
+    (let ((head (prrr-diff-head)))
+      (should-not (prrr-db-get 'pr-bookmark prrr-diff-test--pr))
+      (prrr-stack-up)
+      (should (equal head (prrr-bookmark-last-opened-head-oid
+                           (prrr-db-get 'pr-bookmark prrr-diff-test--pr)))))))
+
 (ert-deftest prrr-stack-test-bottom-of-the-stack ()
   (prrr-stack-test--with-stack
     (should (equal '(user-error "Bottom of the Stack")

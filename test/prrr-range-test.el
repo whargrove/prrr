@@ -251,6 +251,24 @@ lives inside the fixture's .git, so it goes when the fixture goes."
       (should (member "README.md" (prrr-diff-test--files)))
       (should-not (string-match-p "+line thirty" (buffer-string))))))
 
+(ert-deftest prrr-range-test-empty-choice ()
+  "An empty answer at a commit prompt chooses nothing and keeps the Range."
+  (prrr-diff-test--with-buffer nil
+    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
+      (should (equal '(user-error "No commit chosen")
+                     (should-error (call-interactively #'prrr-show-commit)
+                                   :type 'user-error))))
+    (let ((asked 0))
+      ;; From is answered, To is left empty.
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (if (= (cl-incf asked) 1) (car (all-completions "" table)) ""))))
+        (should (equal '(user-error "No commit chosen")
+                       (should-error (call-interactively #'prrr-show-between)
+                                     :type 'user-error))))
+      (should (= 2 asked)))
+    (should (eq 'default (prrr-range-kind prrr-diff--range)))))
+
 ;;;; Bookmark
 
 (defun prrr-range-test--bookmark ()

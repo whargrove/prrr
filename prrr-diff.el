@@ -261,23 +261,22 @@ any file names each Thread's file."
   "Insert TEXT as a dimmed, indented line."
   (insert (propertize (concat prrr-thread-indent text "\n") 'font-lock-face 'magit-dimmed)))
 
-(defun prrr-diff--wash-file (file threads comments range start end)
-  "Insert FILE's diff from START to END, the commits of RANGE, at point.
+(defun prrr-diff--wash-file (file threads comments sides start end)
+  "Insert FILE's diff from START to END at point.
 FILE is a `prrr-diff-file'; THREADS its `prrr-file-threads' or nil;
 COMMENTS maps Thread ids to their Review Comments.  File Comments come
 first, then the hunks with their Threads, then two hidden groups: the
 Threads whose line is not in this diff (`not-in-range') and the
 outdated ones (`outdated').  A Thread is on a line of this diff only
-when RANGE numbers its side as GitHub does
-\(`prrr-state-range-github-side-p').  Runs inside a deferred section
-body, where `magit-git-wash' cannot be used, so the diff is inserted,
-narrowed to, stripped of its header and washed hunk by hunk.  A diff
-without hunks becomes a one-line note."
+when its side is among SIDES (`prrr-state-inline-sides').  Runs
+inside a deferred section body, where `magit-git-wash' cannot be
+used, so the diff is inserted, narrowed to, stripped of its header
+and washed hunk by hunk.  A diff without hunks becomes a one-line
+note."
   (let* ((anchors (make-hash-table :test #'equal))
          (lines (and threads (prrr-file-threads-lines threads)))
          (placed (seq-filter (lambda (thread)
-                               (prrr-state-range-github-side-p
-                                range (car (prrr-state-thread-anchor thread))))
+                               (memq (car (prrr-state-thread-anchor thread)) sides))
                              lines)))
     (dolist (thread (and threads (prrr-file-threads-file-comments threads)))
       (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
@@ -489,13 +488,15 @@ here and in the section keymaps.")
   (setq-local magit-diff-fontify-hunk nil)
   ;; Leaving the buffer, by killing it or quitting its window, ends a
   ;; visit: since-opened starts from what the visit showed.
-  (add-hook 'kill-buffer-hook #'prrr-diff--record-bookmark nil t)
-  (add-hook 'quit-window-hook #'prrr-diff--record-bookmark nil t))
+  (add-hook 'kill-buffer-hook #'prrr-diff-record-bookmark nil t)
+  (add-hook 'quit-window-hook #'prrr-diff-record-bookmark nil t))
 
-(defun prrr-diff--record-bookmark ()
+(defun prrr-diff-record-bookmark ()
   "Record the head this Review Buffer shows as its pull request's Bookmark.
-Run when the buffer is killed or its window quit (SPEC section 8).  A
-failure is reported, not raised, so the buffer still goes."
+Run when the user leaves it: when the buffer is killed, its window
+quit, or another PR of its Stack replaces it (SPEC section 8).  Does
+nothing when no head is shown.  A failure is reported, not raised, so
+leaving still works."
   (when (and prrr-diff--pullreq prrr-diff--head)
     (condition-case err
         (prrr-sync-record-bookmark prrr-diff--pullreq prrr-diff--head)
@@ -536,9 +537,10 @@ A `dismissed' file changed since it was viewed, so it does not count."
             (and viewed-p (propertize "  ✓ viewed" 'font-lock-face 'prrr-diff-viewed))
             "\n")))
 
-(defun prrr-diff--insert-files (range start end data comments)
+(defun prrr-diff--insert-files (sides start end data comments)
   "Insert one `file' section per file changed from START to END.
-START and END are the commits of RANGE.  DATA is the PR's stored
+SIDES are the sides whose line Threads show inline
+\(`prrr-state-inline-sides').  DATA is the PR's stored
 review data (`prrr-db-review-data'); COMMENTS maps its Thread ids to
 their Review Comments.  Viewed files start hidden; the eager budget
 decides for the others.  Sets `prrr-diff--threads' and
@@ -564,7 +566,7 @@ the diff."
             (oset section keymap 'prrr-diff-file-section-map)
             (magit-insert-heading (prrr-diff--file-heading file threads (member path viewed)))
             (magit-insert-section-body
-              (prrr-diff--wash-file file threads comments range start end))))))
+              (prrr-diff--wash-file file threads comments sides start end))))))
     (cdr layout)))
 
 (defun prrr-diff--posts (pullreq)
@@ -710,7 +712,11 @@ Outbox's writes applied."
                   (format "The commit %s of this Range is not available locally: D picks another"
                           (prrr-state-short-oid missing))))
                 (t (let* ((comments (prrr-diff--comments-table (plist-get data :comments)))
-                          (elsewhere (prrr-diff--insert-files range start end data comments)))
+                          (sides (prrr-state-inline-sides
+                                  range head (plist-get (prrr-sync-review-status
+                                                         (oref pullreq their-id))
+                                                        :head-oid)))
+                          (elsewhere (prrr-diff--insert-files sides start end data comments)))
                      (prrr-diff--insert-group 'outdated-files "Threads on files not in this diff"
                                               elsewhere comments)))))
       (setq magit-section-inhibit-markers nil))
