@@ -63,9 +63,9 @@ depends only on the files above it.
 | `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
 | `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync |
 | `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, unsent and failed writes and suggestions; the comment capture buffer. | magit-section, magit-diff, prrr-db, prrr-state |
-| `prrr-range.el`     | Range kinds, switching, since-review and since-opened computation, force-push handling.                                      | prrr-sync, prrr-diff                   |
+| `prrr-range.el`     | Range commands, switching with point kept, since-review and since-opened starts, fetching a missing start, `prrr-mark-seen`. | prrr-state, prrr-sync, prrr-diff       |
 | `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
-| `prrr-stack.el`     | Stack chain computation and navigation.                                                                                      | prrr-state, prrr-diff                  |
+| `prrr-stack.el`     | Stack navigation in the Review Queue and the Review Buffer.                                                                  | prrr-state, prrr-queue, prrr-diff      |
 | `prrr-treesit.el`   | Deferred per-file tree-sitter highlighting.                                                                                  | prrr-diff, treesit                     |
 | `prrr-api.el`       | The public `prrr-api-*` functions, hooks, JSON export and import.                                                            | prrr-review, prrr-range                |
 | `prrr-agent.el`     | `prrr-send-to-agent`, the Markdown payload, the default invoke function.                                                     | prrr-api                               |
@@ -103,7 +103,7 @@ forge objects (forge's own `id` is a composite, not the node id; its
 | `pending-review` | pr-id, review-id, commit-oid, body, created-at                                                                                                      | At most one per PR for the viewer.                                                                                                                                                                                                                        |
 | `viewed`         | (pr-id, path), state, fetched-at                                                                                                                    | `state`: `viewed`, `unviewed`, `dismissed`. Default Range only.                                                                                                                                                                                           |
 | `team`           | combined-slug, org, slug, fetched-at                                                                                                                | The viewer's Teams.                                                                                                                                                                                                                                       |
-| `pr-bookmark`    | pr-id, last-opened-head-oid, last-opened-at                                                                                                         | Local "since I last looked".                                                                                                                                                                                                                              |
+| `pr-bookmark`    | pr-id, last-opened-head-oid, last-opened-at                                                                                                         | Local "since I last looked": the head shown when the Review Buffer was last left, a review submitted, or `prrr-mark-seen` run.                                                                                                                          |
 | `outbox`         | id, pr-id, kind, payload, created-at, attempts, last-error                                                                                          | Writes GitHub has not accepted, in id order; `kind` and `payload` as `prrr-state-outbox-kinds` describes. The review tables above hold only what GitHub sent or accepted.                                                                                                                                                                                                                             |
 | `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first. Version 2 since milestone 4.                                                                                                                                           |
 
@@ -260,8 +260,9 @@ Threads whose anchor is not in the current Range go into a folded
 folded `outdated` section; Threads on files no longer in the diff into a
 buffer-level folded `outdated-files` section. The header holds folded
 `description` and `discussion` sections (forge's `body` and `posts`) and a
-one-line status: PR, Range, Pending Review count, Outbox count, refresh
-state, and "head moved, press g" when applicable.
+one-line status: PR, Range, "history rewritten" when the Range's start
+is not an ancestor of its end, Pending Review count, Outbox count,
+refresh state, and "head moved, press g" when applicable.
 
 **Section keymaps.** magit and forge give a section the keymap named after
 its type, and a section keymap wins over the mode's. A `discussion`
@@ -284,8 +285,9 @@ prrr buffers, and Threads have their own `RET`, because magit's has no
 diff scope on them. The package pins `magit >= 4.7` and CI tests against
 MELPA magit, so a magit change is found by the test suite, not by users.
 
-**Refresh.** `g` re-runs the open and preserves expanded files, folded
-Threads, and Viewed, through `magit-section-visibility-cache` restricted to
+**Refresh.** `g` (`prrr-refresh`) re-runs the open at the PR's current
+head; every other redraw keeps the head shown (section 8). Both
+preserve expanded files, folded Threads, and Viewed, through `magit-section-visibility-cache` restricted to
 the `file`, `thread`, `file-comment`, `review-comment`, `description`,
 `discussion`, `not-in-range`, `outdated` and `outdated-files` types. The
 cache records only the user's toggles, so every other section starts as
@@ -367,6 +369,13 @@ pending and agent-authored comments and asks for confirmation when any
 agent comments exist. `prrr-discard-pending` deletes the Pending Review after
 confirmation. Submitting touches the PR (moves it to Served); discarding does not, since GitHub then records no review.
 
+GitHub anchors every Thread of a Pending Review at the review's commit,
+so a new Thread joins the Pending Review only when the review is on the
+head the buffer shows; otherwise the comment is refused before it is
+queued, its text kept, and the user submits or discards the review
+first, or publishes the comment at once. The Outbox makes the same check
+when it sends (bead prrr-836).
+
 **Immediate Publish.** A prefix argument (`C-u`) on any comment or reply
 command, or the capture-buffer toggle, publishes that one comment now
 through the REST path, bypassing the Pending Review. Discussion Comments
@@ -381,29 +390,41 @@ pre-fills the capture buffer with a suggestion block containing the region.
 Kinds: `default` (merge base to head), `since-review` (my latest submitted
 review commit to head), `since-opened` (Bookmark head to head), `commit`
 (one PR commit against its parent), `between` (two PR commits, chosen with
-completing-read over the PR's commits). The header names the Range.
-Switching preserves point on the same file and line when it exists.
+completing-read over the PR's commits; the first may also be the merge
+base). The header names the Range. Switching preserves point on the
+same file and line when the new Range shows it: the line number is
+mapped from its commit to the new Range's commits through `git diff -U0`
+(`prrr-state-map-line`), tried on the right side, then the left, then
+the file's heading.
 
 **Commenting.** `RIGHT`-side lines of any Range that ends at head are
 commentable as default-Range comments (their numbers are head line numbers).
 `LEFT`-side lines of `since-review`/`since-opened`, and both sides of
 `commit`/`between`, are read-only; `.` jumps to the same file and line in the
-default Range.
+default Range. File Comments need a Range that ends at head. Threads
+render inline only on the sides a Range numbers as GitHub does (right
+when it ends at head, left only in `default`); the others go to the
+file's `not-in-range` section.
 
 **Viewed** is GitHub's flag only, shown and toggled on every Range.
 
-**Bookmark** updates on Review Buffer kill, on Submit, and through
-`prrr-mark-seen`; never on open.
+**Bookmark** updates when the Review Buffer is killed or its window
+quit (`q`), on Submit, and through `prrr-mark-seen`; never on open. It
+records the head the buffer shows.
 
 **Force-push and moving heads.** prrr pins each commit it may need later as
-`refs/prrr/<number>/<oid>` when it records a Bookmark, learns a review
-commit, or submits. If a Range's start is not an ancestor of head, prrr
-diffs the two trees directly and shows "history rewritten" in the header.
-If the start commit is missing locally it is fetched by sha from the PR's
-remote; if that fails the Range falls back to `default` with a message.
-When a background refetch sees the head oid change while the buffer is
-open, the header shows "head moved, press g" and nothing re-renders
-underneath the user.
+`refs/prrr/<number>/<oid>` when it records a Bookmark (Submit records
+one), opens a PR whose latest review by the viewer it knows, and shows
+a `since-review` or `since-opened` Range. If a Range's start is not an
+ancestor of head, prrr diffs the two trees directly and shows "history
+rewritten" in the header. If the start commit is missing locally it is
+fetched by sha from the PR's remote (forge's `remote` of the
+repository); if that fails the Range falls back to `default` with a
+message. A Review Buffer keeps the head it shows: only opening it and
+`g` (`prrr-refresh`) move it to the head forge fetched. When forge
+fetched a newer head, the header shows "head moved, press g"; when
+only the last refetch saw one, "head moved to <oid> on GitHub: run
+forge-pull, then g". Nothing re-renders underneath the user.
 
 **Stack navigation.** `>` and `<` open the PR above or below at its own
 default Range in the same window. Each PR diffs against its own base.
@@ -440,7 +461,7 @@ menu key inside the magit-status section, where `?` belongs to magit.
 | `o`         | `prrr-open-topic`                                   | forge topic buffer                                                                    |
 | `b`         | `prrr-browse`                                       | on GitHub                                                                             |
 | `B`         | `prrr-checkout`                                     | forge's checkout                                                                      |
-| `g` / `G`   | `magit-refresh` / `prrr-refetch`                    | refresh / invalidate-and-refetch                                                      |
+| `g` / `G`   | `prrr-refresh` / `prrr-refetch`                     | refresh at the current head / invalidate-and-refetch                                  |
 | `S`         | `prrr-submit`                                       | Verdict transient: `a` approve, `r` request changes, `c` comment, `k` discard pending |
 | `O`         | `prrr-outbox`                                       | transient: `r` retry, `k` discard                                                     |
 | `@`         | `prrr-send-to-agent`                                |                                                                                       |
