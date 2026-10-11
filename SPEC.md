@@ -374,7 +374,12 @@ writes, which live only in `outbox`, survive and are re-attempted
 against the current pending review id. An answer that a write of the
 PR may have raced (one succeeded since the refetch started, or one is
 being sent) is not stored; the Outbox refetches the PR once it has
-nothing more to send to it. A refetch whose answer is stored decides
+nothing more to send to it. A refetch the Outbox needed (after a
+success, a send without an answer, or for an unconfirmed write) that
+fails or gets no answer is tried again by the Outbox, no sooner than
+`prrr-sync-min-retry-spacing` after it started and not before a rate
+limit resets, so a reply waiting for the id of a Thread published at
+once never needs the user's refetch. A refetch whose answer is stored decides
 each unconfirmed write of the PR from that answer: a new Thread or
 reply landed when there is a comment by me with its body, made no
 earlier than five minutes before the write was queued, that starts a

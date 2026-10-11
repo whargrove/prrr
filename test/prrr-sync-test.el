@@ -906,6 +906,83 @@ discard, reaches the Thread under GitHub's id."
         (prrr-test-run-timers 'prrr-sync--refetch)
         (should (equal '(markFileAsViewed repository) prrr-test-requests))))))
 
+(defun prrr-sync-test--age-refetch-attempt ()
+  "Make the last refetch of the fixture PR look older than the retry spacing."
+  (let ((key (cons 'review prrr-sync-test--pr)))
+    (puthash key (plist-put (copy-sequence (gethash key prrr-sync--status)) :attempted-at
+                            (prrr-sync--timestamp
+                             (time-subtract nil (1+ prrr-sync-min-retry-spacing))))
+             prrr-sync--status)))
+
+(defun prrr-sync-test--refetch-timers ()
+  "The recorded timers that start a refetch."
+  (seq-filter (lambda (timer) (eq (nth 1 timer) 'prrr-sync--refetch)) prrr-test-timers))
+
+(ert-deftest prrr-sync-test-outbox-retries-a-failed-refetch ()
+  "A reply to a Thread published at once does not need G when the refetch fails.
+The reply waits for the Thread's id, which only a refetch brings; a
+failed refetch is tried again on a later pump, no sooner than
+`prrr-sync-min-retry-spacing' after it started, and the Outbox pumps
+by itself then."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      ;; What a successful Immediate Publish leaves: GitHub's comment id in a
+      ;; local Thread, and its PR marked for a refetch.
+      (prrr-db-insert (prrr-comment-create :comment-id "PRRC_kwDOexample0000006"
+                                           :thread-id "local:T" :pr-id prrr-sync-test--pr
+                                           :state 'submitted :local-state 'sent))
+      (let ((reply (prrr-sync-test--queue 'reply '(:thread-id "local:T" :comment "local:R"
+                                                   :body "More."))))
+        (prrr-sync--outbox-mark-dirty reply))
+      (prrr-test-with-ghub-dispatch '((repository . (:error (error http 502))))
+        (prrr-sync--outbox-pump)
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository) prrr-test-requests))
+        (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+        ;; Too soon: a pump now does not refetch.
+        (prrr-sync--outbox-pump)
+        (should-not (prrr-sync-test--refetch-timers))
+        (should (seq-find (lambda (timer) (eq (nth 1 timer) 'prrr-sync--outbox-pump))
+                          prrr-test-timers)))
+      (prrr-sync-test--age-refetch-attempt)
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "review-data"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-test-run-timers 'prrr-sync--outbox-pump)
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
+        (should (equal "PRRT_kwDOexample0000005"
+                       (alist-get 'pullRequestReviewThreadId
+                                  (prrr-sync-test--input 'addPullRequestReviewThreadReply))))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-retries-a-refetch-without-answer ()
+  "A refetch the Outbox needed that GitHub never answers is tried again too."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (puthash prrr-sync-test--pr (prrr-sync--target (prrr-sync-test--repo)
+                                                     (prrr-sync-test--pullreq))
+               prrr-sync--outbox-dirty)
+      (prrr-sync--outbox-pump)
+      (cl-letf (((symbol-function 'ghub-query) #'ignore))
+        (prrr-test-run-timers 'prrr-sync--refetch))
+      (should-not (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+      (let ((watchdog (seq-find (lambda (timer) (eql (car timer) prrr-sync-timeout))
+                                prrr-test-timers)))
+        (apply (nth 1 watchdog) (nth 2 watchdog)))
+      (should (eq 'offline (plist-get (prrr-sync-review-status prrr-sync-test--pr) :state)))
+      (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty)))))
+
+(ert-deftest prrr-sync-test-failed-refetch-not-needed-is-not-retried ()
+  "A refetch the Outbox did not ask for, such as a Review Buffer's, is not retried."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch '((repository . (:error (error http 502))))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq))
+        (should (equal '(repository) prrr-test-requests))
+        (should-not (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))))))
+
 (ert-deftest prrr-sync-test-refetch-names-a-published-thread ()
   "A reply to a Thread published at once goes out once a refetch names the Thread."
   (prrr-db-with-test-db

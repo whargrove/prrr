@@ -205,16 +205,23 @@ Return BODY's value, or nil after calling FAIL."
                                  :reset-at nil))
             nil)))
 
-(defun prrr-sync--start (key buffer)
+(defconst prrr-sync--no-answer
+  '(:kind offline :message "No answer from GitHub" :reset-at nil)
+  "The failure of a job that got no answer within `prrr-sync-timeout'.")
+
+(defun prrr-sync--start (key buffer &optional fail)
   "Record a job KEY as running and return its token.
 The job ends as `offline' when it has no answer after
-`prrr-sync-timeout' seconds; BUFFER is refreshed then."
+`prrr-sync-timeout' seconds; BUFFER is refreshed then.  FAIL, when
+non-nil, is the job's own failure function: it receives that failure
+instead and must end the job with `prrr-sync--finish'."
   (let ((token (cl-incf prrr-sync--last-token)))
     (puthash key (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
              prrr-sync--status)
-    (run-at-time prrr-sync-timeout nil #'prrr-sync--finish key token
-                 '(:kind offline :message "No answer from GitHub" :reset-at nil)
-                 buffer)
+    (if fail
+        (run-at-time prrr-sync-timeout nil fail prrr-sync--no-answer)
+      (run-at-time prrr-sync-timeout nil #'prrr-sync--finish key token prrr-sync--no-answer
+                   buffer))
     token))
 
 (defun prrr-sync--fetch-teams (host me then fail)
@@ -347,7 +354,8 @@ so the user checks the PR and decides whether to send it again.")
   "Hash table from PR id to its target, for each PR GitHub may have changed.
 A PR is here from a write's success, or from a send that got no
 answer, until a refetch of it starts, so the Outbox refetches it once
-it has nothing more to send.")
+it has nothing more to send.  A refetch that fails puts it back
+\(`prrr-sync--refetch').")
 
 (defun prrr-sync--outbox-mark-dirty (row)
   "Have the Outbox refetch the PR of the write ROW once it is idle."
@@ -999,15 +1007,35 @@ comment that one write made is never taken for another's."
          (setf (prrr-outbox-last-error row) prrr-sync-unconfirmed-message)
          (prrr-db-insert row))))))
 
+(defun prrr-sync--refetch-retry-wait (pr-id &optional now)
+  "Return how many seconds after NOW the Outbox may refetch PR-ID again.
+0 unless the last refetch of PR-ID failed; then the retry starts no
+sooner than `prrr-sync-min-retry-spacing' seconds after that attempt
+did, and not before a rate limit resets, so a failing refetch is
+retried at that pace and never on every pump.  NOW is a Lisp time,
+the current time by default."
+  (let* ((status (prrr-sync-review-status pr-id))
+         (now (float-time now))
+         (from-now (lambda (key)
+                     (when-let* ((stamp (plist-get status key)))
+                       (- (float-time (parse-iso8601-time-string stamp)) now)))))
+    (if (memq (plist-get status :state) '(nil pulling ok))
+        0
+      (max 0
+           (+ prrr-sync-min-retry-spacing (or (funcall from-now :attempted-at) 0))
+           (or (funcall from-now :reset-at) 0)))))
+
 (defun prrr-sync--outbox-refetch-idle (rows)
   "Refetch each PR GitHub changed that has no write left to send now.
 ROWS are every queued write.  A PR whose first write is unconfirmed
-has none: only the refetch can let it go on.  The refetch starts from
-a timer, never inside a write's answer."
+has none: only the refetch can let it go on.  A PR whose last refetch
+failed waits for `prrr-sync--refetch-retry-wait'.  The refetch starts
+from a timer, never inside a write's answer."
   (let ((busy (prrr-state-outbox-busy-prs rows))
         (sending (and prrr-sync--outbox-sending (prrr-outbox-pr-id prrr-sync--outbox-sending))))
     (maphash (lambda (pr-id target)
-               (unless (or (member pr-id busy) (equal pr-id sending))
+               (unless (or (member pr-id busy) (equal pr-id sending)
+                           (> (prrr-sync--refetch-retry-wait pr-id) 0))
                  (run-at-time 0 nil #'prrr-sync--refetch target
                               (gethash pr-id prrr-sync--outbox-buffers))))
              prrr-sync--outbox-dirty)))
@@ -1055,12 +1083,25 @@ comments stored before are known."
   "Refetch TARGET's PR and refresh BUFFER, as `prrr-sync-refetch' does.
 TARGET is a plist from `prrr-sync--target'.  An answer that a write of
 the PR may have raced is not stored: the PR stays changed, and the
-Outbox refetches it once it has nothing more to send."
+Outbox refetches it once it has nothing more to send.  A refetch the
+Outbox needed that fails, or gets no answer, leaves the PR changed
+too, and the Outbox pumps again once it may retry
+\(`prrr-sync--refetch-retry-wait'): a write waiting for an id only the
+refetch brings goes out without the user's refetch."
   (let ((pr-id (plist-get target :pr-id)))
     (when (prrr-sync-refetch-due-p pr-id)
       (let* ((key (cons 'review pr-id))
-             (token (prrr-sync--start key buffer))
-             (fail (lambda (failure) (prrr-sync--finish key token failure buffer))))
+             (needed (gethash pr-id prrr-sync--outbox-dirty))
+             (token nil)
+             (fail (lambda (failure)
+                     (when (prrr-sync--current-p key token)
+                       (when needed
+                         (puthash pr-id target prrr-sync--outbox-dirty))
+                       (prrr-sync--finish key token failure buffer)
+                       (when (gethash pr-id prrr-sync--outbox-dirty)
+                         (run-at-time (prrr-sync--refetch-retry-wait pr-id) nil
+                                      #'prrr-sync--outbox-pump))))))
+        (setq token (prrr-sync--start key buffer fail))
         (remhash pr-id prrr-sync--outbox-dirty)
         (prrr-sync--guarded fail
           (let ((me (plist-get target :me)))
