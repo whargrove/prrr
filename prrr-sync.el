@@ -716,11 +716,23 @@ RESULT is GitHub's answer.  A plist of `prrr-db-outbox-done''s keys."
                         (list meta)))))
       ('discard
        (let ((pending (prrr-db-select 'review-comment :pr-id pr-id :state 'pending)))
-         (list :delete (cons (list 'pending-review :pr-id pr-id)
-                             (mapcan (lambda (comment)
-                                       (list (list 'review-comment
-                                                   :comment-id (prrr-comment-comment-id comment))))
-                                     pending))))))))
+         (list :delete (append
+                        (list (list 'pending-review :pr-id pr-id))
+                        (mapcar (lambda (comment)
+                                  (list 'review-comment
+                                        :comment-id (prrr-comment-comment-id comment)))
+                                pending)
+                        (mapcar (lambda (thread-id) (list 'thread :thread-id thread-id))
+                                (prrr-sync--emptied-threads pending)))))))))
+
+(defun prrr-sync--emptied-threads (pending)
+  "Return the ids of the Threads whose stored comments are all pending.
+PENDING is the pending comments being deleted."
+  (let ((ids (delete-dups (delq nil (mapcar #'prrr-comment-thread-id pending)))))
+    (seq-filter (lambda (thread-id)
+                  (seq-every-p (lambda (comment) (eq 'pending (prrr-comment-state comment)))
+                               (prrr-db-select 'review-comment :thread-id thread-id)))
+                ids)))
 
 (defun prrr-sync--outbox-succeeded (row token result)
   "Record that GitHub accepted the write ROW, sent as TOKEN, with RESULT.
@@ -746,7 +758,7 @@ Only when the PR's Review Buffer is live, since forge needs it."
       (with-current-buffer buffer
         (when-let ((topic (bound-and-true-p forge-buffer-topic)))
           (condition-case err
-              (funcall-interactively #'forge-pull-topic topic)
+              (funcall-interactively #'forge-pull-topic (oref topic number))
             (error (message "prrr: forge could not pull the PR: %s"
                             (error-message-string err)))))))))
 

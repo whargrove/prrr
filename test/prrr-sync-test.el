@@ -837,12 +837,16 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                        (cadr captured)))
         (should (prrr-db-get 'review-comment "PRRC_kwDOexampleNew04"))))))
 
+(defclass prrr-sync-test--topic ()
+  ((number :initarg :number))
+  "A stand-in for a forge topic.")
+
 (ert-deftest prrr-sync-test-outbox-discussion-pulls-the-topic ()
   (prrr-db-with-test-db
     (prrr-test-with-outbox
       (let ((pulled nil))
         (with-temp-buffer
-          (setq-local forge-buffer-topic 'example-topic)
+          (setq-local forge-buffer-topic (prrr-sync-test--topic :number 7))
           (cl-letf (((symbol-function 'forge-pull-topic)
                      (lambda (topic) (interactive) (setq pulled topic))))
             (prrr-test-with-ghub-dispatch '((addComment . ((data (addComment (clientMutationId))))))
@@ -850,7 +854,7 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                                '(:body "Thanks!") (current-buffer))
               (should (equal prrr-sync-test--pr
                              (alist-get 'subjectId (prrr-sync-test--input 'addComment)))))))
-        (should (eq 'example-topic pulled))
+        (should (eql 7 pulled))
         (should-not (prrr-db-outbox-rows))))))
 
 (ert-deftest prrr-sync-test-outbox-edit-amends-an-unsent-comment ()
@@ -966,6 +970,14 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
       (prrr-db-insert (prrr-comment-create :comment-id "C1" :thread-id "T1"
                                            :pr-id prrr-sync-test--pr
                                            :state 'pending :local-state 'sent))
+      (prrr-db-insert (prrr-thread-create :thread-id "T1" :pr-id prrr-sync-test--pr))
+      (prrr-db-insert (prrr-thread-create :thread-id "T2" :pr-id prrr-sync-test--pr))
+      (prrr-db-insert (prrr-comment-create :comment-id "C2" :thread-id "T2"
+                                           :pr-id prrr-sync-test--pr
+                                           :state 'submitted :local-state 'sent))
+      (prrr-db-insert (prrr-comment-create :comment-id "C3" :thread-id "T2"
+                                           :pr-id prrr-sync-test--pr
+                                           :state 'pending :local-state 'sent))
       (prrr-test-with-ghub-dispatch
           '((addPullRequestReviewThread . (:error (error http 502)))
             (deletePullRequestReview . ((data (deletePullRequestReview (clientMutationId))))))
@@ -975,7 +987,11 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (should (equal '(addPullRequestReviewThread deletePullRequestReview) prrr-test-requests)))
       (should-not (prrr-db-outbox-rows))
       (should-not (prrr-db-get 'pending-review prrr-sync-test--pr))
-      (should-not (prrr-db-get 'review-comment "C1")))))
+      (should-not (prrr-db-get 'review-comment "C1"))
+      (should-not (prrr-db-get 'thread "T1"))
+      (should-not (prrr-db-get 'review-comment "C3"))
+      (should (prrr-db-get 'thread "T2"))
+      (should (prrr-db-get 'review-comment "C2")))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here
