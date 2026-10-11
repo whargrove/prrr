@@ -791,6 +791,27 @@ Comments are made on that head; the Range may end elsewhere."
     (setq section (oref section parent)))
   section)
 
+(defun prrr-diff--walk-hunk (hunk function)
+  "Call FUNCTION at the start of each diff line of HUNK, in order.
+FUNCTION receives the line's KIND, OLD and NEW, as `prrr-diff--line-at'
+describes them, with point at the line's start.  The lines of the
+hunk's Threads are skipped."
+  (save-excursion
+    (goto-char (oref hunk content))
+    (let ((old (car (oref hunk from-range)))
+          (new (car (oref hunk to-range))))
+      (while (< (point) (oref hunk end))
+        (when (eq (magit-section-at) hunk)
+          (let ((kind (char-after)))
+            (funcall function kind
+                     (and (memq kind '(?- ?\s)) old)
+                     (and (memq kind '(?+ ?\s)) new))
+            (pcase kind
+              (?\s (cl-incf old) (cl-incf new))
+              (?- (cl-incf old))
+              (?+ (cl-incf new)))))
+        (forward-line)))))
+
 (defun prrr-diff--line-at (pos)
   "Describe the diff line at POS as (HUNK KIND OLD NEW TEXT), or nil.
 HUNK is the line's `hunk' section, KIND its first character, OLD and
@@ -810,27 +831,16 @@ line the Thread follows.  nil off a hunk and on a hunk's heading."
           (while (and (not (bobp)) (not (eq (magit-section-at) hunk)))
             (forward-line -1)))
         (when (>= (point) (oref hunk content))
-          (let ((target (point))
-                (old (car (oref hunk from-range)))
-                (new (car (oref hunk to-range))))
-            (goto-char (oref hunk content))
+          (let ((target (point)))
             (catch 'found
-              (while (<= (point) target)
-                (when (eq (magit-section-at) hunk)
-                  (let ((kind (char-after)))
-                    (when (= (point) target)
-                      (throw 'found
-                             (list hunk kind
-                                   (and (memq kind '(?- ?\s)) old)
-                                   (and (memq kind '(?+ ?\s)) new)
-                                   (buffer-substring-no-properties
-                                    (min (1+ (point)) (line-end-position))
-                                    (line-end-position)))))
-                    (pcase kind
-                      (?\s (cl-incf old) (cl-incf new))
-                      (?- (cl-incf old))
-                      (?+ (cl-incf new)))))
-                (forward-line))
+              (prrr-diff--walk-hunk
+               hunk (lambda (kind old new)
+                      (when (= (point) target)
+                        (throw 'found
+                               (list hunk kind old new
+                                     (buffer-substring-no-properties
+                                      (min (1+ (point)) (line-end-position))
+                                      (line-end-position)))))))
               nil)))))))
 
 (defun prrr-diff--region-ends ()
@@ -908,6 +918,50 @@ Lines of Threads in between are left out."
   "Return the `prrr-comment' at point, as the buffer shows it, or nil."
   (when-let* ((section (prrr-diff--section-of '(review-comment))))
     (gethash (oref section value) prrr-diff--comments)))
+
+;;;; Positions
+
+(defun prrr-diff-ends ()
+  "Return (START . END), the commits the current Review Buffer diffs.
+Either is nil when the diff could not be drawn."
+  (cons prrr-diff--start prrr-diff--end))
+
+(defun prrr-diff-position ()
+  "Return where point is in the diff, as (PATH SIDE LINE COMMIT), or nil.
+PATH is the file around point.  On a removed line, SIDE is `left' and
+LINE its number at COMMIT, the commit the diff starts at; on any other
+diff line SIDE is `right' and LINE its number at the commit the diff
+ends at.  Elsewhere in the file SIDE, LINE and COMMIT are nil.  nil
+outside every file."
+  (when-let* ((file (prrr-diff--file-at-point)))
+    (pcase (prrr-diff--line-at (point))
+      (`(,_hunk ?- ,old ,_new ,_text) (list (oref file value) 'left old prrr-diff--start))
+      (`(,_hunk ,_kind ,_old ,new ,_text) (list (oref file value) 'right new prrr-diff--end))
+      (_ (list (oref file value) nil nil nil)))))
+
+(defun prrr-diff-goto-line (path side line)
+  "Move to LINE of SIDE in the diff of PATH and return non-nil, or return nil.
+SIDE `right' counts lines at the commit the diff ends at, `left' at the
+one it starts at; a context line has both numbers.  The file is
+expanded, and washed when needed.  Without LINE, move to the file's
+heading.  Return nil, and leave point alone, when PATH is not in the
+diff or LINE is not in its hunks."
+  (when-let* ((file (seq-find (lambda (file) (equal (oref file value) path))
+                              (prrr-diff--files))))
+    (magit-section-show file)
+    (if (not line)
+        (progn (magit-section-goto file) t)
+      (when-let* ((pos (catch 'found
+                         (dolist (hunk (oref file children))
+                           (when (eq (oref hunk type) 'hunk)
+                             (prrr-diff--walk-hunk
+                              hunk (lambda (_kind old new)
+                                     (when (eql line (if (eq side 'left) old new))
+                                       (throw 'found (point)))))))
+                         nil)))
+        (goto-char pos)
+        t))))
+
 ;;;; Commands
 
 (defun prrr-diff--files ()
