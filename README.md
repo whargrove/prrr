@@ -10,11 +10,13 @@ head, with existing threads inline, files folding away once viewed, and
 one key to jump between files and threads. Comment on lines, ranges and
 files, reply, suggest changes, and submit your pending review with a
 verdict; what you write shows at once and is never lost to a dropped
-connection. The next milestone adds "what changed since my last review".
+connection. Look at what changed since your last review, since you last
+opened the PR, or in one commit, and step up and down a Stack without
+leaving the Review Buffer.
 
 > **Status:** early development. The Review Queue, the Review Buffer,
-> commenting and submitting work. Ranges and Stacks inside the Review
-> Buffer are next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
+> commenting and submitting, Ranges and Stacks work. Syntax highlighting
+> of the diff is next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
 
 ## Requirements
 
@@ -139,9 +141,9 @@ offers to run `forge-pull`. When it stays missing, run
 The buffer opens at once from prrr's database and refetches the threads,
 your pending review and the Viewed flags in the background. The header
 says `refreshing…` meanwhile, and `offline` or `rate limited until 14:05`
-when that fails. The header shows the title, the range, your pending
-review's comment count, and a warning when GitHub has a newer head than
-your local ref. Folded below it are the description and the discussion.
+when that fails. The header shows the title, the Range, your pending
+review's comment count, and `head moved, press g` when the pull request
+moved on. Folded below it are the description and the discussion.
 
 Large diffs stay fast. The first files, up to `prrr-eager-files` files or
 `prrr-eager-lines` changed lines, are shown expanded. Every other file
@@ -155,7 +157,7 @@ Resolved threads start folded. `RET` on a thread visits the line it is
 anchored to.
 
 Files you marked Viewed, here or on GitHub, are folded and marked `✓
-viewed`. `g` redraws and keeps what you expanded and folded.
+viewed`. `g` redraws at the pull request's current head and keeps what you expanded and folded.
 
 ### Keys in the Review Buffer
 
@@ -175,17 +177,21 @@ viewed`. `g` redraws and keeps what you expanded and folded.
 | `s`       | `prrr-comment-suggest`                              | Suggest a change to the line or region     |
 | `S`       | `prrr-submit`                                       | Submit your review, or discard it          |
 | `O`       | `prrr-outbox`                                       | Retry or drop what has not reached GitHub  |
+| `D`       | `prrr-range`                                        | Choose the Range: what the diff shows      |
+| `.`       | `prrr-goto-default-range`                           | Back to the default Range, same line       |
+| `m`       | `prrr-mark-seen`                                    | Remember this head as seen                 |
+| `>` / `<` | `prrr-stack-up` / `prrr-stack-down`                 | Open the PR above or below in the Stack    |
 | `z` / `Z` | `prrr-collapse-all` / `prrr-expand-all`             | Fold or expand every file                  |
 | `o`       | `prrr-open-topic`                                   | forge's topic buffer                       |
 | `b`       | `prrr-browse`                                       | Open the PR on GitHub                      |
 | `B`       | `prrr-checkout`                                     | Check out the PR's branch                  |
-| `g`       | `magit-refresh`                                     | Redraw from the database                   |
+| `g`       | `prrr-refresh`                                      | Redraw, at the PR's current head           |
 | `G`       | `prrr-refetch`                                      | Refetch threads and Viewed flags now       |
 | `?`, `C-o`| `prrr-menu`                                         | Menu with the same keys                    |
 
 magit's `TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`, `1`-`4`, `E` (ediff), `h`
 and `q` work as in any magit diff. Keys that later milestones use
-(`D`, `.`, `m`, `>`, `<`, `@`, `L`) do nothing yet.
+(`@`, `L`) do nothing yet.
 
 ## Commenting and reviewing
 
@@ -230,6 +236,56 @@ Publishing a single comment at once while you have a pending review
 depends on GitHub accepting it; if GitHub refuses, the comment stays
 in the Outbox with GitHub's reason. To put it in your pending review
 instead, drop it with `O k` and write the comment again without `C-u`.
+
+## Ranges and Stacks
+
+The Review Buffer shows a Range: the two commits it diffs. It opens at
+the default Range, the PR's merge base to its head, and the header
+names the Range shown. `D` chooses another:
+
+| Key | Command                   | Range                                                  |
+|-----|---------------------------|--------------------------------------------------------|
+| `d` | `prrr-goto-default-range` | The merge base to the head                             |
+| `r` | `prrr-show-since-review`  | The commit of your latest submitted review to the head |
+| `o` | `prrr-show-since-opened`  | The head you last saw to the head                      |
+| `c` | `prrr-show-commit`        | One commit of the PR, against its parent               |
+| `b` | `prrr-show-between`       | From one commit (or the merge base) to a later one     |
+
+Switching keeps point on the same file and line when the new Range
+shows that line. Viewed flags are GitHub's, one per file, and work in
+every Range.
+
+GitHub numbers comment lines at the PR's head, so a Range that ends at
+the head (default, since review, since opened) takes comments on its
+new side. Its old side, and both sides of one commit or of two commits,
+are read-only: `.` shows the same line in the default Range, where it
+takes a comment. Threads show inline where the Range numbers lines as
+GitHub does, and in the file's "Not in this diff" group otherwise.
+
+"Since opened" starts at the head you saw when you last left the
+Review Buffer, by `q`, by killing it or by stepping to another PR of
+its Stack with `>` or `<`, or last submitted a review, or last pressed
+`m`. Opening a PR does not count, so it means "since my previous
+visit".
+
+When the author force-pushes, a Range from an older commit compares the
+two trees directly, and the header says `history rewritten`. prrr keeps
+the commits these Ranges start at under `refs/prrr/`, so neither the
+push nor git's garbage collection loses them. A start commit you do not
+have is fetched from the PR's remote; when that fails, prrr shows the
+default Range and says so.
+
+The diff never changes under you. When forge fetches a new head while
+the buffer is open, the header says `head moved, press g`; when only
+GitHub has it, `head moved to 1234567 on GitHub: run forge-pull, then
+g`. Your pending review stays on the commit it was started on, as
+GitHub keeps it. A new comment can join it only while the buffer shows
+that commit: on a newer head, submit or discard the pending review
+first, or publish the comment at once.
+
+`>` and `<` open the pull request above or below in its Stack, in the
+same window, at its own default Range: each PR shows its diff against
+its own base.
 
 ## Development
 

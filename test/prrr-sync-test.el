@@ -554,6 +554,18 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                                (prrr-comment-database-id comment)))))
         (should (prrr-db-get 'thread "PRRT_kwDOexampleNew01"))))))
 
+(ert-deftest prrr-sync-test-outbox-thread-on-another-commit-fails ()
+  "Bead prrr-836: a Thread never joins a Pending Review on another commit."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "2222"))
+        (should-not prrr-test-requests)
+        (should (string-prefix-p "Your Pending Review is on 1111, not on the head shown (2222)"
+                                 (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))))))
+
 (ert-deftest prrr-sync-test-outbox-creates-the-pending-review ()
   "SPEC section 7: the first pending comment creates the Pending Review, after looking."
   (prrr-db-with-test-db
@@ -563,11 +575,11 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
             (addPullRequestReview . ,(prrr-test-fixture "create-review"))
             (addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
         (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
-                                             :commit "1111"))
+                                             :commit prrr-test-head))
         (should (equal '(repository addPullRequestReview addPullRequestReviewThread)
                        prrr-test-requests))
-        (should (equal "1111" (alist-get 'commitOID (prrr-sync-test--input
-                                                     'addPullRequestReview))))
+        (should (equal prrr-test-head
+                       (alist-get 'commitOID (prrr-sync-test--input 'addPullRequestReview))))
         (should (equal "PRR_kwDOexampleNew01"
                        (prrr-pending-review-review-id
                         (prrr-db-get 'pending-review prrr-sync-test--pr))))))))
@@ -579,7 +591,7 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
           `((repository . ,(prrr-test-fixture "pending-review"))
             (addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
         (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
-                                             :commit "1111"))
+                                             :commit prrr-test-head))
         (should (equal '(repository addPullRequestReviewThread) prrr-test-requests))
         (should (equal "PRR_kwDOexamplePending1"
                        (alist-get 'pullRequestReviewId
@@ -1086,6 +1098,38 @@ Return the local ids it was written under, as (THREAD . COMMENT)."
       (should-not (prrr-db-get 'review-comment "C3"))
       (should (prrr-db-get 'thread "T2"))
       (should (prrr-db-get 'review-comment "C2")))))
+
+;;;; Bookmark and pinned commits
+
+(ert-deftest prrr-sync-test-pin-keeps-a-commit ()
+  "SPEC section 8: a pinned commit survives a force-push and git gc."
+  (prrr-test-with-repo
+    (let ((first (car (process-lines "git" "rev-parse" "refs/pullreqs/1~1"))))
+      (should (prrr-sync-pin 1 first))
+      (should (equal (list first)
+                     (process-lines "git" "rev-parse" (format "refs/prrr/1/%s" first))))
+      ;; The ref is there once, however often the commit is pinned.
+      (should (prrr-sync-pin 1 first))
+      (should (equal (list (format "refs/prrr/1/%s" first))
+                     (process-lines "git" "for-each-ref" "--format=%(refname)" "refs/prrr/"))))))
+
+(ert-deftest prrr-sync-test-pin-unknown-commit ()
+  (prrr-test-with-repo
+    (should-not (prrr-sync-pin 1 "2222222222222222222222222222222222222222"))
+    (should-not (prrr-sync-pin 1 nil))
+    (should-not (process-lines "git" "for-each-ref" "refs/prrr/"))))
+
+(ert-deftest prrr-sync-test-record-bookmark ()
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+            (pullreq (forge-pullreq :id "forge-1" :number 1 :their-id "PR_1")))
+        (prrr-sync-record-bookmark pullreq head)
+        (let ((bookmark (prrr-db-get 'pr-bookmark "PR_1")))
+          (should (equal head (prrr-bookmark-last-opened-head-oid bookmark)))
+          (should (prrr-bookmark-last-opened-at bookmark)))
+        (should (equal (list head)
+                       (process-lines "git" "rev-parse" (format "refs/prrr/1/%s" head))))))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

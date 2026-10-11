@@ -34,6 +34,7 @@
 (require 'prrr-diff)
 (require 'prrr-sync)
 (require 'prrr-review)
+(require 'prrr-range)
 
 (defun prrr-transient--shown (what value)
   "Describe a toggle for WHAT that is on when VALUE is non-nil."
@@ -91,10 +92,20 @@
    ("r" "retry now" prrr-outbox-retry)
    ("k" "discard one" prrr-outbox-discard)])
 
+;;;###autoload (autoload 'prrr-range "prrr-transient" nil t)
+(transient-define-prefix prrr-range ()
+  "Choose the Range the Review Buffer shows (SPEC section 8)."
+  ["Range"
+   ("d" "default: merge base to head" prrr-goto-default-range)
+   ("r" "since my last review" prrr-show-since-review)
+   ("o" "since I last opened it" prrr-show-since-opened)
+   ("c" "one commit" prrr-show-commit)
+   ("b" "between two commits" prrr-show-between)])
+
 ;;;###autoload (autoload 'prrr-menu "prrr-transient" nil t)
 (transient-define-prefix prrr-menu ()
   "Act on the Review Buffer (SPEC section 9).
-Milestones 5 to 7 add the Range, Stack and Agent groups."
+Milestone 7 adds the Agent group."
   [["Comment"
     ("-i" "publish immediately" "--immediate")
     ("c" "on line or region" prrr-comment)
@@ -120,12 +131,19 @@ Milestones 5 to 7 add the Range, Stack and Agent groups."
     ("v" "toggle Viewed" prrr-toggle-viewed)
     ("z" "collapse all" prrr-collapse-all)
     ("Z" "expand all" prrr-expand-all)]
+   ["Range"
+    ("D" "choose…" prrr-range)
+    ("." "default Range here" prrr-goto-default-range)
+    ("m" "mark seen" prrr-mark-seen)]
+   ["Stack"
+    (">" "up" prrr-stack-up)
+    ("<" "down" prrr-stack-down)]
    ["Open"
     ("o" "topic" prrr-open-topic)
     ("b" "browse on GitHub" prrr-browse)
     ("B" "checkout" prrr-checkout)]
    ["Sync"
-    ("g" "refresh" magit-refresh)
+    ("g" "refresh" prrr-refresh)
     ("G" "refetch" prrr-refetch)]])
 
 (provide 'prrr-transient)

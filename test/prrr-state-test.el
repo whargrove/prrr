@@ -976,5 +976,157 @@
                  (prrr-state-outbox-describe
                   (prrr-state-test--write "1" "PR_1" 'viewed '(:path "a.el" :viewed t))))))
 
+;;;; Ranges
+
+(defun prrr-state-test--range (kind &optional start end)
+  "A Range of KIND from START to END."
+  (prrr-range-create :kind kind :start start :end end))
+
+(ert-deftest prrr-state-test-range-ends ()
+  (should (equal '("base" . "head")
+                 (prrr-state-range-ends (prrr-state-test--range 'default) "base" "head")))
+  (should (equal '("seen" . "head")
+                 (prrr-state-range-ends (prrr-state-test--range 'since-opened "seen")
+                                        "base" "head")))
+  (should (equal '("parent" . "commit")
+                 (prrr-state-range-ends (prrr-state-test--range 'commit "parent" "commit")
+                                        "base" "head"))))
+
+(ert-deftest prrr-state-test-range-github-side ()
+  "SPEC section 8: GitHub numbers the right side at head, the left at the merge base."
+  (let ((default (prrr-state-test--range 'default))
+        (since (prrr-state-test--range 'since-review "r"))
+        (commit (prrr-state-test--range 'commit "p" "c")))
+    (should (prrr-state-range-github-side-p default 'left))
+    (should (prrr-state-range-github-side-p default 'right))
+    (should-not (prrr-state-range-github-side-p since 'left))
+    (should (prrr-state-range-github-side-p since 'right))
+    (should-not (prrr-state-range-github-side-p commit 'left))
+    (should-not (prrr-state-range-github-side-p commit 'right))))
+
+(ert-deftest prrr-state-test-inline-sides ()
+  "Review Focus 3: Threads go inline only on lines GitHub's numbers fit."
+  (let ((default (prrr-state-test--range 'default))
+        (since (prrr-state-test--range 'since-review "r"))
+        (commit (prrr-state-test--range 'commit "p" "c")))
+    (should (equal '(left right) (prrr-state-inline-sides default "h" nil)))
+    (should (equal '(left right) (prrr-state-inline-sides default "h" "h")))
+    (should (equal '(right) (prrr-state-inline-sides since "h" "h")))
+    (should-not (prrr-state-inline-sides commit "h" "h"))
+    ;; The review data was fetched at another head: its right-side
+    ;; numbers are not those of the head shown.
+    (should (equal '(left) (prrr-state-inline-sides default "h" "g")))
+    (should-not (prrr-state-inline-sides since "h" "g"))))
+
+(ert-deftest prrr-state-test-anchor-problem ()
+  "Review Focus 3: only lines numbered as GitHub numbers them take comments."
+  (let ((right '(:path "a.el" :line 3 :side right :subject-type line))
+        (left '(:path "a.el" :line 3 :side left :subject-type line))
+        (mixed '(:path "a.el" :line 4 :side right :start-line 2 :start-side left
+                 :subject-type line))
+        (file '(:path "a.el" :subject-type file))
+        (default (prrr-state-test--range 'default))
+        (since (prrr-state-test--range 'since-opened "s"))
+        (between (prrr-state-test--range 'between "a" "b")))
+    (dolist (anchor (list right left mixed file))
+      (should-not (prrr-state-anchor-problem default anchor)))
+    (should-not (prrr-state-anchor-problem since right))
+    (should-not (prrr-state-anchor-problem since file))
+    (should (equal "Read-only in the since-opened Range: press . to comment in the default Range"
+                   (prrr-state-anchor-problem since left)))
+    (should (prrr-state-anchor-problem since mixed))
+    (dolist (anchor (list right left file))
+      (should (prrr-state-anchor-problem between anchor)))))
+
+(ert-deftest prrr-state-test-head-notice ()
+  "SPEC section 8: the buffer says the head moved instead of redrawing."
+  (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    (should-not (prrr-state-head-notice a a a))
+    (should-not (prrr-state-head-notice a a nil))
+    (should-not (prrr-state-head-notice a nil nil))
+    (should (equal "head moved, press g" (prrr-state-head-notice a b b)))
+    (should (equal "head moved, press g" (prrr-state-head-notice a b nil)))
+    (should (equal "head moved, press g" (prrr-state-head-notice a b a)))
+    (should (equal "head moved to bbbbbbb on GitHub: run forge-pull, then g"
+                   (prrr-state-head-notice a a b)))))
+
+(ert-deftest prrr-state-test-since-review-start ()
+  (should (equal "abc" (prrr-state-since-review-start
+                        (prrr-test-meta :viewer-latest-review
+                                        '("APPROVED" "2026-09-02T00:00:00Z" "abc")))))
+  (should-not (prrr-state-since-review-start
+               (prrr-test-meta :viewer-latest-review '("PENDING" nil "abc"))))
+  (should-not (prrr-state-since-review-start (prrr-test-meta)))
+  (should-not (prrr-state-since-review-start nil)))
+
+(ert-deftest prrr-state-test-review-commit ()
+  "Bead prrr-836: the Pending Review's commit, stored or about to be created."
+  (let ((thread (prrr-state-test--write "1" "PR_1" 'thread '(:commit "queued")))
+        (review (prrr-pending-review-create :pr-id "PR_1" :review-id "R" :commit-oid "stored")))
+    (should (equal "stored" (prrr-state-review-commit
+                             (list :pending-review review :outbox (list thread)))))
+    (should (equal "queued" (prrr-state-review-commit (list :outbox (list thread)))))
+    (should-not (prrr-state-review-commit nil))))
+
+(ert-deftest prrr-state-test-review-commit-problem ()
+  (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    (should-not (prrr-state-review-commit-problem nil a))
+    (should-not (prrr-state-review-commit-problem a a))
+    (should (string-prefix-p "Your Pending Review is on aaaaaaa, not on the head shown (bbbbbbb)"
+                             (prrr-state-review-commit-problem a b)))))
+
+;;;; Line mapping
+
+(ert-deftest prrr-state-test-parse-hunk-ranges ()
+  (should (equal '((12 1 12 1) (20 0 21 2) (30 3 31 0))
+                 (prrr-state-parse-hunk-ranges
+                  (concat "diff --git a/a.el b/a.el\n--- a/a.el\n+++ b/a.el\n"
+                          "@@ -12 +12 @@ (defun a ()\n-old\n+new\n"
+                          "@@ -20,0 +21,2 @@\n+one\n+two\n"
+                          "@@ -30,3 +31,0 @@\n-x\n-y\n-z\n"))))
+  (should-not (prrr-state-parse-hunk-ranges "")))
+
+(ert-deftest prrr-state-test-map-line ()
+  "SPEC section 13: line mapping across Ranges.
+One line rewritten at 12, two lines added after 20, three removed at 30."
+  (let ((hunks '((12 1 12 1) (20 0 21 2) (30 3 31 0))))
+    (should (= 11 (prrr-state-map-line hunks 11)))
+    (should-not (prrr-state-map-line hunks 12))
+    (should (= 13 (prrr-state-map-line hunks 13)))
+    (should (= 20 (prrr-state-map-line hunks 20)))
+    (should (= 23 (prrr-state-map-line hunks 21)))
+    (should (= 31 (prrr-state-map-line hunks 29)))
+    (should-not (prrr-state-map-line hunks 30))
+    (should-not (prrr-state-map-line hunks 32))
+    (should (= 32 (prrr-state-map-line hunks 33)))
+    (should (= 7 (prrr-state-map-line nil 7)))))
+
+(ert-deftest prrr-state-test-map-line-at-the-top ()
+  "Lines added before line 1, and line 1 removed."
+  (should (= 3 (prrr-state-map-line '((0 0 1 2)) 1)))
+  (should-not (prrr-state-map-line '((1 1 0 0)) 1))
+  (should (= 1 (prrr-state-map-line '((1 1 0 0)) 2))))
+
+;;;; Stack steps
+
+(ert-deftest prrr-state-test-stack-step ()
+  "SPEC section 8: > and < move along the Stack; a fork's branch is no parent."
+  (let* ((bottom (prrr-test-pr :id "PR_1" :number 1 :base-ref "main" :head-ref "a"))
+         (middle (prrr-test-pr :id "PR_2" :number 2 :base-ref "a" :head-ref "b"
+                               :created-at "2026-09-02T00:00:00Z"))
+         (later (prrr-test-pr :id "PR_3" :number 3 :base-ref "a" :head-ref "c"
+                              :created-at "2026-09-03T00:00:00Z"))
+         (fork (prrr-test-pr :id "PR_4" :number 4 :base-ref "main" :head-ref "b"
+                             :cross-repo-p t))
+         (prs (list later fork middle bottom)))
+    (should (eq middle (prrr-state-stack-step bottom prs "main" 'up)))
+    (should-not (prrr-state-stack-step middle prs "main" 'up))
+    (should (eq bottom (prrr-state-stack-step middle prs "main" 'down)))
+    (should (eq bottom (prrr-state-stack-step later prs "main" 'down)))
+    (should-not (prrr-state-stack-step bottom prs "main" 'down))
+    (should-not (prrr-state-stack-step fork prs "main" 'down))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

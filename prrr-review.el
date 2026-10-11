@@ -56,12 +56,20 @@ The current buffer refreshes as the write goes out."
 (defun prrr-review--comment-on (anchor immediate body)
   "Capture a comment on ANCHOR and send it as a new Thread.
 IMMEDIATE is the initial choice of Immediate Publish; BODY the initial
-text."
+text.  A comment for the Pending Review is refused, and the capture
+buffer kept, when that review is on another commit than the head shown
+\(`prrr-state-review-commit-problem')."
   (let ((pullreq (prrr-diff-pullreq))
         (head (prrr-diff-head)))
     (prrr-comment-capture
      (prrr-state-anchor-label anchor)
      (lambda (text now)
+       (unless now
+         (when-let* ((problem (prrr-state-review-commit-problem
+                               (prrr-state-review-commit
+                                (prrr-sync-review-data (oref pullreq their-id)))
+                               head)))
+           (user-error "%s" problem)))
        (prrr-review--write pullreq (if now 'publish 'thread)
                            (list :anchor anchor :body text :commit head)))
      :body body :immediate immediate)))
@@ -178,7 +186,8 @@ The reply joins your Pending Review; IMMEDIATE is as for `prrr-comment'."
   "Capture a summary and submit the Pending Review with VERDICT.
 VERDICT is `approve', `request-changes' or `comment'.  The header
 counts the pending comments and those an agent wrote; Submit asks
-again when there are agent comments (SPEC section 7)."
+again when there are agent comments (SPEC section 7).  Submitting
+records the head shown as the Bookmark (SPEC section 8)."
   (let* ((pullreq (prrr-diff-pullreq))
          (head (prrr-diff-head))
          (pending (prrr-review--pending (prrr-sync-review-data (oref pullreq their-id))))
@@ -198,7 +207,14 @@ again when there are agent comments (SPEC section 7)."
                   (not (yes-or-no-p (format "Submit %d comment%s an agent wrote? "
                                             agents (if (= agents 1) "" "s")))))
          (user-error "Not submitted"))
-       (prrr-review--write pullreq 'submit (list :verdict verdict :body text :commit head)))
+       (prrr-review--write pullreq 'submit (list :verdict verdict :body text :commit head))
+       ;; The Submit is queued: a failure from here on must not keep
+       ;; the capture open, where confirming again would queue another.
+       (when head
+         (condition-case err
+             (prrr-sync-record-bookmark pullreq head)
+           (error (message "prrr: the Bookmark was not recorded: %s"
+                           (error-message-string err))))))
      :immediate-allowed nil :allow-empty t)))
 
 ;;;###autoload

@@ -28,8 +28,10 @@
 ;; access, so every rule is unit-tested with constructed structs.
 ;;
 ;; Where the Review Buffer shows each Thread is decided here too
-;; (`prrr-state-thread-layout').  Line mapping across Ranges is
-;; milestone 5 and is not here yet.
+;; (`prrr-state-thread-layout'), and so are the Range rules: which
+;; commits a Range diffs, which of its lines take comments, how a line
+;; number at one commit maps to another, and which PR is next in a
+;; Stack.
 ;;
 ;; The Outbox's rules are here as well: which queued write goes next,
 ;; which writes depend on which, and what a write leaves behind once
@@ -854,6 +856,160 @@ that requests changes or only comments."
               (kind (symbol-name kind)))
             (and (not (string-empty-p body)) (format ": %s" (truncate-string-to-width body 40 nil nil "…")))
             (and (prrr-outbox-last-error row) (format " (failed: %s)" (prrr-outbox-last-error row))))))
+
+;;;; Ranges
+
+(cl-defstruct (prrr-range (:constructor prrr-range-create) (:copier nil))
+  "A Range: the two commits whose diff the Review Buffer shows.
+KIND is one of `prrr-state-range-kinds'.  START is the commit the diff
+starts at, nil for `default', which starts at the merge base.  END is
+the commit it ends at, nil for the kinds that end at the PR's head:
+the head the buffer shows."
+  kind start end)
+
+(defconst prrr-state-range-kinds '(default since-review since-opened commit between)
+  "The kinds of Range (SPEC section 8).
+`default' diffs the merge base to the head, `since-review' the commit
+of my latest submitted review to the head, `since-opened' the
+Bookmark's head to the head, `commit' one PR commit against its
+parent, and `between' one chosen commit to another.")
+
+(defun prrr-state-range-ends (range merge-base head)
+  "Return (START . END), the commits RANGE diffs.
+MERGE-BASE is the PR's merge base and HEAD the head the buffer shows."
+  (cons (if (eq (prrr-range-kind range) 'default) merge-base (prrr-range-start range))
+        (or (prrr-range-end range) head)))
+
+(defun prrr-state-range-github-side-p (range side)
+  "Non-nil when RANGE numbers the lines of SIDE as GitHub does.
+GitHub numbers the `right' side at the PR's head and the `left' side
+at its merge base.  So the right side counts in a Range that ends at
+the head, the left side only in the `default' Range.  Only these lines
+take comments and show their Threads inline (SPEC section 8)."
+  (if (eq side 'left)
+      (eq (prrr-range-kind range) 'default)
+    (null (prrr-range-end range))))
+
+(defun prrr-state-inline-sides (range shown github)
+  "Return the sides, among `left' and `right', whose line Threads show inline.
+RANGE is the Range shown and SHOWN the PR head the buffer shows.
+GITHUB is the head the review data was fetched at, or nil when
+unknown.  A Thread's line is GitHub's number at GITHUB, so the right
+side is placed only when RANGE numbers it as GitHub does
+\(`prrr-state-range-github-side-p') and GITHUB is SHOWN or unknown.
+Every other line Thread goes to \"Not in this diff\" rather than onto
+a wrong line.  This governs placement only: a new comment is numbered
+at its own commit (`prrr-state-anchor-problem')."
+  (seq-filter (lambda (side)
+                (and (prrr-state-range-github-side-p range side)
+                     (or (eq side 'left) (null github) (equal github shown))))
+              '(left right)))
+
+(defun prrr-state-anchor-problem (range anchor)
+  "Return why RANGE refuses a comment on ANCHOR, or nil when it takes one.
+ANCHOR is as `prrr-state-anchor' or `prrr-state-file-anchor' returns.
+A File Comment needs a Range that ends at the head; a comment on lines
+needs both its sides numbered as GitHub numbers them
+\(`prrr-state-range-github-side-p')."
+  (when (if (eq (plist-get anchor :subject-type) 'file)
+            (prrr-range-end range)
+          (not (and (prrr-state-range-github-side-p range (plist-get anchor :side))
+                    (prrr-state-range-github-side-p
+                     range (or (plist-get anchor :start-side) (plist-get anchor :side))))))
+    (format "Read-only in the %s Range: press . to comment in the default Range"
+            (prrr-range-kind range))))
+
+(defun prrr-state-short-oid (oid)
+  "Return the first seven characters of OID."
+  (substring oid 0 (min 7 (length oid))))
+
+(defun prrr-state-head-notice (shown local github)
+  "Say how the PR's head moved away from SHOWN, the head the buffer shows.
+LOCAL is the head forge fetched (refs/pullreqs/N) and GITHUB the head
+the last refetch saw; either is nil when unknown.  Return nil when
+neither moved.  The buffer keeps showing SHOWN until the user asks for
+the new head (SPEC section 8)."
+  (cond ((and github shown (not (equal github shown)) (not (equal github local)))
+         (format "head moved to %s on GitHub: run forge-pull, then g"
+                 (prrr-state-short-oid github)))
+        ((and local shown (not (equal local shown)))
+         "head moved, press g")))
+
+(defun prrr-state-since-review-start (meta)
+  "Return the commit of the viewer's latest submitted review in META, or nil.
+META is a `prrr-pr-meta' or nil.  A Pending Review does not count."
+  (nth 2 (prrr-state--viewer-review meta)))
+
+(defun prrr-state-review-commit (data)
+  "Return the commit of the viewer's Pending Review in review DATA, or nil.
+DATA is as `prrr-state-outbox-view' returns.  That is the stored
+Pending Review's commit; without one, the commit of the first queued
+new Thread, whose sending creates the Pending Review on it."
+  (or (when-let* ((review (plist-get data :pending-review)))
+        (prrr-pending-review-commit-oid review))
+      (when-let* ((row (seq-find (lambda (row) (eq (prrr-outbox-kind row) 'thread))
+                                 (plist-get data :outbox))))
+        (plist-get (prrr-outbox-payload row) :commit))))
+
+(defun prrr-state-review-commit-problem (review-commit commit)
+  "Return why a new Thread on COMMIT cannot join a Pending Review on REVIEW-COMMIT.
+nil when it can: there is no Pending Review, or it is on COMMIT.
+GitHub anchors every Thread of a Pending Review at the review's
+commit, so line numbers taken at another commit would land on other
+lines (bead prrr-836)."
+  (when (and review-commit commit (not (equal review-commit commit)))
+    (format (concat "Your Pending Review is on %s, not on the head shown (%s): "
+                    "submit or discard it first (S), or publish this comment at once (C-c C-i)")
+            (prrr-state-short-oid review-commit) (prrr-state-short-oid commit))))
+
+;;;; Line mapping
+
+(defun prrr-state-parse-hunk-ranges (diff)
+  "Return the line ranges of the hunks of DIFF, a unified diff of one file.
+Each is (OLD-START OLD-COUNT NEW-START NEW-COUNT), in order, read from
+the hunk headings \"@@ -OLD-START,OLD-COUNT +NEW-START,NEW-COUNT @@\";
+a count left out is 1."
+  (let ((ranges nil) (start 0))
+    (while (string-match (concat "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)?"
+                                 " \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@")
+                         diff start)
+      (push (list (string-to-number (match-string 1 diff))
+                  (if (match-string 2 diff) (string-to-number (match-string 2 diff)) 1)
+                  (string-to-number (match-string 3 diff))
+                  (if (match-string 4 diff) (string-to-number (match-string 4 diff)) 1))
+            ranges)
+      (setq start (match-end 0)))
+    (nreverse ranges)))
+
+(defun prrr-state-map-line (hunks line)
+  "Return the number that LINE of the old file has in the new file, or nil.
+HUNKS are the line ranges of a diff without context lines (`git diff
+-U0'), as `prrr-state-parse-hunk-ranges' returns them.  nil when the
+diff removes or rewrites LINE.  Switching Ranges and `.' use this to
+find a line again at another commit (SPEC section 8)."
+  (let ((shift 0))
+    (catch 'done
+      (pcase-dolist (`(,old-start ,old-count ,_new-start ,new-count) hunks)
+        ;; A hunk that only adds lines names the old line they follow.
+        (let ((first (if (zerop old-count) (1+ old-start) old-start)))
+          (cond ((< line first) (throw 'done (+ line shift)))
+                ((< line (+ first old-count)) (throw 'done nil))
+                (t (cl-incf shift (- new-count old-count))))))
+      (+ line shift))))
+
+;;;; Stack steps
+
+(defun prrr-state-stack-step (pr prs default-branch direction)
+  "Return the PR next to PR in its Stack in DIRECTION, or nil.
+PRS are the repository's open `prrr-pr's, PR among them.  DIRECTION
+`down' is the PR that PR is stacked on (see `prrr-state--parent' for
+DEFAULT-BRANCH), `up' the oldest PR stacked on PR."
+  (if (eq direction 'down)
+      (prrr-state--parent pr prs default-branch)
+    (car (sort (seq-filter (lambda (other)
+                             (eq pr (prrr-state--parent other prs default-branch)))
+                           prs)
+               #'prrr-state--older-p))))
 
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

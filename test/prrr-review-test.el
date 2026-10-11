@@ -104,6 +104,42 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
   (should-not (prrr-review--immediate-p nil))
   (should (prrr-review--immediate-p '(4))))
 
+(ert-deftest prrr-review-test-comment-refused-before-capture ()
+  "Review Focus 2: a read-only line refuses before you write anything."
+  (prrr-review-test--with-buffer nil
+    (prrr-diff-show-range (prrr-range-create :kind 'commit
+                                             :start (prrr-diff-test--rev "refs/pullreqs/1~1")
+                                             :end (prrr-diff-test--rev "refs/pullreqs/1")))
+    (prrr-diff-test--goto-line "src/example.el" "+line thirty")
+    (should-error (prrr-comment nil) :type 'user-error)
+    (should-error (prrr-comment-suggest nil) :type 'user-error)
+    (should-error (prrr-comment-file nil) :type 'user-error)
+    (should-not (seq-find (lambda (buffer) (string-prefix-p "*prrr comment*" (buffer-name buffer)))
+                          (buffer-list)))
+    (should-not prrr-test-requests)))
+
+(ert-deftest prrr-review-test-comment-refused-when-review-on-another-commit ()
+  "Bead prrr-836: the text is kept, and can still be published at once."
+  (prrr-review-test--with-buffer nil
+    (let ((review (prrr-db-get 'pending-review prrr-diff-test--pr)))
+      (setf (prrr-pending-review-commit-oid review) (prrr-diff-test--rev "refs/pullreqs/1~1"))
+      (prrr-db-insert review))
+    (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+      (prrr-diff-test--goto-line "src/example.el" "+line twelve")
+      (prrr-comment nil)
+      (should (string-prefix-p "Your Pending Review is on "
+                               (cadr (should-error (prrr-review-test--send "Nit.")
+                                                   :type 'user-error))))
+      (should-not prrr-test-requests)
+      (should-not captured)
+      (with-current-buffer (seq-find (lambda (buffer)
+                                       (string-prefix-p "*prrr comment*" (buffer-name buffer)))
+                                     (buffer-list))
+        (should (equal "Nit." (buffer-string)))
+        (prrr-comment-toggle-immediate)
+        (prrr-comment-confirm))
+      (should (equal "/repos/example-org/example-repo/pulls/1/comments" (cadr captured))))))
+
 (ert-deftest prrr-review-test-file-comment ()
   (prrr-review-test--with-buffer `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
     (goto-char (oref (prrr-diff-test--file-section "README.md") start))
@@ -225,6 +261,40 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
     (prrr-review-test--send "")
     (should (equal "APPROVE" (alist-get 'event (alist-get 'input (cdr (assq 'submitPullRequestReview prrr-test-variables))))))
     (should-not (prrr-db-get 'pending-review prrr-diff-test--pr))))
+
+(ert-deftest prrr-review-test-submit-records-the-bookmark ()
+  "SPEC section 8: Submit records the head shown as the Bookmark."
+  (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
+    (prrr-submit-approve)
+    (prrr-review-test--send "")
+    (should (equal (prrr-diff-head)
+                   (prrr-bookmark-last-opened-head-oid
+                    (prrr-db-get 'pr-bookmark prrr-diff-test--pr))))))
+
+(ert-deftest prrr-review-test-submit-without-a-head-keeps-the-bookmark ()
+  "With no head shown, Submit has nothing to record and keeps the Bookmark."
+  (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
+    (let ((head (prrr-diff-head)))
+      (prrr-sync-record-bookmark (prrr-diff-pullreq) head)
+      (cl-letf (((symbol-function 'prrr-diff-head) #'ignore))
+        (prrr-submit-approve))
+      (prrr-review-test--send "")
+      (should (assq 'submitPullRequestReview prrr-test-variables))
+      (should (equal head (prrr-bookmark-last-opened-head-oid
+                           (prrr-db-get 'pr-bookmark prrr-diff-test--pr)))))))
+
+(ert-deftest prrr-review-test-submit-bookmark-failure-is-reported ()
+  "The Submit is queued before the Bookmark, so a Bookmark failure never signals."
+  (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
+    (let ((messages nil))
+      (prrr-submit-approve)
+      (cl-letf (((symbol-function 'prrr-sync-record-bookmark)
+                 (lambda (&rest _) (error "Disk full")))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format-message format args) messages))))
+        (prrr-review-test--send ""))
+      (should (assq 'submitPullRequestReview prrr-test-variables))
+      (should (member "prrr: the Bookmark was not recorded: Disk full" messages)))))
 
 (ert-deftest prrr-review-test-submit-asks-about-agent-comments ()
   (prrr-review-test--with-buffer '((submitPullRequestReview . ((data (submitPullRequestReview (clientMutationId))))))
