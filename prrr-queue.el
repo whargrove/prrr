@@ -285,13 +285,14 @@ for a PR prrr has not pulled yet."
                   :head-ref (oref pullreq head-ref)
                   :cross-repo-p (and (oref pullreq cross-repo-p) t)))
 
-(defun prrr-queue--open-pullreqs (repo metas)
+(defun prrr-queue-open-pullreqs (repo metas)
   "Return forge's open pull requests of REPO that have a row in METAS.
 METAS are REPO's `prrr-pr-meta' rows; each is looked up in forge by
 number.  A row whose PR forge does not know or no longer has open is
 dropped.  A forge PR without a row waits for the next prrr pull: this
 keeps the cost bounded by the open PRs instead of the repository's
-whole history, which `(oref repo pullreqs)' would load."
+whole history, which `(oref repo pullreqs)' would load.  Stack
+navigation in the Review Buffer uses it too."
   (seq-filter (lambda (pullreq) (and pullreq (eq (oref pullreq state) 'open)))
               (mapcar (lambda (meta) (forge-get-pullreq repo (prrr-pr-meta-number meta)))
                       (seq-filter (lambda (meta) (numberp (prrr-pr-meta-number meta)))
@@ -308,7 +309,7 @@ whole history, which `(oref repo pullreqs)' would load."
   (let* ((id (oref repo id))
          (metas (prrr-db-select 'pullreq-meta :forge-repo-id id))
          (pairs (mapcar (lambda (pullreq) (cons pullreq (prrr-queue-pr pullreq)))
-                        (prrr-queue--open-pullreqs repo metas))))
+                        (prrr-queue-open-pullreqs repo metas))))
     (list :pairs pairs
           :metas metas
           :teams (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))
