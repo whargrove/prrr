@@ -943,5 +943,86 @@ FROM and TO are the texts of the lines."
       (should (string-match-p "Your Discussion Comment  failed: offline"
                               (prrr-diff-test--text discussion))))))
 
+;;;; Ranges
+
+(defun prrr-diff-test--rev (rev)
+  "Return the oid of REV in the fixture repository."
+  (car (process-lines "git" "rev-parse" rev)))
+
+(defun prrr-diff-test--group (path type)
+  "Return the values of the Threads in PATH's hidden group of TYPE."
+  (let ((file (prrr-diff-test--file-section path)))
+    (magit-section-show file)
+    (mapcar (lambda (child) (oref child value))
+            (oref (seq-find (lambda (child) (eq (oref child type) type))
+                            (oref file children))
+                  children))))
+
+(ert-deftest prrr-diff-test-range-since-review ()
+  "SPEC section 8: a Range from an earlier commit to the head."
+  (prrr-diff-test--with-buffer (progn (prrr-diff-test--store-fixture)
+                                      (prrr-diff-test--store-extra-threads))
+    (let ((first (prrr-diff-test--rev "refs/pullreqs/1~1")))
+      (prrr-diff-show-range (prrr-range-create :kind 'since-review :start first))
+      (should (equal '("src/example.el") (prrr-diff-test--files)))
+      (should (string-match-p
+               (format "\\`Range: since-review, %s\\.\\.%s  ·  "
+                       (substring first 0 7)
+                       (substring (prrr-diff-test--rev "refs/pullreqs/1") 0 7))
+               (prrr-diff-test--status-line)))
+      (should (equal (prrr-diff-test--rev "refs/pullreqs/1") (prrr-diff-head)))
+      ;; The right side is numbered at the head: line 30's Thread stays inline.
+      (let ((hunk (car (prrr-diff-test--hunks "src/example.el"))))
+        (should (equal '("PRRT_kwDOexample0000005")
+                       (mapcar (lambda (child) (oref child value)) (oref hunk children)))))
+      ;; Line 12 is not in this diff; the left side is not numbered as GitHub does.
+      (should (equal '("PRRT_kwDOexample0000001" "T_NIR" "T_LEFT")
+                     (prrr-diff-test--group "src/example.el" 'not-in-range))))))
+
+(ert-deftest prrr-diff-test-range-commit-shows-no-thread-inline ()
+  "Review Focus 3: a Range that ends before the head numbers no line as GitHub does."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (prrr-diff-show-range (prrr-range-create :kind 'commit
+                                             :start (prrr-diff-test--rev "refs/pullreqs/1~2")
+                                             :end (prrr-diff-test--rev "refs/pullreqs/1~1")))
+    (should (equal '("README.md" "data.bin" "docs/notes.md" "src/example.el"
+                     "src/moved-to.el" "src/old.el")
+                   (prrr-diff-test--files)))
+    (should (string-match-p "\\`Range: commit, " (prrr-diff-test--status-line)))
+    (should-not (string-match-p "+line thirty"
+                                (prrr-diff-test--text
+                                 (prrr-diff-test--file-section "src/example.el"))))
+    (should (equal '("PRRT_kwDOexample0000001" "PRRT_kwDOexample0000005")
+                   (prrr-diff-test--group "src/example.el" 'not-in-range)))))
+
+(defun prrr-diff-test--force-push ()
+  "Make the PR's head a new commit on its base, as a force-push does.
+The old head stays as the branch feature."
+  (call-process "git" nil nil nil "checkout" "-q" "-b" "rewritten" "main~1")
+  (with-temp-file "src/example.el"
+    (insert "rewritten\n"))
+  (call-process "git" nil nil nil "commit" "-q" "-a" "-m" "rewritten")
+  (call-process "git" nil nil nil "update-ref" "refs/pullreqs/1" "HEAD"))
+
+(ert-deftest prrr-diff-test-range-history-rewritten ()
+  "SPEC section 8: a start that is not an ancestor of the head is diffed tree to tree."
+  (prrr-diff-test--with-buffer (prrr-diff-test--force-push)
+    (prrr-diff-show-range (prrr-range-create :kind 'since-opened
+                                             :start (prrr-diff-test--rev "feature")))
+    (should (string-match-p (concat "\\`Range: since-opened, [0-9a-f]\\{7\\}\\.\\.[0-9a-f]\\{7\\}"
+                                    "  ·  history rewritten")
+                            (prrr-diff-test--status-line)))
+    ;; Tree to tree: every file of the old head that differs shows.
+    (should (member "README.md" (prrr-diff-test--files)))
+    (should (member "src/example.el" (prrr-diff-test--files)))))
+
+(ert-deftest prrr-diff-test-range-missing-commit ()
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-show-range (prrr-range-create :kind 'since-review
+                                             :start "2222222222222222222222222222222222222222"))
+    (should-not (prrr-diff-test--files))
+    (should (string-match-p "The commit 2222222 of this Range is not available locally"
+                            (buffer-string)))))
+
 (provide 'prrr-diff-test)
 ;;; prrr-diff-test.el ends here

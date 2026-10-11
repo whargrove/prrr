@@ -154,11 +154,17 @@ nil when forge recorded no base commit or it is not in the repository."
 (defvar-local prrr-diff--pullreq nil
   "The `forge-pullreq' this Review Buffer shows.")
 
-(defvar-local prrr-diff--base nil
-  "Oid of the merge base the diff starts at, or nil; set by each refresh.")
+(defvar-local prrr-diff--range (prrr-range-create :kind 'default)
+  "The `prrr-range' this Review Buffer shows.")
+
+(defvar-local prrr-diff--start nil
+  "Oid of the commit the diff starts at, or nil; set by each refresh.")
+
+(defvar-local prrr-diff--end nil
+  "Oid of the commit the diff ends at, or nil; set by each refresh.")
 
 (defvar-local prrr-diff--head nil
-  "Oid of the head the diff ends at, or nil; set by each refresh.")
+  "Oid of the PR head the buffer shows, or nil; set by each refresh.")
 
 (defvar-local prrr-diff--threads nil
   "Hash table from Thread id to the `prrr-thread' shown; set by each refresh.")
@@ -255,26 +261,32 @@ any file names each Thread's file."
   "Insert TEXT as a dimmed, indented line."
   (insert (propertize (concat prrr-thread-indent text "\n") 'font-lock-face 'magit-dimmed)))
 
-(defun prrr-diff--wash-file (file threads comments base head)
-  "Insert FILE's diff from BASE to HEAD, with its Threads, at point.
+(defun prrr-diff--wash-file (file threads comments range start end)
+  "Insert FILE's diff from START to END, the commits of RANGE, at point.
 FILE is a `prrr-diff-file'; THREADS its `prrr-file-threads' or nil;
 COMMENTS maps Thread ids to their Review Comments.  File Comments come
 first, then the hunks with their Threads, then two hidden groups: the
 Threads whose line is not in this diff (`not-in-range') and the
-outdated ones (`outdated').  Runs inside a deferred section body, where
-`magit-git-wash' cannot be used, so the diff is inserted, narrowed to,
-stripped of its header and washed hunk by hunk.  A diff without hunks
-becomes a one-line note."
-  (let ((anchors (make-hash-table :test #'equal))
-        (lines (and threads (prrr-file-threads-lines threads))))
+outdated ones (`outdated').  A Thread is on a line of this diff only
+when RANGE numbers its side as GitHub does
+\(`prrr-state-range-github-side-p').  Runs inside a deferred section
+body, where `magit-git-wash' cannot be used, so the diff is inserted,
+narrowed to, stripped of its header and washed hunk by hunk.  A diff
+without hunks becomes a one-line note."
+  (let* ((anchors (make-hash-table :test #'equal))
+         (lines (and threads (prrr-file-threads-lines threads)))
+         (placed (seq-filter (lambda (thread)
+                               (prrr-state-range-github-side-p
+                                range (car (prrr-state-thread-anchor thread))))
+                             lines)))
     (dolist (thread (and threads (prrr-file-threads-file-comments threads)))
       (prrr-thread-insert thread (gethash (prrr-thread-thread-id thread) comments)
                           :writes (plist-get prrr-diff--data :writes)))
-    (dolist (thread lines)
+    (dolist (thread placed)
       (let ((key (prrr-state-thread-anchor thread)))
         (puthash key (append (gethash key anchors) (list thread)) anchors)))
     (let ((beg (point)))
-      (apply #'magit-git-insert "diff" "--no-ext-diff" "--no-color" "-p" "-M" base head "--"
+      (apply #'magit-git-insert "diff" "--no-ext-diff" "--no-color" "-p" "-M" start end "--"
              (delq nil (list (prrr-diff-file-orig file) (prrr-diff-file-path file))))
       (save-restriction
         (narrow-to-region beg (point))
@@ -291,7 +303,9 @@ becomes a one-line note."
         (goto-char (point-max))))
     (prrr-diff--insert-group 'not-in-range "Not in this diff"
                              (seq-filter (lambda (thread)
-                                           (gethash (prrr-state-thread-anchor thread) anchors))
+                                           (or (not (memq thread placed))
+                                               (gethash (prrr-state-thread-anchor thread)
+                                                        anchors)))
                                          lines)
                              comments)
     (prrr-diff--insert-group 'outdated "Outdated"
@@ -505,14 +519,15 @@ A `dismissed' file changed since it was viewed, so it does not count."
             (and viewed-p (propertize "  ✓ viewed" 'font-lock-face 'prrr-diff-viewed))
             "\n")))
 
-(defun prrr-diff--insert-files (base head data comments)
-  "Insert one `file' section per file changed from BASE to HEAD.
-DATA is the PR's stored review data (`prrr-db-review-data'); COMMENTS
-maps its Thread ids to their Review Comments.  Viewed files start
-hidden; the eager budget decides for the others.  Sets
-`prrr-diff--threads' and `prrr-diff--file-threads'.  Return the
-Threads whose file is not in the diff."
-  (let* ((files (prrr-diff--changes base head))
+(defun prrr-diff--insert-files (range start end data comments)
+  "Insert one `file' section per file changed from START to END.
+START and END are the commits of RANGE.  DATA is the PR's stored
+review data (`prrr-db-review-data'); COMMENTS maps its Thread ids to
+their Review Comments.  Viewed files start hidden; the eager budget
+decides for the others.  Sets `prrr-diff--threads' and
+`prrr-diff--file-threads'.  Return the Threads whose file is not in
+the diff."
+  (let* ((files (prrr-diff--changes start end))
          (layout (prrr-state-thread-layout (plist-get data :threads)
                                            (mapcar #'prrr-diff-file-path files)))
          (viewed (prrr-diff--viewed-paths (plist-get data :viewed)))
@@ -532,16 +547,13 @@ Threads whose file is not in the diff."
             (oset section keymap 'prrr-diff-file-section-map)
             (magit-insert-heading (prrr-diff--file-heading file threads (member path viewed)))
             (magit-insert-section-body
-              (prrr-diff--wash-file file threads comments base head))))))
+              (prrr-diff--wash-file file threads comments range start end))))))
     (cdr layout)))
 
 (defun prrr-diff--posts (pullreq)
   "Return PULLREQ's Discussion Comments, oldest first."
   (oref pullreq posts))
 
-(defun prrr-diff--short (oid)
-  "Return the first seven characters of OID."
-  (substring oid 0 (min 7 (length oid))))
 
 
 (defun prrr-diff--outbox-status (data)
@@ -555,23 +567,34 @@ Threads whose file is not in the diff."
                                            (and (> failed 0) (format "%d failed, O to act" failed))))
                            ", ")))))
 
-(defun prrr-diff--status-line (pullreq base head data)
+(defun prrr-diff--range-status (view)
+  "Name the Range of VIEW for the header (see `prrr-diff--status-line')."
+  (let ((start (plist-get view :start))
+        (end (plist-get view :end)))
+    (if (and start end)
+        (format "Range: %s, %s..%s" (prrr-range-kind (plist-get view :range))
+                (prrr-state-short-oid start) (prrr-state-short-oid end))
+      "Range: unavailable")))
+
+(defun prrr-diff--status-line (pullreq view data)
   "Return the header's status line for PULLREQ.
-BASE and HEAD are the diffed oids, either may be nil; DATA is the
-review data shown.  Names the Range, the Pending Review's comments, the
-Outbox, a queued Submit, what the last refetch said, and whether
-GitHub's head differs from the local one."
+VIEW describes what the buffer diffs, a plist: :range, the
+`prrr-range'; :start and :end, the commits diffed, either may be nil;
+:head, the PR head shown; :rewritten, non-nil when the Range's start
+is not an ancestor of its end.  DATA is the review data shown.  Names
+the Range and whether history was rewritten, the Pending Review's
+comments, the Outbox, a queued Submit, what the last refetch said, and
+whether GitHub's head differs from the local one."
   (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
          (github-head (plist-get status :head-oid))
+         (head (plist-get view :head))
          (submit (plist-get data :submit))
          (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
                              (plist-get data :comments))))
     (string-join
      (delq nil
-           (list (if base
-                     (format "Range: default, %s..%s" (prrr-diff--short base)
-                             (prrr-diff--short head))
-                   "Range: unavailable")
+           (list (prrr-diff--range-status view)
+                 (and (plist-get view :rewritten) "history rewritten")
                  (and (or (plist-get data :pending-review) (> pending 0))
                       (format "Pending Review: %d comment%s" pending (if (= pending 1) "" "s")))
                  (prrr-diff--outbox-status data)
@@ -582,19 +605,19 @@ GitHub's head differs from the local one."
                  (prrr-sync-describe status "refreshing…")
                  (and github-head head (not (equal github-head head))
                       (format "GitHub's head is %s: run forge-pull, then g"
-                              (prrr-diff--short github-head)))))
+                              (prrr-state-short-oid github-head)))))
      "  ·  ")))
 
-(defun prrr-diff--insert-header (pullreq base head data)
+(defun prrr-diff--insert-header (pullreq view data)
   "Insert the header of PULLREQ's Review Buffer.
-The title, a status line (`prrr-diff--status-line' of BASE, HEAD and
-DATA), and hidden `description' and `discussion' sections.  The
-discussion ends with DATA's unsent Discussion Comments."
+The title, a status line (`prrr-diff--status-line' of VIEW and DATA),
+and hidden `description' and `discussion' sections.  The discussion
+ends with DATA's unsent Discussion Comments."
   (magit-insert-section (prrr-header)
     (magit-insert-heading
       (propertize (format "#%d %s" (oref pullreq number) (oref pullreq title))
                   'font-lock-face 'magit-section-heading))
-    (insert (propertize (prrr-diff--status-line pullreq base head data)
+    (insert (propertize (prrr-diff--status-line pullreq view data)
                         'font-lock-face 'magit-dimmed)
             "\n")
     (magit-insert-section (description nil t)
@@ -614,21 +637,40 @@ discussion ends with DATA's unsent Discussion Comments."
           (prrr-thread-insert-unsent-post body row))))
     (insert "\n")))
 
+(defun prrr-diff--missing-commit (range start end)
+  "Return START or END when it is not in the repository, else nil.
+START and END are RANGE's commits.  Those of the `default' Range were
+just found, so only the other kinds are checked."
+  (unless (eq (prrr-range-kind range) 'default)
+    (seq-find (lambda (oid) (not (magit-commit-p oid))) (list start end))))
+
 (defun prrr-diff-refresh-buffer ()
   "Insert the Review Buffer of `prrr-diff--pullreq' from git and the database.
 The refresh function of `prrr-diff-mode', run by `magit-refresh-buffer'.
+It diffs the commits of `prrr-diff--range' (`prrr-state-range-ends').
 The review data is `prrr-sync-review-data''s: what GitHub sent, with
 the Outbox's writes applied."
   (let* ((pullreq prrr-diff--pullreq)
+         (range prrr-diff--range)
          (ref (prrr-diff--head-ref pullreq))
          (head (magit-rev-verify ref))
-         (base (and head (prrr-diff--merge-base pullreq head)))
+         (merge-base (and head (eq (prrr-range-kind range) 'default)
+                          (prrr-diff--merge-base pullreq head)))
+         (ends (prrr-state-range-ends range merge-base head))
+         (start (and head (car ends)))
+         (end (and head (cdr ends)))
+         (missing (and start (prrr-diff--missing-commit range start end)))
+         (view (list :range range :start start :end end :head head
+                     :rewritten (and start (not missing)
+                                     (not (eq (prrr-range-kind range) 'default))
+                                     (not (magit-rev-ancestor-p start end)))))
          (data (prrr-sync-review-data (oref pullreq their-id))))
-    (setq prrr-diff--base base
+    (setq prrr-diff--start start
+          prrr-diff--end end
           prrr-diff--head head
           prrr-diff--data data
           prrr-diff--comments (make-hash-table :test #'equal)
-          magit-buffer-diff-range (and base (concat base ".." head)))
+          magit-buffer-diff-range (and start (concat start ".." end)))
     (dolist (comment (plist-get data :comments))
       (puthash (prrr-comment-comment-id comment) comment prrr-diff--comments))
     ;; magit resets this to nil when the root section finishes; a
@@ -636,16 +678,20 @@ the Outbox's writes applied."
     (setq magit-section-inhibit-markers 'delay)
     (unwind-protect
         (magit-insert-section (diffbuf)
-          (prrr-diff--insert-header pullreq base head data)
+          (prrr-diff--insert-header pullreq view data)
           (cond ((not head)
                  (prrr-diff--insert-note
                   (format "%s is missing: run `forge-pull', then g" ref)))
-                ((not base)
+                ((not start)
                  (prrr-diff--insert-note
                   (format "The base commit %s is not available locally: run `forge-pull', then g"
                           (or (oref pullreq base-rev) "(unknown)"))))
+                (missing
+                 (prrr-diff--insert-note
+                  (format "The commit %s of this Range is not available locally: D picks another"
+                          (prrr-state-short-oid missing))))
                 (t (let* ((comments (prrr-diff--comments-table (plist-get data :comments)))
-                          (elsewhere (prrr-diff--insert-files base head data comments)))
+                          (elsewhere (prrr-diff--insert-files range start end data comments)))
                      (prrr-diff--insert-group 'outdated-files "Threads on files not in this diff"
                                               elsewhere comments)))))
       (setq magit-section-inhibit-markers nil))
@@ -715,8 +761,15 @@ The buffer shows \"refreshing…\" until the answer arrives, then redraws.
                    "try again shortly")))))
 
 (defun prrr-diff-head ()
-  "Return the oid of the head the current Review Buffer diffs to, or nil."
+  "Return the oid of the PR head the current Review Buffer shows, or nil.
+Comments are made on that head; the Range may end elsewhere."
   prrr-diff--head)
+
+(defun prrr-diff-show-range (range)
+  "Show RANGE, a `prrr-range', in the current Review Buffer."
+  (prrr-diff-pullreq)
+  (setq prrr-diff--range range)
+  (magit-refresh-buffer))
 
 (defun prrr-diff--hunk-of (section)
   "Return the `hunk' section SECTION is in, or nil."
