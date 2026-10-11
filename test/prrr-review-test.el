@@ -104,6 +104,20 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
   (should-not (prrr-review--immediate-p nil))
   (should (prrr-review--immediate-p '(4))))
 
+(ert-deftest prrr-review-test-comment-refused-before-capture ()
+  "Review Focus 2: a read-only line refuses before you write anything."
+  (prrr-review-test--with-buffer nil
+    (prrr-diff-show-range (prrr-range-create :kind 'commit
+                                             :start (prrr-diff-test--rev "refs/pullreqs/1~1")
+                                             :end (prrr-diff-test--rev "refs/pullreqs/1")))
+    (prrr-diff-test--goto-line "src/example.el" "+line thirty")
+    (should-error (prrr-comment nil) :type 'user-error)
+    (should-error (prrr-comment-suggest nil) :type 'user-error)
+    (should-error (prrr-comment-file nil) :type 'user-error)
+    (should-not (seq-find (lambda (buffer) (string-prefix-p "*prrr comment*" (buffer-name buffer)))
+                          (buffer-list)))
+    (should-not prrr-test-requests)))
+
 (ert-deftest prrr-review-test-file-comment ()
   (prrr-review-test--with-buffer `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
     (goto-char (oref (prrr-diff-test--file-section "README.md") start))

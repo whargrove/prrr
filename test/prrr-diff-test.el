@@ -897,6 +897,30 @@ FROM and TO are the texts of the lines."
     (prrr-diff-test--with-region "+line twelve" "+line thirty"
       (should-error (prrr-diff-anchor) :type 'user-error))))
 
+(ert-deftest prrr-diff-test-anchor-in-a-range-to-head ()
+  "SPEC section 8: the right side of a Range ending at head takes comments, at head lines."
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-show-range (prrr-range-create :kind 'since-review
+                                             :start (prrr-diff-test--rev "refs/pullreqs/1~1")))
+    (prrr-diff-test--goto-line "src/example.el" "+line thirty")
+    (should (equal '(:path "src/example.el" :line 30 :side right :subject-type line)
+                   (prrr-diff-anchor)))
+    (should (equal '(:path "src/example.el" :subject-type file) (prrr-diff-file-anchor)))
+    (prrr-diff-test--goto-line "src/example.el" "-line 30")
+    (should (equal '(user-error
+                     "Read-only in the since-review Range: press . to comment in the default Range")
+                   (should-error (prrr-diff-anchor) :type 'user-error)))))
+
+(ert-deftest prrr-diff-test-anchor-in-a-commit-range-refused ()
+  "SPEC section 8: both sides of a commit Range are read-only, and so is the file."
+  (prrr-diff-test--with-buffer nil
+    (prrr-diff-show-range (prrr-range-create :kind 'commit
+                                             :start (prrr-diff-test--rev "refs/pullreqs/1~1")
+                                             :end (prrr-diff-test--rev "refs/pullreqs/1")))
+    (prrr-diff-test--goto-line "src/example.el" "+line thirty")
+    (should-error (prrr-diff-anchor) :type 'user-error)
+    (should-error (prrr-diff-file-anchor) :type 'user-error)))
+
 (ert-deftest prrr-diff-test-anchor-in-a-thread ()
   "Point in a Thread anchors to the diff line the Thread follows."
   (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)

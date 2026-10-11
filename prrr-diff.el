@@ -845,10 +845,18 @@ the start of a line ends on the line before."
                     end)))
     (cons (point) (point))))
 
+(defun prrr-diff--commentable (anchor)
+  "Return ANCHOR when the Range shown takes a comment on it.
+Signal a `user-error' saying why not otherwise
+\(`prrr-state-anchor-problem')."
+  (when-let* ((problem (prrr-state-anchor-problem prrr-diff--range anchor)))
+    (user-error "%s" problem))
+  anchor)
+
 (defun prrr-diff-anchor ()
   "Return the anchor of a comment on the line at point or the region's lines.
-See `prrr-state-anchor'.  Signal a `user-error' off the diff's lines or
-across hunks."
+See `prrr-state-anchor'.  Signal a `user-error' off the diff's lines,
+across hunks, or on lines the Range shown does not let you comment on."
   (prrr-diff-pullreq)
   (pcase-let* ((`(,beg . ,end) (prrr-diff--region-ends))
                (first (or (prrr-diff--line-at beg)
@@ -856,13 +864,16 @@ across hunks."
                (last (or (prrr-diff--line-at end)
                          (user-error "The region does not end on a diff line")))
                (file (oref (car first) parent)))
-    (prrr-state-anchor (oref file value) (seq-take first 4) (seq-take last 4))))
+    (prrr-diff--commentable
+     (prrr-state-anchor (oref file value) (seq-take first 4) (seq-take last 4)))))
 
 (defun prrr-diff-file-anchor ()
-  "Return the anchor of a File Comment on the file at point."
+  "Return the anchor of a File Comment on the file at point.
+Signal a `user-error' when the Range shown does not end at the head."
   (prrr-diff-pullreq)
-  (prrr-state-file-anchor
-   (oref (or (prrr-diff--file-at-point) (user-error "No file here")) value)))
+  (prrr-diff--commentable
+   (prrr-state-file-anchor
+    (oref (or (prrr-diff--file-at-point) (user-error "No file here")) value))))
 
 (defun prrr-diff-region-lines ()
   "Return the diff lines of the line at point or of the region, as (KIND . TEXT).
