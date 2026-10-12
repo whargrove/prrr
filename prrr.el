@@ -57,6 +57,7 @@
 (autoload 'prrr-refresh "prrr-diff" "Redraw the Review Buffer at the pull request's current head." t)
 (autoload 'prrr-goto-default-range "prrr-range" "Show the default Range, at the file and line point is on." t)
 (autoload 'prrr-mark-seen "prrr-range" "Record the head shown as seen." t)
+(autoload 'prrr-toggle-highlight "prrr-treesit" "Toggle syntax highlighting in this Review Buffer." t)
 (autoload 'prrr-queue-menu "prrr-transient" "Show the Review Queue commands." t)
 (autoload 'prrr-menu "prrr-transient" "Show the Review Buffer commands." t)
 (autoload 'prrr-comment "prrr-review" "Comment on the diff line at point, or on the region's lines." t)

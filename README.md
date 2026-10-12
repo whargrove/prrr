@@ -15,12 +15,15 @@ opened the PR, or in one commit, and step up and down a Stack without
 leaving the Review Buffer.
 
 > **Status:** early development. The Review Queue, the Review Buffer,
-> commenting and submitting, Ranges and Stacks work. Syntax highlighting
-> of the diff is next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
+> commenting and submitting, Ranges, Stacks and syntax highlighting work.
+> The agent API is next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
 
 ## Requirements
 
 - Emacs 29.1 or later
+- Syntax highlighting needs Emacs built with tree-sitter and the grammars
+  of your languages (`M-x treesit-install-language-grammar`); without
+  them the diff shows uncolored.
 - magit 4.7, forge 0.5, emacsql 4.4, transient 0.13, compat 31
 - A GitHub token that forge can use (see forge's manual,
   [Setup for GitHub](https://docs.magit.vc/forge/Setup-for-Githubcom.html))
@@ -143,7 +146,9 @@ your pending review and the Viewed flags in the background. The header
 says `refreshing…` meanwhile, and `offline` or `rate limited until 14:05`
 when that fails. The header shows the title, the Range, your pending
 review's comment count, and `head moved, press g` when the pull request
-moved on. Folded below it are the description and the discussion.
+moved on. Folded below it are the description and the discussion; a
+Discussion Comment you just posted shows there, marked `sent`, until
+forge has pulled it.
 
 Large diffs stay fast. The first files, up to `prrr-eager-files` files or
 `prrr-eager-lines` changed lines, are shown expanded. Every other file
@@ -157,7 +162,29 @@ Resolved threads start folded. `RET` on a thread visits the line it is
 anchored to.
 
 Files you marked Viewed, here or on GitHub, are folded and marked `✓
-viewed`. `g` redraws at the pull request's current head and keeps what you expanded and folded.
+viewed`. `g` redraws at the pull request's current head and keeps what
+you expanded and folded.
+
+### Syntax highlighting
+
+Diff lines are colored with the tree-sitter rules of the file's
+language. The language is the one visiting the file would pick. When
+that is `foo-mode` and `foo-ts-mode` exists, its rules are used, without
+any `major-mode-remap-alist` setup and without changing the mode your
+own files open in. `prrr-highlight-modes` covers the built-in ts-modes
+that rule can't find: JavaScript, TypeScript, shell, JSON, HTML, Go,
+Rust, YAML, TOML, Lua, Dockerfile and CMake; the rule itself covers C,
+C++, C#, Python, Java, Ruby and CSS. Add entries for other languages.
+Each language's grammar must be installed
+(`treesit-install-language-grammar`); files without one stay uncolored.
+
+A file expanded in an open buffer is colored at once. Files shown when
+the buffer opens or refreshes, and very large files, are colored a
+moment later, when Emacs is idle. Files over ten times
+`prrr-highlight-max-lines` stay uncolored. `treesit-font-lock-level`
+sets how much is colored. `L` turns highlighting off and on in one
+buffer, for as long as it lives, reopening included, and rereads the
+rules, so a changed `treesit-font-lock-level` applies.
 
 ### Keys in the Review Buffer
 
@@ -185,13 +212,22 @@ viewed`. `g` redraws at the pull request's current head and keeps what you expan
 | `o`       | `prrr-open-topic`                                   | forge's topic buffer                       |
 | `b`       | `prrr-browse`                                       | Open the PR on GitHub                      |
 | `B`       | `prrr-checkout`                                     | Check out the PR's branch                  |
+| `L`       | `prrr-toggle-highlight`                             | Toggle syntax highlighting in this buffer  |
 | `g`       | `prrr-refresh`                                      | Redraw, at the PR's current head           |
 | `G`       | `prrr-refetch`                                      | Refetch threads and Viewed flags now       |
 | `?`, `C-o`| `prrr-menu`                                         | Menu with the same keys                    |
 
 magit's `TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`, `1`-`4`, `E` (ediff), `h`
 and `q` work as in any magit diff. Keys that later milestones use
-(`@`, `L`) do nothing yet.
+(`@`) do nothing yet.
+
+### Review Buffer options
+
+| Option                     | Default  | Meaning                                                                  |
+|----------------------------|----------|--------------------------------------------------------------------------|
+| `prrr-highlight`           | `t`      | Highlight diff lines                                                     |
+| `prrr-highlight-max-lines` | `3000`   | Larger files are highlighted when Emacs is idle, ten times larger never  |
+| `prrr-highlight-modes`     | built-in | ts-mode by file-name regexp or major mode, where `foo-ts-mode` misses    |
 
 ## Commenting and reviewing
 
@@ -230,7 +266,18 @@ buffer refetches, or when you press `O r`; `O k` drops one, along with
 any reply that needs it. Until a failed change goes through, the later
 changes to that pull request wait behind it. When GitHub rate-limits
 you, the header says until when, and prrr waits. Unsent changes are
-kept in prrr's database, so they survive restarting Emacs.
+kept in prrr's database, so they survive restarting Emacs, and prrr
+sends them once it starts again.
+
+When GitHub does not answer within `prrr-sync-timeout` seconds, or
+answers without naming what it made, the
+change may or may not have reached GitHub. It shows as unsent, `waiting
+for GitHub's answer`, and is never sent twice blindly: prrr refetches
+the pull request, records the change if GitHub has it and sends it
+again if not. `O r` checks again. A Discussion Comment or a submitted
+review cannot be checked that way, so it ends as failed, asking you to
+look at the pull request on GitHub, then retry or drop it; prrr sends
+it again only when you press `O r`.
 
 Publishing a single comment at once while you have a pending review
 depends on GitHub accepting it; if GitHub refuses, the comment stays
@@ -241,7 +288,9 @@ instead, drop it with `O k` and write the comment again without `C-u`.
 
 The Review Buffer shows a Range: the two commits it diffs. It opens at
 the default Range, the PR's merge base to its head, and the header
-names the Range shown. `D` chooses another:
+names the Range shown. `D` opens a menu to choose another; the keys
+below belong to that menu only (in the buffer itself `r`, `c` and
+`d` mean other things):
 
 | Key | Command                   | Range                                                  |
 |-----|---------------------------|--------------------------------------------------------|
@@ -260,18 +309,24 @@ the head (default, since review, since opened) takes comments on its
 new side. Its old side, and both sides of one commit or of two commits,
 are read-only: `.` shows the same line in the default Range, where it
 takes a comment. Threads show inline where the Range numbers lines as
-GitHub does, and in the file's "Not in this diff" group otherwise.
+GitHub does, and in the file's "Not in this diff" group otherwise.  The
+same group takes every line Thread, on both sides, while the review
+data was fetched at another head than the one shown, until the head
+shown is the one the refetch saw (`g`, after `forge-pull` when the
+header asks for it).
 
 "Since opened" starts at the head you saw when you last left the
-Review Buffer, by `q`, by killing it or by stepping to another PR of
-its Stack with `>` or `<`, or last submitted a review, or last pressed
-`m`. Opening a PR does not count, so it means "since my previous
-visit".
+Review Buffer, by `q`, by killing it, by stepping to another PR of
+its Stack with `>` or `<`, or by opening it again once forge fetched a
+newer head; or last submitted a review, or last pressed `m`. Opening a
+PR does not count otherwise, so it means "since my previous visit".
 
 When the author force-pushes, a Range from an older commit compares the
 two trees directly, and the header says `history rewritten`. prrr keeps
 the commits these Ranges start at under `refs/prrr/`, so neither the
-push nor git's garbage collection loses them. A start commit you do not
+push nor git's garbage collection loses them. `prrr-pull` removes the
+pins of pull requests that are no longer open, except those with an open
+Review Buffer. A start commit you do not
 have is fetched from the PR's remote; when that fails, prrr shows the
 default Range and says so.
 

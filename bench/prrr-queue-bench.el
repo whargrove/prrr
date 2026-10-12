@@ -120,6 +120,8 @@ Prints the median of the inputs, the render and their total."
   (let* ((dir (make-temp-file "prrr-bench" t))
          (forge-database-file (expand-file-name "forge.sqlite" dir))
          (prrr-database-file (expand-file-name "prrr.sqlite" dir))
+         ;; The Outbox stays out of the measurements.
+         (prrr-db-open-hook nil)
          (prrr-github-user "example-me")
          (over nil))
     (unwind-protect

@@ -254,14 +254,20 @@ On a mismatch the `outbox' rows are collected into
       (prrr-db-reset db))))
   db)
 
+(defvar prrr-db-open-hook nil
+  "Functions run, with no argument, each time `prrr-db' opens the database.
+The connection is open and usable when they run.")
+
 (defun prrr-db ()
   "Return the open connection to `prrr-database-file', opening it if needed.
-The file's directory is created when missing."
+The file's directory is created when missing.  Opening it runs
+`prrr-db-open-hook'."
   (unless (and prrr-db--connection (emacsql-live-p prrr-db--connection))
     (let ((file (expand-file-name prrr-database-file)))
       (make-directory (file-name-directory file) t)
       (setq prrr-db--connection (emacsql-sqlite-open file))
-      (prrr-db--init prrr-db--connection)))
+      (prrr-db--init prrr-db--connection)
+      (run-hooks 'prrr-db-open-hook)))
   prrr-db--connection)
 
 (defun prrr-db-close ()
@@ -449,13 +455,19 @@ increase with time."
                        pr-id)
             (emacsql (prrr-db) [:select * :from outbox :order-by [(asc id)]]))))
 
-(defun prrr-db-outbox-clear-errors (&optional pr-id)
+(defun prrr-db-outbox-clear-errors (&optional pr-id keep)
   "Forget the last error of every queued write of PR-ID, or of every PR when nil.
-Their attempts count is kept."
-  (if pr-id
-      (emacsql (prrr-db) [:update outbox :set (= last-error $s1) :where (= pr-id $s2)]
-               nil pr-id)
-    (emacsql (prrr-db) [:update outbox :set (= last-error $s1)] nil)))
+Their attempts count is kept.  KEEP, when non-nil, is a function of a
+`prrr-outbox' row: a failed row it accepts keeps its error."
+  (cond (keep
+         (dolist (row (prrr-db-outbox-rows pr-id))
+           (when (and (prrr-outbox-last-error row) (not (funcall keep row)))
+             (setf (prrr-outbox-last-error row) nil)
+             (prrr-db-insert row))))
+        (pr-id
+         (emacsql (prrr-db) [:update outbox :set (= last-error $s1) :where (= pr-id $s2)]
+                  nil pr-id))
+        (t (emacsql (prrr-db) [:update outbox :set (= last-error $s1)] nil))))
 
 (defun prrr-db--rename (tree renames)
   "Return a copy of TREE in which each string that is a key of RENAMES is replaced.
@@ -475,6 +487,14 @@ caller's transaction."
         (unless (equal payload (prrr-outbox-payload row))
           (setf (prrr-outbox-payload row) payload)
           (prrr-db-insert row))))))
+
+(defun prrr-db-outbox-rename (pr-id renames)
+  "Replace the ids in RENAMES in the payloads of PR-ID's queued writes.
+RENAMES is an alist from local id to GitHub's id.  For a write GitHub
+carried out after it left the Outbox: `prrr-db-outbox-done' renames
+as it removes a write, and has none to remove then."
+  (emacsql-with-transaction (prrr-db)
+    (prrr-db--rename-outbox-ids pr-id renames)))
 
 (cl-defun prrr-db-outbox-done (id &key insert delete renames)
   "Record that GitHub accepted the queued write ID, in one transaction.

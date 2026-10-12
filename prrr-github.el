@@ -34,9 +34,10 @@
 ;; `prrr-github-error'; ghub's own error shapes never leave this file.
 ;; Writes are here too.  Most go through `forge-mutate' or
 ;; `forge-rest'.  `forge-mutate' selects only clientMutationId, so the
-;; three mutations whose answer prrr reads (creating the Pending
-;; Review, a Thread, a reply) go through `prrr-github--mutate', which
-;; calls `ghub-query' with forge's token as `forge-query' does.
+;; four mutations whose answer prrr reads (creating the Pending
+;; Review, a Thread, a reply, a Discussion Comment) go through
+;; `prrr-github--mutate', which calls `ghub-query' with forge's token
+;; as `forge-query' does.
 
 ;;; Code:
 
@@ -316,6 +317,8 @@ KIND is one of:
   `not-found'     the repository or pull request does not exist;
   `offline'       no connection or a server error, worth retrying later;
   `error'         anything else, such as GitHub refusing a write (HTTP 422).
+A request whose success answer does not name what it created fails
+as `unconfirmed' instead (`prrr-github--created').
 RESET-AT is nil unless KIND is `rate-limited'."
   (let ((now (or now (current-time))))
     (pcase err
@@ -497,7 +500,14 @@ Variables: $owner, $name, $number and $me.")
     '(mutation (addPullRequestReviewThreadReply
                 [(input $input AddPullRequestReviewThreadReplyInput!)]
                 (comment id createdAt fullDatabaseId)))
-    "Add a reply to a Thread in a Pending Review; selects the new comment."))
+    "Add a reply to a Thread in a Pending Review; selects the new comment.")
+
+  (defconst prrr-github-add-comment-mutation
+    '(mutation (addComment [(input $input AddCommentInput!)]
+                 (commentEdge (node id databaseId createdAt))))
+    "Post a Discussion Comment; selects the new comment.
+databaseId, not fullDatabaseId: forge stores that one as the number of
+its post."))
 
 (defun prrr-github--mutate (host document input decode callback errorback)
   "Send the GraphQL mutation DOCUMENT to HOST with INPUT as its $input.
@@ -512,13 +522,16 @@ a failure classified by `prrr-github-error'.  Exactly one is called."
     :errorback (prrr-github--errorback errorback)))
 
 (defun prrr-github--created (id)
-  "Return ID, GitHub's id of what a mutation created.
-GitHub can answer a mutation with a null payload and no errors; that
-created nothing, so it signals `prrr-github-failure' rather than let
-the write count as done."
+  "Return ID, GitHub's id of what a request created.
+GitHub can answer a creation with success but without the id: a null
+GraphQL payload with no errors, or a REST answer without a node_id.
+GitHub may have made the thing all the same, and prrr cannot store it
+without its id, so this signals `prrr-github-failure' with an
+`unconfirmed' failure: the write counts neither as done nor as failed,
+and the Outbox has a refetch decide whether it landed."
   (or id
       (signal 'prrr-github-failure
-              (list :kind 'error :message "GitHub accepted the request but created nothing"
+              (list :kind 'unconfirmed :message "GitHub's answer does not name what it made"
                     :reset-at nil))))
 
 (defun prrr-github--pending-review (node pr-id)
@@ -606,9 +619,14 @@ failure classified by `prrr-github-error'."
 
 (defun prrr-github--rest-comment (data)
   "Decode the review comment DATA a REST call answered with.
-Return (:comment-id :database-id :created-at)."
+Return (:comment-id :database-id :created-at).  Like the GraphQL
+creations, an answer without GitHub's node id fails as `unconfirmed'
+\(`prrr-github--created'): prrr names every comment by that id, so a
+comment stored without one could be neither edited, deleted nor
+matched by a refetch."
   (let-alist data
-    (list :comment-id .node_id :database-id (prrr-github--database-id .id)
+    (list :comment-id (prrr-github--created .node_id)
+          :database-id (prrr-github--database-id .id)
           :created-at .created_at)))
 
 (defun prrr-github-publish-comment (host owner name number commit anchor body
@@ -656,11 +674,19 @@ ERRORBACK receives a failure if CALLBACK's caller signals."
 
 (defun prrr-github-add-discussion-comment (host pr-id body callback errorback)
   "Post BODY as a Discussion Comment on the PR with node id PR-ID on HOST.
-CALLBACK receives no argument; ERRORBACK a failure classified by
-`prrr-github-error'."
-  (forge-mutate host addComment ((subjectId pr-id) (body body))
-    :callback (prrr-github--ignore-answer callback errorback)
-    :errorback (prrr-github--errorback errorback)))
+CALLBACK receives (:comment-id :database-id :created-at) of the new
+comment; :database-id is the integer forge stores as the post's
+number, so the Review Buffer can tell when forge has pulled it.
+ERRORBACK receives a failure classified by `prrr-github-error'."
+  (prrr-github--mutate
+   host prrr-github-add-comment-mutation
+   (prrr-github--input 'subjectId pr-id 'body body)
+   (lambda (data)
+     (let-alist (alist-get 'addComment data)
+       (list :comment-id (prrr-github--created .commentEdge.node.id)
+             :database-id .commentEdge.node.databaseId
+             :created-at .commentEdge.node.createdAt)))
+   callback errorback))
 
 (defun prrr-github-edit-comment (host comment-id body callback errorback)
   "Make BODY the text of the review comment COMMENT-ID on HOST.

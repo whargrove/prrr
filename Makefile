@@ -1,7 +1,7 @@
 EMACS    ?= emacs
 DEPS_DIR := $(CURDIR)/.deps
-SRC      := prrr-db.el prrr-github.el prrr-state.el prrr-sync.el prrr-queue.el prrr-thread.el prrr-diff.el prrr-review.el prrr-range.el prrr-stack.el prrr-transient.el prrr.el
-TESTS    ?= test/prrr-db-test.el test/prrr-github-test.el test/prrr-state-test.el test/prrr-sync-test.el test/prrr-queue-test.el test/prrr-diff-test.el test/prrr-thread-test.el test/prrr-review-test.el test/prrr-range-test.el test/prrr-stack-test.el test/prrr-test.el
+SRC      := prrr-db.el prrr-github.el prrr-state.el prrr-sync.el prrr-queue.el prrr-thread.el prrr-diff.el prrr-review.el prrr-range.el prrr-stack.el prrr-treesit.el prrr-transient.el prrr.el
+TESTS    ?= test/prrr-db-test.el test/prrr-github-test.el test/prrr-state-test.el test/prrr-sync-test.el test/prrr-queue-test.el test/prrr-diff-test.el test/prrr-thread-test.el test/prrr-review-test.el test/prrr-range-test.el test/prrr-stack-test.el test/prrr-treesit-test.el test/prrr-test.el
 SELECTOR ?= t
 
 BATCH := $(EMACS) -Q --batch \
@@ -32,8 +32,11 @@ lint:
 	$(BATCH) --eval '(progn (require (quote checkdoc)) (setq checkdoc-verb-check-experimental-flag nil) (defvar prrr-checkdoc-failed nil) (setq checkdoc-create-error-function (lambda (text start _end &optional _unfixable) (setq prrr-checkdoc-failed t) (message "%s:%d: %s" (buffer-file-name) (line-number-at-pos start) text) nil)) (dolist (file command-line-args-left) (checkdoc-file file)) (kill-emacs (if prrr-checkdoc-failed 1 0)))' \
 	  $(wildcard $(SRC)) $(wildcard test/*.el) $(wildcard bench/*.el)
 
+# Test files are required, not loaded: one that requires another (as
+# prrr-range-test requires prrr-diff-test) must not define its tests twice.
 test:
-	$(BATCH) -l test/prrr-test-helper.el $(addprefix -l ,$(wildcard $(TESTS))) \
+	$(BATCH) -l test/prrr-test-helper.el \
+	  $(foreach file,$(wildcard $(TESTS)),--eval "(require '$(basename $(notdir $(file))))") \
 	  --eval '(ert-run-tests-batch-and-exit (quote $(SELECTOR)))'
 
 # The budget is for the byte-compiled package, which is what users run.

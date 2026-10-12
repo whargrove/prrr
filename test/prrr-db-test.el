@@ -101,12 +101,17 @@
   "Review Focus 4: `prrr-db' creates the database's directory."
   (let* ((dir (make-temp-file "prrr-db-test-" t))
          (prrr-database-file (expand-file-name "nested/dir/prrr.sqlite" dir))
-         (prrr-db--connection nil))
+         (prrr-db--connection nil)
+         (opened 0)
+         (prrr-db-open-hook (list (lambda () (cl-incf opened)))))
     (unwind-protect
         (progn
           (should (emacsql-live-p (prrr-db)))
+          (should (= 1 opened))
           (should (file-exists-p prrr-database-file))
           (should (eq (prrr-db) prrr-db--connection))
+          ;; The hook runs when the database opens, not on every use.
+          (should (= 1 opened))
           (prrr-db-close)
           (should (null prrr-db--connection)))
       (prrr-db-close)
@@ -320,6 +325,20 @@
     (should (equal '(nil "offline") (mapcar #'prrr-outbox-last-error (prrr-db-outbox-rows))))
     (prrr-db-outbox-clear-errors)
     (should (equal '(nil nil) (mapcar #'prrr-outbox-last-error (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-db-test-outbox-clear-errors-keeps ()
+  "A row KEEP accepts keeps its error."
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-db-test--write "1" "PR_1" 'viewed '(:keep t) "check"))
+    (prrr-db-insert (prrr-db-test--write "2" "PR_1" 'viewed nil "offline"))
+    (prrr-db-insert (prrr-db-test--write "3" "PR_2" 'viewed nil "offline"))
+    (let ((keep (lambda (row) (plist-get (prrr-outbox-payload row) :keep))))
+      (prrr-db-outbox-clear-errors "PR_1" keep)
+      (should (equal '("check" nil "offline")
+                     (mapcar #'prrr-outbox-last-error (prrr-db-outbox-rows))))
+      (prrr-db-outbox-clear-errors nil keep)
+      (should (equal '("check" nil nil)
+                     (mapcar #'prrr-outbox-last-error (prrr-db-outbox-rows)))))))
 
 (ert-deftest prrr-db-test-outbox-done ()
   "The write leaves, its rows arrive, and the PR's other writes learn GitHub's ids."

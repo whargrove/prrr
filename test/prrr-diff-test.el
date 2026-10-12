@@ -70,7 +70,7 @@
 (ert-deftest prrr-diff-test-changes-from-git ()
   "The PR's files from its merge base; main's later CHANGELOG is not one."
   (prrr-test-with-repo
-    (let* ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+    (let* ((head (prrr-diff-test--rev "refs/pullreqs/1"))
            (base (car (process-lines "git" "merge-base" "main" head)))
            (files (prrr-diff--changes base head)))
       (should (equal '("README.md" "data.bin" "docs/notes.md" "src/example.el"
@@ -83,8 +83,8 @@
 
 (ert-deftest prrr-diff-test-merge-base ()
   (prrr-test-with-repo
-    (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
-          (expected (car (process-lines "git" "rev-parse" "main~1"))))
+    (let ((head (prrr-diff-test--rev "refs/pullreqs/1"))
+          (expected (prrr-diff-test--rev "main~1")))
       (should (equal expected
                      (prrr-diff--merge-base
                       (forge-pullreq :id "f" :number 1 :base-rev prrr-test-repo-base) head)))
@@ -146,7 +146,7 @@ the user started in this buffer would be."
   (let ((data (prrr-github-decode-review-data (prrr-test-fixture "review-data")
                                               prrr-diff-test--pr "2026-10-10T12:00:00Z")))
     (setf (prrr-pending-review-commit-oid (plist-get data :pending-review))
-          (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+          (prrr-diff-test--rev "refs/pullreqs/1"))
     (prrr-db-replace-review-data prrr-diff-test--pr data)))
 
 (defvar prrr-diff-test--posts nil
@@ -188,8 +188,8 @@ SETUP runs first, inside the fixture repository and a fresh database.
                      "src/moved-to.el" "src/old.el")
                    (prrr-diff-test--files)))
     (should (equal (format "%s..%s"
-                           (car (process-lines "git" "rev-parse" "main~1"))
-                           (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+                           (prrr-diff-test--rev "main~1")
+                           (prrr-diff-test--rev "refs/pullreqs/1"))
                    magit-buffer-diff-range))
     (should (eq 'committed magit-buffer-diff-type))))
 
@@ -482,8 +482,8 @@ SETUP runs first, inside the fixture repository and a fresh database.
     (should (looking-at "#1 Example change$"))
     (should (string-match-p
              (format "\\`Range: default, %s\\.\\.%s"
-                     (substring (car (process-lines "git" "rev-parse" "main~1")) 0 7)
-                     (substring (car (process-lines "git" "rev-parse" "refs/pullreqs/1")) 0 7))
+                     (substring (prrr-diff-test--rev "main~1") 0 7)
+                     (substring (prrr-diff-test--rev "refs/pullreqs/1") 0 7))
              (prrr-diff-test--status-line)))))
 
 (ert-deftest prrr-diff-test-header-pending-review ()
@@ -529,7 +529,10 @@ SETUP runs first, inside the fixture repository and a fresh database.
 
 (ert-deftest prrr-diff-test-threads-off-line-when-github-head-differs ()
   "Review Focus 3: Threads numbered at another head are never inline on a wrong line."
-  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+  ;; The left side too: a rebase may have moved the merge base GitHub
+  ;; numbers it at.
+  (prrr-diff-test--with-buffer (progn (prrr-diff-test--store-fixture)
+                                      (prrr-diff-test--store-extra-threads))
     (let ((prrr-sync--status (make-hash-table :test #'equal))
           (first (prrr-diff-test--rev "refs/pullreqs/1~1")))
       ;; forge fetches a new head and a refetch numbers the Threads at it,
@@ -539,7 +542,8 @@ SETUP runs first, inside the fixture repository and a fresh database.
                prrr-sync--status)
       (magit-refresh-buffer)
       (should-not (oref (car (prrr-diff-test--hunks "src/example.el")) children))
-      (should (equal '("PRRT_kwDOexample0000001" "PRRT_kwDOexample0000005")
+      (should-not (oref (cadr (prrr-diff-test--hunks "src/example.el")) children))
+      (should (equal '("PRRT_kwDOexample0000001" "PRRT_kwDOexample0000005" "T_NIR" "T_LEFT")
                      (prrr-diff-test--group "src/example.el" 'not-in-range)))
       ;; Commenting is unchanged: a new Thread is numbered at its own commit.
       (should-not (prrr-state-anchor-problem
@@ -773,7 +777,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
                    ("j" . prrr-jump-to-file) ("v" . prrr-toggle-viewed)
                    ("z" . prrr-collapse-all) ("Z" . prrr-expand-all)
                    ("o" . prrr-open-topic) ("b" . prrr-browse) ("B" . prrr-checkout)
-                   ("g" . prrr-refresh) ("G" . prrr-refetch)))
+                   ("g" . prrr-refresh) ("G" . prrr-refetch) ("L" . prrr-toggle-highlight)))
     (should (eq command (keymap-lookup prrr-diff-mode-map key)))
     (let ((suffix (transient-get-suffix 'prrr-menu key)))
       (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))
@@ -947,6 +951,8 @@ FROM and TO are the texts of the lines."
                                              :end (prrr-diff-test--rev "refs/pullreqs/1")))
     (prrr-diff-test--goto-line "src/example.el" "+line thirty")
     (should-error (prrr-diff-anchor) :type 'user-error)
+    (prrr-diff-test--goto-line "src/example.el" "-line 30")
+    (should-error (prrr-diff-anchor) :type 'user-error)
     (should-error (prrr-diff-file-anchor) :type 'user-error)))
 
 (ert-deftest prrr-diff-test-anchor-in-a-thread ()
@@ -1017,6 +1023,26 @@ FROM and TO are the texts of the lines."
       (should (string-match-p "Discussion (1)" (prrr-diff-test--text discussion)))
       (should (string-match-p "Your Discussion Comment  failed: offline"
                               (prrr-diff-test--text discussion))))))
+
+(ert-deftest prrr-diff-test-header-shows-a-posted-discussion-comment ()
+  "A Discussion Comment GitHub accepted shows until forge lists it, never twice."
+  (let ((prrr-sync--posted (make-hash-table :test #'equal)))
+    (puthash prrr-diff-test--pr (list (list :database-id 5001 :body "Posted."))
+             prrr-sync--posted)
+    (prrr-diff-test--with-buffer nil
+      (let ((text (prrr-diff-test--text
+                   (magit-get-section '((discussion) (prrr-header) (diffbuf))))))
+        (should (string-match-p "\\`Discussion (1)" text))
+        (should (string-match-p "Your Discussion Comment  sent" text))
+        (should (string-match-p "Posted\\." text))))
+    (let ((prrr-diff-test--posts
+           (list (forge-pullreq-post :id "post-1" :number 5001 :author "example-me"
+                                     :created "2026-10-10T12:05:00Z" :body "Posted."))))
+      (prrr-diff-test--with-buffer nil
+        (let ((text (prrr-diff-test--text
+                     (magit-get-section '((discussion) (prrr-header) (diffbuf))))))
+          (should (string-match-p "\\`Discussion (1)" text))
+          (should-not (string-match-p "Your Discussion Comment" text)))))))
 
 ;;;; Ranges
 
@@ -1092,6 +1118,7 @@ The old head stays as the branch feature."
     (should (member "src/example.el" (prrr-diff-test--files)))))
 
 (ert-deftest prrr-diff-test-range-missing-commit ()
+  "A Range whose start commit is not available locally says so and shows no files."
   (prrr-diff-test--with-buffer nil
     (prrr-diff-show-range (prrr-range-create :kind 'since-review
                                              :start "2222222222222222222222222222222222222222"))

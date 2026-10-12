@@ -486,21 +486,22 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
                      (cadr captured)))
       (should (equal "PRRC_kwDOexampleNew02" (plist-get result :comment-id))))))
 
-(defconst prrr-github-test--created-nothing
-  '(:kind error :message "GitHub accepted the request but created nothing" :reset-at nil)
-  "The failure of a creation GitHub answered with a null payload.")
+(defconst prrr-github-test--unnamed
+  '(:kind unconfirmed :message "GitHub's answer does not name what it made" :reset-at nil)
+  "The failure of a creation GitHub answered without naming what it made.")
 
 (defmacro prrr-github-test--null-payload (answer call)
-  "Check that CALL, answered with ANSWER, fails as having created nothing.
+  "Check that CALL, answered with ANSWER, fails as unconfirmed.
 CALL is a function of a callback and an errorback that sends the request."
   `(prrr-test-with-ghub-stub ,answer captured
      (let ((failure nil))
        (funcall ,call #'ert-fail (lambda (f) (setq failure f)))
        (should captured)
-       (should (equal prrr-github-test--created-nothing failure)))))
+       (should (equal prrr-github-test--unnamed failure)))))
 
-(ert-deftest prrr-github-test-add-thread-null-payload-is-a-failure ()
-  "A null Thread without errors must not count as success: the comment would be lost."
+(ert-deftest prrr-github-test-add-thread-null-payload-is-unconfirmed ()
+  "A null Thread without errors must not count as success: it would be lost.
+Nor as a plain failure: GitHub may have made it, so it is unconfirmed."
   (dolist (answer '((data (addPullRequestReviewThread (thread)))
                     (data (addPullRequestReviewThread))))
     (prrr-github-test--null-payload answer
@@ -508,15 +509,42 @@ CALL is a function of a callback and an errorback that sends the request."
         (prrr-github-add-thread "api.github.com" "PRR_1" prrr-github-test--anchor "Nit."
                                 callback errorback)))))
 
-(ert-deftest prrr-github-test-add-reply-null-payload-is-a-failure ()
+(ert-deftest prrr-github-test-add-reply-null-payload-is-unconfirmed ()
   (prrr-github-test--null-payload '(data (addPullRequestReviewThreadReply (comment)))
     (lambda (callback errorback)
       (prrr-github-add-reply "api.github.com" "PRR_1" "PRRT_1" "x" callback errorback))))
 
-(ert-deftest prrr-github-test-create-review-null-payload-is-a-failure ()
+(ert-deftest prrr-github-test-create-review-null-payload-is-unconfirmed ()
   (prrr-github-test--null-payload '(data (addPullRequestReview (pullRequestReview)))
     (lambda (callback errorback)
       (prrr-github-create-pending-review "api.github.com" "PR_1" "1111" callback errorback))))
+
+(defun prrr-github-test--without-node-id (fixture)
+  "Return the REST answer FIXTURE with a null node_id."
+  (mapcar (lambda (pair) (if (eq (car pair) 'node_id) (list 'node_id) pair))
+          (prrr-test-fixture fixture)))
+
+(ert-deftest prrr-github-test-rest-null-node-id-is-unconfirmed ()
+  "A REST answer without GitHub's node id does not name the comment it made.
+GitHub did make it (the answer is a success), but prrr cannot store a
+comment without its id; the failure is `unconfirmed', as for the
+GraphQL creations, so the Outbox lets a refetch find the comment
+instead of sending it again."
+  (pcase-dolist (`(,fixture . ,call)
+                 `(("publish-comment"
+                    . ,(lambda (callback errorback)
+                         (prrr-github-publish-comment "api.github.com" "o" "n" 1 "1111"
+                                                      prrr-github-test--anchor "Now."
+                                                      callback errorback)))
+                   ("publish-reply"
+                    . ,(lambda (callback errorback)
+                         (prrr-github-publish-reply "api.github.com" "o" "n" 1 "1001" "Done."
+                                                    callback errorback)))))
+    (prrr-test-with-rest-stub (prrr-github-test--without-node-id fixture) captured
+      (let ((failure nil))
+        (funcall call #'ert-fail (lambda (f) (setq failure f)))
+        (should captured)
+        (should (equal prrr-github-test--unnamed failure))))))
 
 (ert-deftest prrr-github-test-write-failure-reaches-errorback ()
   (prrr-test-with-ghub-error-stub '(errors ((type . "UNPROCESSABLE") (message . "one pending review"))) nil
@@ -562,11 +590,25 @@ CALL is a function of a callback and an errorback that sends the request."
       (should (equal "GitHub refused: Validation Failed" (plist-get failure :message)))
       (should (equal "POST" (car captured))))))
 
+(ert-deftest prrr-github-test-add-discussion-comment ()
+  "A Discussion Comment's answer names it, so the Review Buffer can show it until forge has it."
+  (prrr-test-with-ghub-stub (prrr-test-fixture "add-comment") captured
+    (let ((result nil))
+      (prrr-github-add-discussion-comment "api.github.com" "PR_1" "Hi"
+                                          (lambda (r) (setq result r)) #'ert-fail)
+      (should (equal '((input (subjectId . "PR_1") (body . "Hi"))) (cadr captured)))
+      (should (equal '(:comment-id "IC_kwDOexampleNew01" :database-id 5001
+                       :created-at "2026-10-10T12:05:00Z")
+                     result)))))
+
+(ert-deftest prrr-github-test-add-discussion-comment-null-payload-is-unconfirmed ()
+  (prrr-github-test--null-payload '(data (addComment (commentEdge)))
+    (lambda (callback errorback)
+      (prrr-github-add-discussion-comment "api.github.com" "PR_1" "Hi" callback errorback))))
+
 (ert-deftest prrr-github-test-forge-mutations ()
   (pcase-dolist (`(,call ,mutation ,input)
-                 `((,(lambda (cb eb) (prrr-github-add-discussion-comment "h" "PR_1" "Hi" cb eb))
-                    addComment ((subjectId . "PR_1") (body . "Hi")))
-                   (,(lambda (cb eb) (prrr-github-edit-comment "h" "C_1" "New" cb eb))
+                 `((,(lambda (cb eb) (prrr-github-edit-comment "h" "C_1" "New" cb eb))
                     updatePullRequestReviewComment ((pullRequestReviewCommentId . "C_1") (body . "New")))
                    (,(lambda (cb eb) (prrr-github-delete-comment "h" "C_1" cb eb))
                     deletePullRequestReviewComment ((id . "C_1")))

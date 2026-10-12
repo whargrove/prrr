@@ -171,19 +171,23 @@ oldest first, and `prrr-test-variables' their variables."
 (defvar prrr-test-repo-base nil
   "Inside `prrr-test-with-repo': the oid of main's tip, the PR's base-rev.")
 
+(defvar prrr-test-repo-script "make-repo.sh"
+  "The script under test/fixtures/ that `prrr-test-with-repo' builds with.")
+
 (defmacro prrr-test-with-repo (&rest body)
   "Run BODY in a fresh copy of the Review Buffer fixture repository.
-`default-directory' is the repository, built by
-test/fixtures/make-repo.sh: refs/pullreqs/1 is the PR's head and
-`prrr-test-repo-base' main's tip.  The copy is deleted afterwards."
+`default-directory' is the repository, built by `prrr-test-repo-script'
+\(test/fixtures/make-repo.sh by default): refs/pullreqs/1 is the PR's
+head and `prrr-test-repo-base' main's tip.  The copy is deleted afterwards."
   (declare (indent 0) (debug t))
   (let ((dir (make-symbol "dir")))
     `(let ((,dir (make-temp-file "prrr-repo" t)))
        (unwind-protect
            (progn
              (unless (zerop (call-process "sh" nil nil nil
-                                          (expand-file-name "test/fixtures/make-repo.sh"
-                                                            prrr-test-root)
+                                          (expand-file-name
+                                           (concat "test/fixtures/" prrr-test-repo-script)
+                                           prrr-test-root)
                                           ,dir))
                (error "Building the fixture repository failed"))
              (let* ((default-directory (file-name-as-directory ,dir))
@@ -229,9 +233,12 @@ setting timers, so nothing runs later; run one with
          (prrr-sync--outbox-creations nil)
          (prrr-sync--outbox-paused-until nil)
          (prrr-sync--outbox-scheduled nil)
+         (prrr-sync--outbox-started nil)
          (prrr-sync--outbox-buffers (make-hash-table :test #'equal))
          (prrr-sync--outbox-dirty (make-hash-table :test #'equal))
          (prrr-sync--renames (make-hash-table :test #'equal))
+         (prrr-sync--posted (make-hash-table :test #'equal))
+         (prrr-sync--retry-pump-at nil)
          (prrr-sync--status (make-hash-table :test #'equal))
          (prrr-sync--mutation-spacing 0)
          (prrr-github-user "example-me")

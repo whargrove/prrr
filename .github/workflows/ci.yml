@@ -24,6 +24,14 @@ jobs:
           version: ${{ matrix.emacs }}
       - name: Install dependencies from MELPA and GNU ELPA
         run: make deps
+      - name: Install the C tree-sitter grammar (highlighting tests skip without it)
+        continue-on-error: true
+        run: >-
+          emacs -Q --batch --eval '(progn (require (quote treesit))
+          (when (treesit-available-p)
+          (setq treesit-language-source-alist
+          (quote ((c "https://github.com/tree-sitter/tree-sitter-c" "v0.21.4"))))
+          (treesit-install-language-grammar (quote c))))'
       - name: Byte-compile with warnings as errors
         run: make compile
       - name: package-lint and checkdoc

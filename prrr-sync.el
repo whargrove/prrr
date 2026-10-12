@@ -32,8 +32,10 @@
 ;; the Outbox stores it, shows it at once through
 ;; `prrr-sync-review-data', and sends the queued writes one at a time,
 ;; in order per PR, a second apart, retrying failures on the next
-;; write, the next refetch or `prrr-sync-retry'.  Its rules are pure
-;; functions in prrr-state.el.
+;; write, the next refetch or `prrr-sync-retry'.  A write whose send
+;; got no answer is unconfirmed: it holds back its PR until a refetch
+;; shows whether it reached GitHub.  Its rules are pure functions in
+;; prrr-state.el.
 ;;
 ;; The Bookmark, the head the viewer last saw, is recorded here too,
 ;; and so is pinning: every commit a Range may start at later is kept
@@ -203,16 +205,23 @@ Return BODY's value, or nil after calling FAIL."
                                  :reset-at nil))
             nil)))
 
-(defun prrr-sync--start (key buffer)
+(defconst prrr-sync--no-answer
+  '(:kind offline :message "No answer from GitHub" :reset-at nil)
+  "The failure of a job that got no answer within `prrr-sync-timeout'.")
+
+(defun prrr-sync--start (key buffer &optional fail)
   "Record a job KEY as running and return its token.
 The job ends as `offline' when it has no answer after
-`prrr-sync-timeout' seconds; BUFFER is refreshed then."
+`prrr-sync-timeout' seconds; BUFFER is refreshed then.  FAIL, when
+non-nil, is the job's own failure function: it receives that failure
+instead and must end the job with `prrr-sync--finish'."
   (let ((token (cl-incf prrr-sync--last-token)))
     (puthash key (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
              prrr-sync--status)
-    (run-at-time prrr-sync-timeout nil #'prrr-sync--finish key token
-                 '(:kind offline :message "No answer from GitHub" :reset-at nil)
-                 buffer)
+    (if fail
+        (run-at-time prrr-sync-timeout nil fail prrr-sync--no-answer)
+      (run-at-time prrr-sync-timeout nil #'prrr-sync--finish key token prrr-sync--no-answer
+                   buffer))
     token))
 
 (defun prrr-sync--fetch-teams (host me then fail)
@@ -228,6 +237,20 @@ FAIL runs; THEN must not signal."
              (setq prrr-sync--teams-tried-at (prrr-sync--timestamp)))
        (funcall then)))
    fail))
+
+(defun prrr-sync--prune-pins-after-pull (repo metas)
+  "Prune the pins of REPO's closed PRs, given METAS, its open ones.
+The queue query pages every open PR, so a PR missing from METAS is
+closed.  A failure only shows in the echo area: pins are housekeeping
+and must not fail a pull whose rows are stored."
+  (when-let* ((dir (forge-get-worktree repo))
+              ((file-directory-p dir)))
+    (condition-case err
+        (let ((default-directory dir))
+          (prrr-sync-prune-pins (mapcar #'prrr-pr-meta-number metas)))
+      (error (message "prrr: could not prune pins of %s/%s: %s"
+                      (oref repo owner) (oref repo name)
+                      (error-message-string err))))))
 
 (defun prrr-sync-pull (repo &optional buffer)
   "Pull the Review Queue inputs of REPO in the background.
@@ -258,6 +281,7 @@ Never signals: every failure becomes the status."
                        (when (prrr-sync--current-p id token)
                          (prrr-sync--guarded fail
                            (prrr-db-replace-pr-metas id metas)
+                           (prrr-sync--prune-pins-after-pull repo metas)
                            (prrr-sync--finish id token (list :kind 'ok :message note)
                                               buffer))))
                      fail id)))))
@@ -328,13 +352,30 @@ GitHub asks for at least a second (SPEC section 4).  Tests set it to 0.")
 (defvar prrr-sync--outbox-scheduled nil
   "Non-nil while a timer is set to run `prrr-sync--outbox-pump'.")
 
+(defvar prrr-sync--outbox-started nil
+  "Non-nil once `prrr-sync-outbox-start' ran this session.")
+
+(defconst prrr-sync-unconfirmed-message
+  (concat "No answer from GitHub: check the pull request on GitHub, "
+          "then retry (O r) or drop this write (O k)")
+  "Failure of an unconfirmed write that a refetch cannot confirm.
+Review data shows neither Discussion Comments nor a submitted review,
+so the user checks the PR and decides whether to send it again.")
+
 (defvar prrr-sync--outbox-buffers (make-hash-table :test #'equal)
   "Hash table from PR id to the buffer to refresh when its writes change.")
 
 (defvar prrr-sync--outbox-dirty (make-hash-table :test #'equal)
-  "Hash table from PR id to its target, for each PR GitHub changed.
-A PR is here from a write's success until a refetch of it starts, so
-the Outbox refetches it once it has nothing more to send.")
+  "Hash table from PR id to its target, for each PR GitHub may have changed.
+A PR is here from a write's success, or from a send that got no
+answer, until a refetch of it starts, so the Outbox refetches it once
+it has nothing more to send.  A refetch that fails puts it back
+\(`prrr-sync--refetch').")
+
+(defun prrr-sync--outbox-mark-dirty (row)
+  "Have the Outbox refetch the PR of the write ROW once it is idle."
+  (puthash (prrr-outbox-pr-id row) (plist-get (prrr-outbox-payload row) :target)
+           prrr-sync--outbox-dirty))
 
 (defvar prrr-sync--renames (make-hash-table :test #'equal)
   "Hash table from each local id the Outbox saw renamed to GitHub's id.
@@ -414,15 +455,15 @@ KIND and PAYLOAD are as `prrr-state-outbox-kinds' describes, without
 the Outbox, so `prrr-sync-review-data' shows it at once, and is sent in
 the background after the PR's earlier writes, one mutation at a time
 \(SPEC section 4).  Every failed write of the PR is tried again too.
-An edit or delete of a comment whose own write is queued and not being
-sent changes or drops that write instead, and a discard drops the
-queued writes of the Pending Review first.  A :thread-id or
-:comment-id that is a local id GitHub has since named is replaced by
-GitHub's id, so a command confirmed after its target was sent still
-reaches it.  BUFFER, when live, refreshes whenever the PR's writes
-change.  Return the `prrr-outbox' row that carries the write, or nil
-when it dropped queued writes instead.  Signal a `user-error' when the
-viewer's login is unknown."
+An edit or delete of a comment whose own write is queued and not yet
+sent (neither being sent nor unconfirmed) changes or drops that write
+instead, and a discard drops the queued writes of the Pending Review
+first.  A :thread-id or :comment-id that is a local id GitHub has
+since named is replaced by GitHub's id, so a command confirmed after
+its target was sent still reaches it.  BUFFER, when live, refreshes
+whenever the PR's writes change.  Return the `prrr-outbox' row that
+carries the write, or nil when it dropped queued writes instead.
+Signal a `user-error' when the viewer's login is unknown."
   (let* ((payload (prrr-sync--renamed payload))
          (target (prrr-sync--target repo pullreq))
          (pr-id (plist-get target :pr-id))
@@ -447,10 +488,14 @@ viewer's login is unknown."
       (prrr-sync-retry pr-id))))
 
 (defun prrr-sync--outbox-creator (pr-id comment-id)
-  "Return the queued write of PR-ID creating COMMENT-ID, unless it is being sent."
+  "Return the queued write of PR-ID creating COMMENT-ID, unless its send started.
+A write being sent, or unconfirmed, may already have reached GitHub,
+so an edit or delete of what it creates becomes a write of its own,
+which waits for GitHub's id of the comment.  A write being sent is
+unconfirmed too (`prrr-state-outbox-unconfirmed-p')."
   (seq-find (lambda (row)
               (and (member comment-id (prrr-state-outbox-created-ids row))
-                   (not (equal (prrr-outbox-id row) (prrr-sync--sending-id)))))
+                   (not (prrr-state-outbox-unconfirmed-p row))))
             (prrr-db-outbox-rows pr-id)))
 
 (defun prrr-sync--outbox-drop-pending (pr-id)
@@ -477,17 +522,62 @@ unless it is being sent."
 
 (defun prrr-sync-retry (&optional pr-id buffer)
   "Send the failed writes of PR-ID again, or those of every PR when nil.
-BUFFER, when live, refreshes whenever the PR's writes change."
+An unconfirmed write is not sent again: its PR is refetched instead,
+and the refetch decides whether it landed.  One awaiting the user
+\(`prrr-state-outbox-awaiting-user-p') goes out only through
+`prrr-sync-resend'.  BUFFER, when live, refreshes whenever the PR's
+writes change."
   (prrr-sync--remember-buffer pr-id buffer)
-  (prrr-db-outbox-clear-errors pr-id)
+  (prrr-sync--outbox-recheck pr-id)
+  (prrr-db-outbox-clear-errors pr-id #'prrr-state-outbox-awaiting-user-p)
   (prrr-sync--outbox-changed pr-id)
   (prrr-sync--outbox-pump))
+
+(defun prrr-sync-resend (&optional pr-id buffer)
+  "Send the failed writes of PR-ID again, as the user asked; every PR when nil.
+That is `prrr-sync-retry', and also a write awaiting the user's
+decision (`prrr-state-outbox-awaiting-user-p'): the user checked the
+PR and wants it sent.  Writes and refetches retry through
+`prrr-sync-retry' alone, so such a write never goes out twice without
+the user.  BUFFER, when live, refreshes whenever the PR's writes
+change."
+  (dolist (row (prrr-db-outbox-rows pr-id))
+    (when (prrr-state-outbox-awaiting-user-p row)
+      (prrr-sync--outbox-answered row)))
+  (prrr-sync-retry pr-id buffer))
+
+(defun prrr-sync--outbox-recheck (&optional pr-id)
+  "Have the Outbox refetch each PR with an unconfirmed write.
+Only PR-ID, when non-nil.  The write being sent is left to its answer,
+and one awaiting the user is skipped: a refetch cannot decide it."
+  (dolist (row (prrr-db-outbox-rows pr-id))
+    (when (and (prrr-state-outbox-unconfirmed-p row)
+               (not (prrr-state-outbox-awaiting-user-p row))
+               (not (equal (prrr-outbox-id row) (prrr-sync--sending-id))))
+      (prrr-sync--outbox-mark-dirty row))))
+
+(defun prrr-sync-outbox-start ()
+  "Start the Outbox, once per session; later calls do nothing.
+Writes queued before Emacs restarted then go out without waiting for a
+Review Buffer's refetch: the PRs of unconfirmed writes, whose send the
+restart cut off, are marked to be refetched first, and the pump runs
+from a timer, never inside the caller.  It runs from
+`prrr-db-open-hook', because opening the database is the one step
+every entry point takes first: the Review Queue, a Review Buffer and
+every command."
+  (unless prrr-sync--outbox-started
+    (setq prrr-sync--outbox-started t)
+    (prrr-sync--outbox-recheck)
+    (run-at-time 0 nil #'prrr-sync--outbox-pump)))
+
+(add-hook 'prrr-db-open-hook #'prrr-sync-outbox-start)
 
 (defun prrr-sync-discard (id)
   "Drop the queued write ID and every queued write that needs what it creates.
 Return how many writes were dropped: 0 when ID is no longer queued,
 as when it was sent meanwhile.  Signal a `user-error' while ID is
-being sent."
+being sent.  An unconfirmed write may be dropped: it may have reached
+GitHub all the same, so its PR is refetched to show what GitHub has."
   (if-let* ((row (prrr-db-get 'outbox id)))
       (progn
         (when (equal id (prrr-sync--sending-id))
@@ -497,6 +587,8 @@ being sent."
                                (prrr-state-outbox-created-ids row)))))
           (dolist (dropped drop)
             (prrr-db-delete 'outbox :id (prrr-outbox-id dropped)))
+          (when (prrr-state-outbox-unconfirmed-p row)
+            (prrr-sync--outbox-mark-dirty row))
           (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
           (prrr-sync--outbox-pump)
           (length drop)))
@@ -549,45 +641,80 @@ Does nothing while a write is being sent or a timer will try later."
   (and prrr-sync--outbox-sending (eql token prrr-sync--outbox-token)))
 
 (defun prrr-sync--outbox-send (row)
-  "Send the write ROW.
-It ends as a failure, `offline', when GitHub has not answered after
-`prrr-sync-timeout' seconds."
+  "Send the write ROW, as stored.
+ROW is stored as unconfirmed, with its payload's :sent-at, before the
+request starts, so a send that Emacs never sees end, by a timeout or a
+restart, is not sent again blindly (`prrr-state-outbox-unconfirmed-p').
+The send ends when GitHub answers, or after `prrr-sync-timeout'
+seconds without an answer (`prrr-sync--outbox-timed-out')."
   (let* ((token (cl-incf prrr-sync--outbox-token))
-         (now (float-time))
          (done (lambda (&optional result) (prrr-sync--outbox-succeeded row token result)))
          (fail (lambda (failure) (prrr-sync--outbox-failed row token failure))))
+    (setf (prrr-outbox-payload row) (plist-put (copy-sequence (prrr-outbox-payload row))
+                                               :sent-at (prrr-sync--timestamp)))
+    (prrr-db-insert row)
     (setq prrr-sync--outbox-sending row)
-    (when (memq (prrr-outbox-kind row) prrr-state-creation-kinds)
+    (run-at-time prrr-sync-timeout nil #'prrr-sync--outbox-timed-out row token)
+    (prrr-sync--guarded fail
+      (prrr-sync--outbox-run row token done fail))))
+
+(defun prrr-sync--outbox-timed-out (row token)
+  "End the send of the write ROW, sent as TOKEN, that GitHub has not answered.
+The sending slot is released: a mutation without an answer after
+`prrr-sync-timeout' counts as ended, so other PRs' writes go on.  ROW
+stays unconfirmed, holding back its PR, and the PR is refetched to
+decide whether ROW landed.  Nothing happens when the send already
+ended."
+  (when (prrr-sync--outbox-current-p token)
+    (setq prrr-sync--outbox-sending nil)
+    (prrr-sync--outbox-mark-dirty row)
+    (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
+    (prrr-sync--outbox-pump)))
+
+(defun prrr-sync--note-creation ()
+  "Count the sending write as a content creation, if its kind is one.
+Called when its mutation starts, so a write the Outbox refuses before
+it reaches GitHub does not use up the per-minute budget
+\(`prrr-state-creations-per-minute')."
+  (when (and prrr-sync--outbox-sending
+             (memq (prrr-outbox-kind prrr-sync--outbox-sending) prrr-state-creation-kinds))
+    (let ((now (float-time)))
       (setq prrr-sync--outbox-creations
             (cons now (seq-filter (lambda (time) (> time (- now 60)))
-                                  prrr-sync--outbox-creations))))
-    (run-at-time prrr-sync-timeout nil fail
-                 '(:kind offline :message "No answer from GitHub" :reset-at nil))
-    (prrr-sync--guarded fail
-      (prrr-sync--outbox-run row done fail))))
+                                  prrr-sync--outbox-creations))))))
 
-(defun prrr-sync--mutate (start then fail)
-  "Run a mutation once `prrr-sync--mutation-spacing' allows.
+(defun prrr-sync--mutate (start then fail token &optional setup)
+  "Run a mutation for the send TOKEN once `prrr-sync--mutation-spacing' allows.
 START is called with a callback and an errorback.  THEN receives what
-the callback receives, FAIL what the errorback receives."
+the callback receives, FAIL what the errorback receives.  Nothing
+starts once the send TOKEN has ended, as when the watchdog ended it
+while an earlier step waited for GitHub: its write stays unconfirmed
+and a refetch decides it, so it never reaches GitHub twice.  Unless SETUP
+is non-nil, the mutation is the sending write's own and counts as a
+content creation when it starts (`prrr-sync--note-creation'); SETUP
+marks one that only prepares for the write, such as creating the
+Pending Review."
   (let* ((stamp (lambda () (setq prrr-sync--outbox-mutated-at (float-time))))
          (go (lambda ()
-               (prrr-sync--guarded fail
-                 (funcall start
-                          (lambda (&optional result) (funcall stamp) (funcall then result))
-                          (lambda (failure) (funcall stamp) (funcall fail failure))))))
+               (when (prrr-sync--outbox-current-p token)
+                 (prrr-sync--guarded fail
+                   (unless setup (prrr-sync--note-creation))
+                   (funcall start
+                            (lambda (&optional result) (funcall stamp) (funcall then result))
+                            (lambda (failure) (funcall stamp) (funcall fail failure)))))))
          (wait (- (+ prrr-sync--outbox-mutated-at prrr-sync--mutation-spacing) (float-time))))
     (if (> wait 0)
         (run-at-time wait nil go)
       (funcall go))))
 
-(defun prrr-sync--with-review (target commit create then fail)
-  "Call THEN with the viewer's Pending Review of TARGET's PR.
+(defun prrr-sync--with-review (target commit create then fail token)
+  "Call THEN with the viewer's Pending Review of TARGET's PR, for the send TOKEN.
 THEN receives a `prrr-pending-review'.  The stored review is used when
 there is one; otherwise GitHub is asked, and when it has none and
 CREATE is non-nil, a review is created on COMMIT.  THEN receives nil
 when there is none and CREATE is nil.  FAIL receives a classified
-failure."
+failure.  An answer that comes after the send TOKEN ended goes no
+further, as `prrr-sync--mutate' explains."
   (let ((pr-id (plist-get target :pr-id))
         (host (plist-get target :host)))
     (if-let* ((stored (prrr-db-get 'pending-review pr-id)))
@@ -596,7 +723,8 @@ failure."
        host (plist-get target :owner) (plist-get target :name) (plist-get target :number)
        (plist-get target :me)
        (lambda (found)
-         (cond (found
+         (cond ((not (prrr-sync--outbox-current-p token)))
+               (found
                 (prrr-db-insert found)
                 (funcall then found))
                ((not create) (funcall then nil))
@@ -606,15 +734,15 @@ failure."
                    (lambda (review)
                      (prrr-db-insert review)
                      (funcall then review))
-                   fail))))
+                   fail token t))))
        fail))))
 
-(defun prrr-sync--outbox-run (row done fail)
-  "Send the write ROW to GitHub.
+(defun prrr-sync--outbox-run (row token done fail)
+  "Send the write ROW to GitHub, as the send TOKEN.
 DONE receives GitHub's answer, a plist or nil; FAIL a classified failure.
 A new Thread fails when the Pending Review it joins is on another
 commit than the one its lines were numbered at
-\(`prrr-state-review-commit-problem')."
+\(`prrr-state-outbox-commit-problem')."
   (let* ((payload (prrr-outbox-payload row))
          (target (plist-get payload :target))
          (host (plist-get target :host))
@@ -627,14 +755,14 @@ commit than the one its lines were numbered at
                             (prrr-github-set-viewed host pr-id (plist-get payload :path)
                                                     (plist-get payload :viewed)
                                                     callback errorback))
-                          done fail))
+                          done fail token))
       ((and kind (or 'thread 'reply))
        (prrr-sync--with-review
         target commit t
         (lambda (review)
           (let ((review-id (prrr-pending-review-review-id review)))
             (if-let* ((problem (and (eq kind 'thread)
-                                    (prrr-state-review-commit-problem
+                                    (prrr-state-outbox-commit-problem
                                      (prrr-pending-review-commit-oid review) commit))))
                 (funcall fail (list :kind 'error :message problem :reset-at nil))
               (prrr-sync--mutate
@@ -645,44 +773,44 @@ commit than the one its lines were numbered at
                    (prrr-github-add-reply host review-id (plist-get payload :thread-id) body
                                           callback errorback)))
                (lambda (result) (funcall done (append (list :review-id review-id) result)))
-               fail))))
-        fail))
+               fail token))))
+        fail token))
       ('publish
        (prrr-sync--mutate (lambda (callback errorback)
                             (prrr-github-publish-comment
                              host (plist-get target :owner) (plist-get target :name)
                              (plist-get target :number) commit (plist-get payload :anchor) body
                              callback errorback))
-                          done fail))
+                          done fail token))
       ('publish-reply
        (if-let* ((top (prrr-sync--top-database-id (plist-get payload :thread-id))))
            (prrr-sync--mutate (lambda (callback errorback)
                                 (prrr-github-publish-reply
                                  host (plist-get target :owner) (plist-get target :name)
                                  (plist-get target :number) top body callback errorback))
-                              done fail)
+                              done fail token)
          (funcall fail '(:kind error :message "GitHub's id of this Thread is not known yet: press G"
                          :reset-at nil))))
       ('discussion
        (prrr-sync--mutate (lambda (callback errorback)
                             (prrr-github-add-discussion-comment host pr-id body callback errorback))
-                          done fail))
+                          done fail token))
       ('edit
        (prrr-sync--mutate (lambda (callback errorback)
                             (prrr-github-edit-comment host (plist-get payload :comment-id) body
                                                       callback errorback))
-                          done fail))
+                          done fail token))
       ('delete
        (prrr-sync--mutate (lambda (callback errorback)
                             (prrr-github-delete-comment host (plist-get payload :comment-id)
                                                         callback errorback))
-                          done fail))
+                          done fail token))
       ('resolve
        (prrr-sync--mutate (lambda (callback errorback)
                             (prrr-github-set-resolved host (plist-get payload :thread-id)
                                                       (plist-get payload :resolved)
                                                       callback errorback))
-                          done fail))
+                          done fail token))
       ('submit
        (prrr-sync--with-review
         target commit nil
@@ -692,8 +820,8 @@ commit than the one its lines were numbered at
                                 host (and review (prrr-pending-review-review-id review))
                                 pr-id commit (plist-get payload :verdict) body
                                 callback errorback))
-                             done fail))
-        fail))
+                             done fail token))
+        fail token))
       ('discard
        (prrr-sync--with-review
         target nil nil
@@ -703,9 +831,9 @@ commit than the one its lines were numbered at
                                    (prrr-github-discard-review
                                     host (prrr-pending-review-review-id review)
                                     callback errorback))
-                                 done fail)
+                                 done fail token)
             (funcall done)))
-        fail))
+        fail token))
       (kind (funcall fail (list :kind 'error :message (format "Unknown write %s" kind)
                                 :reset-at nil))))))
 
@@ -779,23 +907,103 @@ PENDING is the pending comments being deleted."
                                (prrr-db-select 'review-comment :thread-id thread-id)))
                 ids)))
 
+(defun prrr-sync--outbox-carry-edit (sent stored result)
+  "Queue an edit when the comment the write SENT made has an older body.
+SENT is the write as it went out and STORED the same write as queued
+when GitHub's late answer RESULT came: the user may have edited it in
+place after a refetch judged it missing.  GitHub then has SENT's body,
+so an edit of the comment RESULT names carries STORED's body there."
+  (let ((body (plist-get (prrr-outbox-payload stored) :body)))
+    (when (and (memq (prrr-outbox-kind stored) '(thread publish reply publish-reply))
+               (plist-get result :comment-id)
+               (not (equal body (plist-get (prrr-outbox-payload sent) :body))))
+      (prrr-sync--outbox-add (prrr-outbox-pr-id stored) 'edit
+                             (list :target (plist-get (prrr-outbox-payload stored) :target)
+                                   :comment-id (plist-get result :comment-id)
+                                   :body body)))))
+
+(defun prrr-sync--outbox-record-success (row result)
+  "Record that GitHub carried out the queued write ROW, as RESULT says.
+RESULT is GitHub's answer to ROW's send or, for an unconfirmed write,
+what a refetch found (`prrr-state-outbox-landed'): the same shape
+either way.  ROW leaves the Outbox, what it made or changed is stored
+\(`prrr-sync--outbox-outcome'), and the local ids it created are
+renamed to GitHub's in the PR's queued writes and in
+`prrr-sync--renames'.  A Discussion Comment shows until forge has
+pulled it (`prrr-sync--outbox-record-post').  The caller refreshes
+buffers and pumps."
+  (let ((outcome (prrr-sync--outbox-outcome row result)))
+    (apply #'prrr-db-outbox-done (prrr-outbox-id row) outcome)
+    (prrr-sync--learn-renames (plist-get outcome :renames)))
+  (prrr-sync--outbox-record-post row result))
+
+(defvar prrr-sync--posted (make-hash-table :test #'equal)
+  "Hash table from PR id to the Discussion Comments the Outbox posted to it.
+Each is a plist with :comment-id, :database-id, :body and :created-at,
+oldest first.  Review data does not hold Discussion Comments, forge's
+topic does, and only once forge pulls the PR; until then the Review
+Buffer shows them from here (`prrr-sync-posted-discussion').  It lives
+for the session only: after a restart forge's next pull shows them.")
+
+(defun prrr-sync--outbox-record-post (row result)
+  "Keep showing the Discussion Comment the write ROW posted, if it is one.
+RESULT is GitHub's answer, which names the new comment.  The comment
+is remembered in `prrr-sync--posted' and forge is asked to pull the
+PR, where it shows once pulled."
+  (when (eq (prrr-outbox-kind row) 'discussion)
+    (let ((pr-id (prrr-outbox-pr-id row)))
+      (puthash pr-id
+               (append (gethash pr-id prrr-sync--posted)
+                       (list (list :comment-id (plist-get result :comment-id)
+                                   :database-id (plist-get result :database-id)
+                                   :body (plist-get (prrr-outbox-payload row) :body)
+                                   :created-at (plist-get result :created-at))))
+               prrr-sync--posted)
+      (prrr-sync--pull-topic pr-id))))
+
+(defun prrr-sync-posted-discussion (pr-id posts)
+  "Return the Discussion Comments posted to PR-ID that POSTS do not list yet.
+POSTS are forge's posts of the PR (`forge-pullreq-post').  Each is a
+plist with :comment-id, :database-id, :body and :created-at, oldest
+first: what GitHub accepted from the Outbox this session and forge has
+not pulled yet (`prrr-state-unpulled-posts')."
+  (when-let* ((posted (gethash pr-id prrr-sync--posted)))
+    (prrr-state-unpulled-posts posted (mapcar (lambda (post) (oref post number)) posts))))
+
+(defun prrr-sync--outbox-record-renames (row result)
+  "Learn GitHub's ids of what the write ROW created, as RESULT names them.
+ROW was dropped from the Outbox before GitHub's answer RESULT came, so
+nothing of it is stored: the refetch that follows shows what GitHub
+made.  Its local ids are renamed all the same, in the PR's queued
+writes and in `prrr-sync--renames', so a command that names one, from
+a buffer drawn before the drop, still reaches what GitHub made."
+  (when (memq (prrr-outbox-kind row) '(thread publish reply publish-reply))
+    (let ((renames (cdr (prrr-state-outbox-created row result))))
+      (prrr-db-outbox-rename (prrr-outbox-pr-id row) renames)
+      (prrr-sync--learn-renames renames))))
+
 (defun prrr-sync--outbox-succeeded (row token result)
   "Record that GitHub accepted the write ROW, sent as TOKEN, with RESULT.
-A late answer, after the send ended as a failure, is still recorded
-when the write is queued and not being sent again: it did happen.
-The PR is refetched in any case, so it shows what GitHub has."
-  (let ((id (prrr-outbox-id row))
-        (pr-id (prrr-outbox-pr-id row)))
+A late answer, after the watchdog ended the send, is still recorded
+when the write is queued and not being sent again: it did happen.  It
+records the write as queued now, which the user may have edited since
+a refetch judged it missing (`prrr-sync--outbox-carry-edit').
+One for a write dropped meanwhile records only its renames
+\(`prrr-sync--outbox-record-renames') and, for a Discussion Comment,
+the comment it posted (`prrr-sync--outbox-record-post').  The PR is
+refetched in any case, so it shows what GitHub has."
+  (let* ((id (prrr-outbox-id row))
+         (pr-id (prrr-outbox-pr-id row))
+         (stored (prrr-db-get 'outbox id)))
     (when (prrr-sync--outbox-current-p token)
       (setq prrr-sync--outbox-sending nil))
-    (when (and (prrr-db-get 'outbox id) (not (equal id (prrr-sync--sending-id))))
-      (let ((outcome (prrr-sync--outbox-outcome row result)))
-        (apply #'prrr-db-outbox-done id outcome)
-        (prrr-sync--learn-renames (plist-get outcome :renames)))
-      (when (eq (prrr-outbox-kind row) 'discussion)
-        (prrr-sync--pull-topic pr-id)))
+    (cond ((equal id (prrr-sync--sending-id))) ; sent again: its own answer records it
+          (stored (prrr-sync--outbox-record-success stored result)
+                  (prrr-sync--outbox-carry-edit row stored result))
+          (t (prrr-sync--outbox-record-renames row result)
+             (prrr-sync--outbox-record-post row result)))
     ;; Even a write discarded meanwhile changed GitHub: refetch to show it.
-    (puthash pr-id (plist-get (prrr-outbox-payload row) :target) prrr-sync--outbox-dirty)
+    (prrr-sync--outbox-mark-dirty row)
     (prrr-sync--outbox-changed pr-id)
     (prrr-sync--outbox-pump)))
 
@@ -811,32 +1019,135 @@ Only when the PR's Review Buffer is live, since forge needs it."
             (error (message "prrr: forge could not pull the PR: %s"
                             (error-message-string err)))))))))
 
+(defun prrr-sync--outbox-answered (row &optional error)
+  "Store ROW, a queued write as read from the database, as answered.
+It is no longer unconfirmed, so it may be sent again.  Return ROW.  ERROR, when
+non-nil, is why it failed: ROW keeps it until a retry, and the failed
+attempt is counted."
+  (setf (prrr-outbox-payload row)
+        (cl-loop for (key value) on (prrr-outbox-payload row) by #'cddr
+                 unless (eq key :sent-at) append (list key value)))
+  (when error
+    (setf (prrr-outbox-attempts row) (1+ (or (prrr-outbox-attempts row) 0))
+          (prrr-outbox-last-error row) error))
+  (prrr-db-insert row)
+  row)
+
 (defun prrr-sync--outbox-failed (row token failure)
   "Record that the write ROW, sent as TOKEN, failed with FAILURE.
-A rate limit pauses the Outbox until it ends and leaves ROW as it was;
-any other failure stays on ROW, with the attempt counted, until a
-retry."
-  (when (prrr-sync--outbox-current-p token)
-    (setq prrr-sync--outbox-sending nil)
-    (if (eq (plist-get failure :kind) 'rate-limited)
-        (setq prrr-sync--outbox-paused-until (plist-get failure :reset-at))
-      (when-let* ((stored (prrr-db-get 'outbox (prrr-outbox-id row))))
-        (setf (prrr-outbox-attempts stored) (1+ (or (prrr-outbox-attempts stored) 0))
-              (prrr-outbox-last-error stored) (plist-get failure :message))
-        (prrr-db-insert stored)))
-    (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
-    (prrr-sync--outbox-pump)))
+An `unconfirmed' failure is a success answer that does not name what
+GitHub made (`prrr-github--created'): GitHub may have made it, so ROW
+stays unconfirmed, as after a timeout (`prrr-sync--outbox-timed-out'),
+and a refetch decides whether it landed; a retry never sends it again.
+Any other failure is GitHub's answer (`prrr-sync--outbox-refused')."
+  (if (eq (plist-get failure :kind) 'unconfirmed)
+      (prrr-sync--outbox-timed-out row token)
+    (prrr-sync--outbox-refused row token failure)))
+
+(defun prrr-sync--outbox-refused (row token failure)
+  "Record that GitHub answered the write ROW, sent as TOKEN, with FAILURE.
+GitHub answered, so ROW is no longer unconfirmed.  A rate limit pauses
+the Outbox until it ends and leaves ROW queued as it was; any other
+failure stays on ROW, with the attempt counted, until a retry.  A late
+answer, after the watchdog ended the send, is recorded the same way
+while ROW is still unconfirmed from that very send, but leaves the
+sending slot to the write being sent now."
+  (let ((current (prrr-sync--outbox-current-p token)))
+    (when current
+      (setq prrr-sync--outbox-sending nil))
+    (let* ((stored (prrr-db-get 'outbox (prrr-outbox-id row)))
+           (sent-at (plist-get (prrr-outbox-payload row) :sent-at))
+           (answered (and stored sent-at
+                          (equal sent-at (plist-get (prrr-outbox-payload stored) :sent-at))
+                          (not (equal (prrr-outbox-id row) (prrr-sync--sending-id)))))
+           (rate-limited (eq (plist-get failure :kind) 'rate-limited)))
+      (when answered
+        (prrr-sync--outbox-answered stored (and (not rate-limited)
+                                                (plist-get failure :message))))
+      (when (and rate-limited (or current answered))
+        (setq prrr-sync--outbox-paused-until (plist-get failure :reset-at)))
+      (when (or current answered)
+        (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
+        (prrr-sync--outbox-pump)))))
+
+(defun prrr-sync--outbox-resolve (pr-id data taken)
+  "Decide each unconfirmed write of PR-ID from DATA, its fresh review data.
+TAKEN are the ids of the PR's comments stored before the refetch, as
+`prrr-state-outbox-landed' takes them.  A write that landed is
+recorded as a success; one that did not is no longer unconfirmed, so
+it goes out again; one review data cannot show, a Discussion Comment
+or a Submit, fails with `prrr-sync-unconfirmed-message' and stays
+unconfirmed (`prrr-state-outbox-awaiting-user-p'), so the user checks
+the PR and then sends it again (`prrr-sync-resend') or drops it.  A
+comment that one write made is never taken for another's."
+  (dolist (row (prrr-db-outbox-rows pr-id))
+    (when (and (prrr-state-outbox-unconfirmed-p row)
+               (not (equal (prrr-outbox-id row) (prrr-sync--sending-id))))
+      (pcase (prrr-state-outbox-landed row data taken)
+        (`(landed . ,result)
+         (prrr-sync--outbox-record-success row result)
+         (when-let* ((comment-id (plist-get result :comment-id)))
+           (push comment-id taken)))
+        ('missing (prrr-sync--outbox-answered row))
+        ('unknown
+         (setf (prrr-outbox-last-error row) prrr-sync-unconfirmed-message)
+         (prrr-db-insert row))))))
+
+(defun prrr-sync--refetch-retry-wait (pr-id &optional now)
+  "Return how many seconds after NOW the Outbox may refetch PR-ID again.
+0 unless the last refetch of PR-ID failed; then the retry starts no
+sooner than `prrr-sync-min-retry-spacing' seconds after that attempt
+did, and not before a rate limit resets, so a failing refetch is
+retried at that pace and never on every pump.  NOW is a Lisp time,
+the current time by default."
+  (let* ((status (prrr-sync-review-status pr-id))
+         (now (float-time now))
+         (from-now (lambda (key)
+                     (when-let* ((stamp (plist-get status key)))
+                       (- (float-time (parse-iso8601-time-string stamp)) now)))))
+    (if (memq (plist-get status :state) '(nil pulling ok))
+        0
+      (max 0
+           (+ prrr-sync-min-retry-spacing (or (funcall from-now :attempted-at) 0))
+           (or (funcall from-now :reset-at) 0)))))
+
+(defvar prrr-sync--retry-pump-at nil
+  "When the next pump `prrr-sync--schedule-retry-pump' set runs, or nil.
+A float time.")
+
+(defun prrr-sync--retry-pump ()
+  "Pump the Outbox, as the timer `prrr-sync--schedule-retry-pump' set asks."
+  (setq prrr-sync--retry-pump-at nil)
+  (prrr-sync--outbox-pump))
+
+(defun prrr-sync--schedule-retry-pump (seconds)
+  "Pump the Outbox in SECONDS, when a refetch it waits for may start.
+Unlike `prrr-sync--outbox-schedule', this holds back no send.  Nothing
+new is set when a pump is already due by then, give or take the
+second that a refetch's start time is rounded to, so pumps do not
+stack."
+  (let ((at (+ (float-time) seconds)))
+    (unless (and prrr-sync--retry-pump-at (<= prrr-sync--retry-pump-at (1+ at)))
+      (setq prrr-sync--retry-pump-at at)
+      (run-at-time seconds nil #'prrr-sync--retry-pump))))
 
 (defun prrr-sync--outbox-refetch-idle (rows)
   "Refetch each PR GitHub changed that has no write left to send now.
-ROWS are every queued write.  The refetch starts from a timer, never
+ROWS are every queued write.  A PR whose first write is unconfirmed
+has none: only the refetch can let it go on.  A PR whose last refetch
+failed waits for `prrr-sync--refetch-retry-wait', and the Outbox pumps
+again when it is over (`prrr-sync--schedule-retry-pump'), so nothing
+else need happen meanwhile.  The refetch starts from a timer, never
 inside a write's answer."
   (let ((busy (prrr-state-outbox-busy-prs rows))
         (sending (and prrr-sync--outbox-sending (prrr-outbox-pr-id prrr-sync--outbox-sending))))
     (maphash (lambda (pr-id target)
                (unless (or (member pr-id busy) (equal pr-id sending))
-                 (run-at-time 0 nil #'prrr-sync--refetch target
-                              (gethash pr-id prrr-sync--outbox-buffers))))
+                 (let ((wait (prrr-sync--refetch-retry-wait pr-id)))
+                   (if (> wait 0)
+                       (prrr-sync--schedule-retry-pump wait)
+                     (run-at-time 0 nil #'prrr-sync--refetch target
+                                  (gethash pr-id prrr-sync--outbox-buffers))))))
              prrr-sync--outbox-dirty)))
 
 (defun prrr-sync-refetch (repo pullreq &optional buffer)
@@ -846,9 +1157,10 @@ REPO is PULLREQ's `forge-github-repository'.  Stores the answer with
 `prrr-db-replace-review-data', records the outcome in
 `prrr-sync-review-status' and refreshes BUFFER, when live, once the
 refetch ends either way.  A successful refetch retries the PR's failed
-writes.  Return non-nil when a refetch started; return nil and do
-nothing when `prrr-sync-refetch-due-p' says no.  Never signals: every
-failure becomes the status."
+writes and decides its unconfirmed ones (`prrr-sync--store-review-data').
+Return non-nil when a refetch started; return nil and do nothing when
+`prrr-sync-refetch-due-p' says no.  Never signals: every failure
+becomes the status."
   (prrr-sync--refetch (prrr-sync--target repo pullreq) buffer))
 
 (defun prrr-sync--outbox-races-p (pr-id)
@@ -859,16 +1171,47 @@ one is being sent: the refetch's answer may then miss it."
       (and prrr-sync--outbox-sending
            (equal pr-id (prrr-outbox-pr-id prrr-sync--outbox-sending)))))
 
+(defun prrr-sync--store-review-data (pr-id data)
+  "Store DATA, a refetch's answer, as the review data of PR-ID.
+The PR's failed writes are retried, as after every refetch, except
+those awaiting the user (`prrr-state-outbox-awaiting-user-p').  Then its
+unconfirmed writes are decided from DATA (`prrr-sync--outbox-resolve'),
+so one that a refetch cannot confirm stays failed for the user to
+decide.  That happens before DATA replaces the stored rows, so what a
+confirmed write stores is then replaced by GitHub's own rows, and the
+comments stored before are known."
+  (prrr-db-outbox-clear-errors pr-id #'prrr-state-outbox-awaiting-user-p)
+  (prrr-sync--outbox-resolve pr-id data
+                             (mapcar #'prrr-comment-comment-id
+                                     (prrr-db-select 'review-comment :pr-id pr-id)))
+  (let ((renames (prrr-state-thread-renames (prrr-db-select 'review-comment :pr-id pr-id)
+                                            (plist-get data :comments))))
+    (prrr-db-replace-review-data pr-id data renames)
+    (prrr-sync--learn-renames renames)))
+
 (defun prrr-sync--refetch (target buffer)
   "Refetch TARGET's PR and refresh BUFFER, as `prrr-sync-refetch' does.
 TARGET is a plist from `prrr-sync--target'.  An answer that a write of
 the PR may have raced is not stored: the PR stays changed, and the
-Outbox refetches it once it has nothing more to send."
+Outbox refetches it once it has nothing more to send.  A refetch the
+Outbox needed that fails, or gets no answer, leaves the PR changed
+too, and the Outbox pumps again once it may retry
+\(`prrr-sync--schedule-retry-pump'): a write waiting for an id only the
+refetch brings goes out without the user's refetch."
   (let ((pr-id (plist-get target :pr-id)))
     (when (prrr-sync-refetch-due-p pr-id)
       (let* ((key (cons 'review pr-id))
-             (token (prrr-sync--start key buffer))
-             (fail (lambda (failure) (prrr-sync--finish key token failure buffer))))
+             (needed (gethash pr-id prrr-sync--outbox-dirty))
+             (token nil)
+             (fail (lambda (failure)
+                     (when (prrr-sync--current-p key token)
+                       (when needed
+                         (puthash pr-id target prrr-sync--outbox-dirty))
+                       (prrr-sync--finish key token failure buffer)
+                       (when (gethash pr-id prrr-sync--outbox-dirty)
+                         (prrr-sync--schedule-retry-pump
+                          (prrr-sync--refetch-retry-wait pr-id)))))))
+        (setq token (prrr-sync--start key buffer fail))
         (remhash pr-id prrr-sync--outbox-dirty)
         (prrr-sync--guarded fail
           (let ((me (plist-get target :me)))
@@ -883,17 +1226,14 @@ Outbox refetches it once it has nothing more to send."
                      (let ((raced (prrr-sync--outbox-races-p pr-id)))
                        (if raced
                            (puthash pr-id target prrr-sync--outbox-dirty)
-                         (let ((renames (prrr-state-thread-renames
-                                         (prrr-db-select 'review-comment :pr-id pr-id)
-                                         (plist-get data :comments))))
-                           (prrr-db-replace-review-data pr-id data renames)
-                           (prrr-sync--learn-renames renames)))
+                         (prrr-sync--store-review-data pr-id data))
                        (prrr-sync--finish key token
                                           (list :kind 'ok :head-oid (plist-get data :head-oid))
                                           buffer)
-                       (if raced
-                           (prrr-sync--outbox-pump)
-                         (prrr-sync-retry pr-id buffer))))))
+                       (unless raced
+                         (prrr-sync--remember-buffer pr-id buffer)
+                         (prrr-sync--outbox-changed pr-id))
+                       (prrr-sync--outbox-pump)))))
                fail))))
         t))))
 
@@ -911,12 +1251,47 @@ in the repository."
 (defun prrr-sync-record-bookmark (pullreq oid)
   "Record OID as the head of PULLREQ the viewer last saw, and pin it.
 The Bookmark (table `pr-bookmark') is where the since-opened Range
-starts.  The Review Buffer records it when it closes, on Submit and
-on `prrr-mark-seen', never on open."
+starts.  The Review Buffer records it when it closes, when opening it
+again moves its head, on Submit and on `prrr-mark-seen', never on a
+plain open.  Return non-nil when OID was pinned.  The Bookmark is
+written even when the pin fails, which happens only when OID is not
+in the repository: a since-opened Range fetches a missing start by
+sha, so the Bookmark is still worth having, and there is nothing to
+pin."
   (prrr-db-insert (prrr-bookmark-create :pr-id (oref pullreq their-id)
                                         :last-opened-head-oid oid
                                         :last-opened-at (prrr-sync--timestamp)))
   (prrr-sync-pin (oref pullreq number) oid))
+
+(declare-function prrr-diff-live-numbers "prrr-diff" (toplevel))
+
+(defun prrr-sync-prune-pins (open-numbers)
+  "Delete the pins of every PR not in OPEN-NUMBERS; return how many went.
+OPEN-NUMBERS are the numbers of the repository's open PRs.  Works in
+the repository of `default-directory': one `git for-each-ref' lists
+`refs/prrr/', one `git update-ref --stdin' deletes, in a transaction,
+so a failure deletes none.  A PR that has a live Review Buffer keeps
+its pins even when closed, because that buffer's Ranges may still start
+at them.  Bookmarks (table `pr-bookmark') stay: a row is a few bytes,
+and a PR that reopens then still has its since-opened start (the start
+is fetched by sha when the pin is gone).  The git work takes a few
+milliseconds (SPEC section 8), so it runs synchronously."
+  (let* ((keep (append open-numbers
+                       (prrr-diff-live-numbers (magit-toplevel))))
+         (doomed (seq-remove
+                  (lambda (ref)
+                    (and (string-match "\\`refs/prrr/\\([0-9]+\\)/" ref)
+                         (memq (string-to-number (match-string 1 ref)) keep)))
+                  (magit-git-lines "for-each-ref" "--format=%(refname)" "refs/prrr/"))))
+    (when doomed
+      (with-temp-buffer
+        (dolist (ref doomed)
+          (insert "delete " ref "\n"))
+        (unless (zerop (call-process-region (point-min) (point-max)
+                                            (magit-git-executable) nil nil nil
+                                            "update-ref" "--stdin"))
+          (error "Pruning pins failed in %s" default-directory))))
+    (length doomed)))
 
 ;;;; Commands
 

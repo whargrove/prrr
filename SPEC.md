@@ -61,7 +61,7 @@ depends only on the files above it.
 | `prrr-sync.el`      | Freshness rules and the Outbox: pull queue inputs, refetch per PR, every write to GitHub with its order, spacing, retry and reconciliation, Bookmark and ref pinning. | prrr-db, prrr-github, prrr-state, forge, magit-mode |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
 | `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
-| `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync |
+| `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync (loads prrr-treesit when a Review Buffer starts) |
 | `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, unsent and failed writes and suggestions; the comment capture buffer. | magit-section, magit-diff, prrr-db, prrr-state |
 | `prrr-range.el`     | Range commands, switching with point kept, since-review and since-opened starts, fetching a missing start, `prrr-mark-seen`. | prrr-state, prrr-sync, prrr-diff       |
 | `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
@@ -156,7 +156,7 @@ comments page through `node(id:)`.
 | Reply inside Pending Review             | `addPullRequestReviewThreadReply(pullRequestReviewThreadId, pullRequestReviewId, body)`                                                            |
 | Immediate Publish of one Review Comment | REST `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` = head, `path`, `line`, `side`, optional `start_line`, `start_side`, `subject_type` |
 | Immediate reply                         | REST `POST /repos/{o}/{r}/pulls/{n}/comments/{id}/replies`                                                                                         |
-| Discussion Comment                      | `addComment(subjectId: <PR node id>, body)`                                                                                                        |
+| Discussion Comment                      | `addComment(subjectId: <PR node id>, body)`, selecting `commentEdge.node { id databaseId createdAt }`                                              |
 | Edit / delete a comment                 | `updatePullRequestReviewComment` / `deletePullRequestReviewComment`                                                                                |
 | Submit                                  | `submitPullRequestReview(pullRequestReviewId, event: APPROVE \| REQUEST_CHANGES \| COMMENT, body)`; without a Pending Review, `addPullRequestReview` with the event                                                 |
 | Discard Pending Review                  | `deletePullRequestReview`                                                                                                                          |
@@ -259,7 +259,8 @@ Threads whose anchor is not in the current Range go into a folded
 `not-in-range` section at the end of the file; outdated Threads into a
 folded `outdated` section; Threads on files no longer in the diff into a
 buffer-level folded `outdated-files` section. The header holds folded
-`description` and `discussion` sections (forge's `body` and `posts`) and a
+`description` and `discussion` sections (forge's `body` and `posts`, then
+the Discussion Comments forge has not pulled yet, sent and unsent) and a
 one-line status: PR, Range, "history rewritten" when the Range's start
 is not an ancestor of its end, Pending Review count, Outbox count,
 refresh state, and "head moved, press g" when applicable.
@@ -287,31 +288,60 @@ MELPA magit, so a magit change is found by the test suite, not by users.
 
 **Refresh.** `g` (`prrr-refresh`) re-runs the open at the PR's current
 head; every other redraw keeps the head shown (section 8). Both
-preserve expanded files, folded Threads, and Viewed, through `magit-section-visibility-cache` restricted to
-the `file`, `thread`, `file-comment`, `review-comment`, `description`,
-`discussion`, `not-in-range`, `outdated` and `outdated-files` types. The
-cache records only the user's toggles, so every other section starts as
-on open; every open refreshes once its refetch answers, so a type left out
-of the list loses its toggle seconds after the user makes it. Hunks are
-left out: they start shown and are named by line ranges, which change with
-the diff. Viewed is read from the `viewed` table, never from the
-visibility cache. `G` (invalidate-and-refetch) additionally forces
-the per-PR refetch.
+preserve expanded files, folded Threads, and Viewed, through
+`magit-section-visibility-cache` restricted to the `file`, `thread`,
+`file-comment`, `review-comment`, `description`, `discussion`,
+`not-in-range`, `outdated` and `outdated-files` types. The cache
+records only the user's toggles, so every other section starts as on
+open; every open refreshes once its refetch answers, so a type left
+out of the list loses its toggle seconds after the user makes it.
+Hunks are left out: they start shown and are named by line ranges,
+which change with the diff. Viewed is read from the `viewed` table,
+never from the visibility cache. `G` (invalidate-and-refetch)
+additionally forces the per-PR refetch.
 
 **Magit features that keep working.** `TAB`, `n`/`p`, `M-n`/`M-p`, `^`,
 `RET` (visits the blob at the right line, including after a Thread), `j`
 jump, `1`-`4` section levels, ediff from a hunk with `E`.
 
 **Syntax highlighting** (`prrr-treesit.el`). Applied when a file section is
-expanded, never while collapsed: one `treesit` parser per file section per
-side with included ranges set to the line bodies (prefix char excluded),
-using the cached `treesit-font-lock-settings` of the language's ts-mode and
-a small `treesit-query-capture` loop that prepends faces to `font-lock-face`.
-Never `treesit-font-lock-fontify-region` or `treesit-range-settings`.
-Language is chosen from the file name through `auto-mode-alist` and
-`major-mode-remap-alist`; files without an available grammar are left
-unhighlighted. `prrr-highlight` (default t) toggles it; sections larger than
-`prrr-highlight-max-lines` (default 3,000) are highlighted on an idle timer.
+first shown, never while collapsed: when a hunk of it is first painted.
+One `treesit` parser per side, new (context and `+` lines) and old
+(context and `-` lines), with included ranges set to the line bodies
+(prefix char excluded); context lines take the new side's faces. The
+parsers live only for the call. The rules are the cached
+`treesit-font-lock-settings` of the language's ts-mode, run once in a
+temporary buffer with its hooks delayed, applied by a small
+`treesit-query-capture` loop. Never `treesit-font-lock-fontify-region`
+or `treesit-range-settings`. Faces go on the `prrr-treesit-face`
+property and are put in front of `font-lock-face` after every paint of
+the hunk, since magit resets `font-lock-face` when point enters or
+leaves a hunk; the diff line's face stays behind them. Language is
+chosen from the file name: a file-name regexp of `prrr-highlight-modes`
+first, else `auto-mode-alist` (with its case-folded second pass, but not
+`interpreter-mode-alist`, which needs the file's content), aliases
+resolved (`javascript-mode` is `js-mode`), and the remapping options
+(`major-mode-remap-alist`, and `major-mode-remap-defaults` on Emacs 30
+and later). When that is not a ts-mode, a major-mode key of
+`prrr-highlight-modes` may name one; else FOO-ts-mode stands in for
+FOO-mode if it is defined. `prrr-highlight-modes` is seeded with the
+built-in ts-modes the rename can't reach (bash, JSON, HTML, TypeScript,
+TSX, Go, go.mod, Rust, YAML, TOML, Lua, Dockerfile, CMake); entries
+naming an undefined mode are skipped. Running the ts-mode loads its
+file, and many ts-mode files add themselves to `auto-mode-alist`,
+`interpreter-mode-alist` or `major-mode-remap-defaults` at load; those
+are bound around the call, so borrowing rules never changes the mode
+the user's own files open in. Messages and warnings from the mode body
+are silenced. Files without an available grammar are left
+unhighlighted, silently. `prrr-highlight` (default t) turns it on; `L`
+toggles it in one buffer, for the buffer's life (`prrr-highlight` is
+permanent-local, so reopening keeps it; the idle timer is cancelled
+when the mode reruns). Files painted during a refresh, and sections
+larger than `prrr-highlight-max-lines` (default 3,000), are highlighted
+on an idle timer, so first paint and refresh never wait on it.
+Sections over ten times `prrr-highlight-max-lines` are never
+highlighted: the idle work on one file can't be split, and would block
+for about a second per 30,000 lines.
 Measured: 1.3 / 9.7 / 34 ms per 100 / 300 / 1,000-line section.
 
 ## 7. Threads, comments, and the Pending Review (prrr-t9q.2, prrr-t9q.7)
@@ -341,24 +371,71 @@ Buffer shows the stored rows with the queued writes applied
 (`prrr-state-outbox-view`): unsent ones with the `prrr-unsent` face,
 failed ones with the `prrr-failed` face and GitHub's message, and the
 header counts both. The Outbox sends one mutation at a time, at least a
-second apart, at most 80 content creations a minute, each PR's writes
-in order; a failed write holds back its PR's later writes and is
-retried on the PR's next write or refetch and through
-`prrr-outbox-retry`, or dropped with `prrr-outbox-discard`, which also
-drops the writes that need it. A rate limit pauses the Outbox until it
-resets. Success stores GitHub's rows and renames the write's local ids
-in the PR's queued writes, so a reply to a Thread not yet sent goes
-out once the Thread has GitHub's id. Edit or delete of a comment whose
-own write is still queued changes or drops that write.
+second apart, at most 80 content creations a minute, each PR's writes in
+order; a failed write holds back its PR's later writes and is retried on
+the PR's next write or refetch and through `prrr-outbox-retry`, or
+dropped with `prrr-outbox-discard`, which also drops the writes that
+need it. A rate limit pauses the Outbox until it resets. Success stores
+GitHub's rows and renames the write's local ids in the PR's queued
+writes, so a reply to a Thread not yet sent goes out once the Thread has
+GitHub's id. A success that answers after its write was dropped stores
+nothing, since the refetch that follows shows what GitHub made, but
+still renames, so a command naming the local id from a buffer drawn
+before the drop reaches GitHub's. A Discussion Comment is not in the
+review data but in forge's topic, which has it only once forge pulls the
+PR: GitHub's answer names the comment, and the Review Buffer shows it,
+marked sent, from a session-only list keyed by GitHub's database id
+until forge's topic lists a post with that id (forge is asked to pull
+the PR at once), so it is never missing and never shown twice. After a
+restart forge's next pull shows it. Edit or delete of a comment whose
+own write is still queued and not yet sent changes or drops that write.
+
+A write whose send started is *unconfirmed* until GitHub answers: it may
+or may not have reached GitHub. The Outbox stores `:sent-at` in the
+write's payload before the request goes out (the `outbox` layout is
+frozen) and removes it on any answer; a failure answer, even a late one,
+counts the attempt and keeps GitHub's message. When GitHub has not
+answered after `prrr-sync-timeout` seconds, the send ends: the Outbox
+moves on to other PRs' writes, but the unconfirmed write holds back its
+PR, shows as unsent, "waiting for GitHub's answer", and is never sent
+again blindly, not by a retry and not after a restart. A success answer
+that does not name what GitHub made (a null GraphQL payload, a REST
+answer without `node_id`) counts as no answer: GitHub may have made it,
+so the write stays unconfirmed and the refetch decides. An edit or
+delete of what it creates becomes a write of its own that waits for
+GitHub's id. The Outbox starts by itself once per session, when prrr
+opens its database: it refetches the PRs of unconfirmed writes, then
+sends what is queued, without waiting for a Review Buffer.
 
 **Reconciliation.** On refetch, GitHub's rows replace every stored
 Thread, comment, Pending Review and Viewed flag of the PR; queued
 writes, which live only in `outbox`, survive and are re-attempted
-against the current pending review id. An answer that a write of the
-PR may have raced (one succeeded since the refetch started, or one is
-being sent) is not stored; the Outbox refetches the PR once it has
-nothing more to send to it. Comments added from the web appear like
-any other.
+against the current pending review id. An answer that a write of the PR
+may have raced (one succeeded since the refetch started, or one is being
+sent) is not stored; the Outbox refetches the PR once it has nothing
+more to send to it. A PR whose last refetch failed is refetched by the
+Outbox no sooner than `prrr-sync-min-retry-spacing` after that attempt
+and not before a rate limit resets; the Outbox then pumps by itself. A
+refetch the Outbox needed (after a success, a send without an answer, or
+for an unconfirmed write) that fails or gets no answer is tried again by
+the Outbox, no sooner than `prrr-sync-min-retry-spacing` after it
+started and not before a rate limit resets, so a reply waiting for the
+id of a Thread published at once never needs the user's refetch. A
+refetch whose answer is stored decides each unconfirmed write of the PR
+from that answer: a new Thread or reply landed when there is a comment
+by me with its body, made no earlier than five minutes before the write
+was queued, that starts a Thread on its path (or is in its Thread) and
+was not stored before the refetch; an edit when the comment has its body
+(or is gone); a delete when the comment is gone; a resolve, Viewed
+change or discard when the Thread's flag, the file's flag or the absent
+Pending Review shows it. A write that landed is recorded as if GitHub
+had answered, renames included; one that did not is sent again.
+Discussion Comments and Submit are not in the review data, so an
+unconfirmed one fails with a message asking the user to check the PR,
+then retry or drop it; it stays unconfirmed, so neither a refetch nor
+another write sends it again, only the user's `prrr-outbox-retry`. A
+retry of a PR with an unconfirmed write refetches it instead of sending.
+Comments added from the web appear like any other.
 
 **Pending Review lifecycle.** The first pending comment on a PR creates the
 Pending Review (after checking for an existing one). Edit and delete of my
@@ -398,25 +475,44 @@ mapped from its commit to the new Range's commits through `git diff -U0`
 the file's heading.
 
 **Commenting.** `RIGHT`-side lines of any Range that ends at head are
-commentable as default-Range comments (their numbers are head line numbers).
-`LEFT`-side lines of `since-review`/`since-opened`, and both sides of
-`commit`/`between`, are read-only; `.` jumps to the same file and line in the
-default Range. File Comments need a Range that ends at head. Threads
-render inline only on the sides a Range numbers as GitHub does (right
-when it ends at head, left only in `default`); the others go to the
-file's `not-in-range` section.
+commentable as default-Range comments (their numbers are head line
+numbers). `LEFT`-side lines of `since-review`/`since-opened`, and both
+sides of `commit`/`between`, are read-only; `.` jumps to the same file
+and line in the default Range. File Comments need a Range that ends at
+head. Threads render inline only on the sides a Range numbers as
+GitHub does (right when it ends at head, left only in `default`); the
+others go to the file's `not-in-range` section. Both sides also need
+the review data fetched at the head shown: while the last refetch saw
+another head (until the head shown is the one the refetch saw: `g`,
+after `forge-pull` when the header asks), every line Thread folds into
+`not-in-range`, the left side too, because a rebase may have moved the
+merge base GitHub numbers it against and no stored field names that
+commit. At the head shown, prrr takes GitHub's merge base to be the
+local one (of forge's base commit and the head); they differ only if
+forge's base commit is stale in a way that changes the merge base, a
+limit prrr accepts.
 
 **Viewed** is GitHub's flag only, shown and toggled on every Range.
 
 **Bookmark** updates when the Review Buffer is killed or its window
-quit (`q`), when `>` or `<` steps to another PR of its Stack, on Submit,
-and through `prrr-mark-seen`; never on open. It records the head the
-buffer shows.
+quit (`q`), when `>` or `<` steps to another PR of its Stack, when
+opening the PR again moves its open buffer to a newer head, on Submit,
+and through `prrr-mark-seen`; never otherwise on open. It records the
+head the buffer shows (before the move, when opening moves it).
 
 **Force-push and moving heads.** prrr pins each commit it may need later as
 `refs/prrr/<number>/<oid>` when it records a Bookmark (Submit records
 one), opens a PR whose latest review by the viewer it knows, and shows
-a `since-review` or `since-opened` Range. If a Range's start is not an
+a `since-review` or `since-opened` Range. Pins are not written on every
+Review Queue pull (that would cost one git process per PR); they are
+removed on it: after the queue pull stored its rows, `prrr-pull` deletes
+the pins of every PR the pull did not return as open, with one
+`git for-each-ref` and one `git update-ref --stdin` (about 10 ms for
+500 pins, so synchronous), except the pins of a PR with a live Review
+Buffer. Bookmarks are kept. Pins are keyed by PR number only, so two
+forge repositories sharing one worktree (a fork and its upstream)
+prune each other's pins; a start that is missing then is fetched by
+sha. If a Range's start is not an
 ancestor of head, prrr diffs the two trees directly and shows "history
 rewritten" in the header. If the start commit is missing locally it is
 fetched by sha from the PR's remote (forge's `remote` of the

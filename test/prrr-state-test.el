@@ -829,6 +829,167 @@
       (should (equal "PRRT_1" (prrr-comment-thread-id comment))))))
 
 
+;;;; Unconfirmed writes
+
+(defun prrr-state-test--unconfirmed (id kind payload)
+  "A write ID of PR_1 with KIND and PAYLOAD whose send got no answer."
+  (prrr-state-test--write id "PR_1" kind (append payload '(:sent-at "2026-10-10T12:00:01Z"))))
+
+(cl-defun prrr-state-test--found (&key (id "PRRC_9") (thread "PRRT_9") (author "example-me")
+                                       (body "Nit.") reply-to
+                                       (created-at "2026-10-10T12:00:05Z"))
+  "A comment a refetch found: ID in Thread THREAD by AUTHOR.
+BODY, REPLY-TO and CREATED-AT are its fields."
+  (prrr-comment-create :comment-id id :thread-id thread :pr-id "PR_1" :author author
+                       :body body :reply-to reply-to :created-at created-at
+                       :review-id "PRR_1" :state 'pending :local-state 'sent
+                       :database-id "99"))
+
+(defun prrr-state-test--fresh (&rest comments)
+  "Review data a refetch answered: Thread PRRT_9 on a.el, T1 on b.el, and COMMENTS."
+  (list :threads (list (prrr-test-thread :id "PRRT_9" :path "a.el")
+                       (prrr-test-thread :id "T1" :path "b.el"))
+        :comments comments
+        :pending-review (prrr-pending-review-create :pr-id "PR_1" :review-id "PRR_1")
+        :viewed (list (prrr-viewed-create :pr-id "PR_1" :path "a.el" :state 'viewed))))
+
+(defconst prrr-state-test--new-thread
+  '(:thread "local:T" :comment "local:C" :body "Nit." :commit "1111"
+    :anchor (:path "a.el" :line 12 :side right :subject-type line))
+  "The payload of a new Thread on a.el.")
+
+(ert-deftest prrr-state-test-outbox-unconfirmed-blocks-its-pr ()
+  "A write whose send got no answer holds its PR as a failed one does."
+  (let ((a (prrr-state-test--unconfirmed "1" 'viewed '(:path "a")))
+        (b (prrr-state-test--write "2" "PR_1" 'viewed '(:path "b")))
+        (c (prrr-state-test--write "3" "PR_2" 'viewed '(:path "c"))))
+    (should (prrr-state-outbox-unconfirmed-p a))
+    (should-not (prrr-state-outbox-unconfirmed-p b))
+    (should (equal (cons c 0) (prrr-state-outbox-next (list a b c) nil 100.0)))
+    (should (equal '("PR_2") (prrr-state-outbox-busy-prs (list a b c))))))
+
+(ert-deftest prrr-state-test-outbox-awaiting-user ()
+  "A failed unconfirmed write waits for the user; it shows as failed."
+  (let ((waiting (prrr-state-test--unconfirmed "1" 'discussion '(:body "Thanks!")))
+        (failed (prrr-state-test--write "2" "PR_2" 'discussion '(:body "Hi") "offline")))
+    (should-not (prrr-state-outbox-awaiting-user-p waiting))
+    (should-not (prrr-state-outbox-awaiting-user-p failed))
+    (setf (prrr-outbox-last-error waiting) "No answer")
+    (should (prrr-state-outbox-awaiting-user-p waiting))
+    (should-not (prrr-state-outbox-next (list waiting) nil 100.0))
+    (should (equal "Discussion Comment: Thanks! (failed: No answer)"
+                   (prrr-state-outbox-describe waiting)))))
+
+(ert-deftest prrr-state-test-outbox-landed-thread ()
+  (let ((row (prrr-state-test--unconfirmed "1" 'thread prrr-state-test--new-thread)))
+    (should (equal '(landed :comment-id "PRRC_9" :database-id "99"
+                            :created-at "2026-10-10T12:00:05Z" :thread-id "PRRT_9"
+                            :review-id "PRR_1")
+                   (prrr-state-outbox-landed row (prrr-state-test--fresh
+                                                  (prrr-state-test--found))
+                                             nil)))
+    ;; GitHub's clock may run a little behind ours.
+    (should (eq 'landed (car (prrr-state-outbox-landed
+                              row (prrr-state-test--fresh
+                                   (prrr-state-test--found :created-at "2026-10-10T11:56:00Z"))
+                              nil))))
+    (should (eq 'missing (prrr-state-outbox-landed row (prrr-state-test--fresh) nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-thread-near-misses ()
+  "Only a new Thread by me on the anchor's path, with the body, since the write, counts."
+  (let ((row (prrr-state-test--unconfirmed "1" 'publish prrr-state-test--new-thread)))
+    (dolist (comment (list (prrr-state-test--found :thread "T1")
+                           (prrr-state-test--found :author "example-alice")
+                           (prrr-state-test--found :body "Nit!")
+                           (prrr-state-test--found :reply-to "PRRC_1")
+                           (prrr-state-test--found :created-at "2026-10-10T11:54:00Z")))
+      (should (eq 'missing (prrr-state-outbox-landed row (prrr-state-test--fresh comment) nil))))
+    ;; A comment stored before the refetch is another write's.
+    (should (eq 'missing (prrr-state-outbox-landed
+                          row (prrr-state-test--fresh (prrr-state-test--found)) '("PRRC_9"))))))
+
+(ert-deftest prrr-state-test-outbox-landed-reply ()
+  (let ((row (prrr-state-test--unconfirmed "1" 'reply
+                                           '(:thread-id "PRRT_9" :comment "local:R"
+                                             :body "Nit."))))
+    (should (equal '(landed :comment-id "PRRC_9" :database-id "99"
+                            :created-at "2026-10-10T12:00:05Z" :thread-id "PRRT_9"
+                            :review-id "PRR_1")
+                   (prrr-state-outbox-landed
+                    row (prrr-state-test--fresh (prrr-state-test--found :reply-to "PRRC_1"))
+                    nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          row (prrr-state-test--fresh (prrr-state-test--found :thread "T1"))
+                          nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'publish-reply
+                                                        '(:thread-id "PRRT_9" :body "Other."))
+                          (prrr-state-test--fresh (prrr-state-test--found))
+                          nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-edit-and-delete ()
+  (let ((edit (prrr-state-test--unconfirmed "1" 'edit '(:comment-id "PRRC_9" :body "Better.")))
+        (delete (prrr-state-test--unconfirmed "2" 'delete '(:comment-id "PRRC_9"))))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              edit (prrr-state-test--fresh
+                                    (prrr-state-test--found :body "Better."))
+                              nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          edit (prrr-state-test--fresh (prrr-state-test--found)) nil)))
+    ;; A comment gone leaves the edit nothing to do.
+    (should (equal '(landed) (prrr-state-outbox-landed edit (prrr-state-test--fresh) nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed delete (prrr-state-test--fresh) nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          delete (prrr-state-test--fresh (prrr-state-test--found)) nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-resolve-viewed-discard ()
+  (let ((fresh (prrr-state-test--fresh)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'resolve
+                                                        '(:thread-id "PRRT_9" :resolved t))
+                          fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'resolve
+                                                            '(:thread-id "PRRT_9" :resolved nil))
+                              fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'viewed '(:path "a.el" :viewed t))
+                              fresh nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'viewed '(:path "b.el" :viewed t))
+                          fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'viewed '(:path "b.el" :viewed nil))
+                              fresh nil)))
+    (should (eq 'missing (prrr-state-outbox-landed
+                          (prrr-state-test--unconfirmed "1" 'discard nil) fresh nil)))
+    (should (equal '(landed) (prrr-state-outbox-landed
+                              (prrr-state-test--unconfirmed "1" 'discard nil)
+                              (plist-put (copy-sequence fresh) :pending-review nil)
+                              nil)))))
+
+(ert-deftest prrr-state-test-outbox-landed-unknown ()
+  "Review data does not show Discussion Comments or a submitted review."
+  (should (eq 'unknown (prrr-state-outbox-landed
+                        (prrr-state-test--unconfirmed "1" 'discussion
+                                                      '(:comment "local:D" :body "Thanks!"))
+                        (prrr-state-test--fresh) nil)))
+  (should (eq 'unknown (prrr-state-outbox-landed
+                        (prrr-state-test--unconfirmed "1" 'submit '(:verdict approve :body ""))
+                        (prrr-state-test--fresh) nil))))
+
+(ert-deftest prrr-state-test-outbox-unconfirmed-shows-as-unsent ()
+  (let* ((row (prrr-state-test--unconfirmed "1" 'thread prrr-state-test--new-thread))
+         (view (prrr-state-outbox-view (prrr-state-test--data) (list row))))
+    (should (eq 'unsent (prrr-comment-local-state
+                         (gethash "local:C" (let ((table (make-hash-table :test #'equal)))
+                                              (dolist (comment (plist-get view :comments) table)
+                                                (puthash (prrr-comment-comment-id comment)
+                                                         comment table)))))))
+    (should (equal "comment on a.el:12 right: Nit. (waiting for GitHub's answer)"
+                   (prrr-state-outbox-describe row)))))
+
+
 ;;;; What the user sees
 
 (defun prrr-state-test--data ()
@@ -992,6 +1153,13 @@
                  (prrr-state-range-ends (prrr-state-test--range 'commit "parent" "commit")
                                         "base" "head"))))
 
+(ert-deftest prrr-state-test-range-kind-checked ()
+  "A Range of a kind not in `prrr-state-range-kinds' is never made."
+  (dolist (kind prrr-state-range-kinds)
+    (should (eq kind (prrr-range-kind (prrr-range-create :kind kind)))))
+  (should-error (prrr-range-create :kind 'since-forever))
+  (should-error (prrr-range-create)))
+
 (ert-deftest prrr-state-test-range-github-side ()
   "SPEC section 8: GitHub numbers the right side at head, the left at the merge base."
   (let ((default (prrr-state-test--range 'default))
@@ -1014,12 +1182,13 @@
     (should (equal '(right) (prrr-state-inline-sides since "h" "h")))
     (should-not (prrr-state-inline-sides commit "h" "h"))
     ;; The review data was fetched at another head: its right-side
-    ;; numbers are not those of the head shown.
-    (should (equal '(left) (prrr-state-inline-sides default "h" "g")))
+    ;; numbers are not those of the head shown, and its left-side
+    ;; numbers may be at another merge base (after a rebase).
+    (should-not (prrr-state-inline-sides default "h" "g"))
     (should-not (prrr-state-inline-sides since "h" "g"))))
 
 (ert-deftest prrr-state-test-anchor-problem ()
-  "Review Focus 3: only lines numbered as GitHub numbers them take comments."
+  "Review Focus 2: only lines numbered as GitHub numbers them take comments."
   (let ((right '(:path "a.el" :line 3 :side right :subject-type line))
         (left '(:path "a.el" :line 3 :side left :subject-type line))
         (mixed '(:path "a.el" :line 4 :side right :start-line 2 :start-side left
@@ -1068,6 +1237,35 @@
                              (list :pending-review review :outbox (list thread)))))
     (should (equal "queued" (prrr-state-review-commit (list :outbox (list thread)))))
     (should-not (prrr-state-review-commit nil))))
+
+(ert-deftest prrr-state-test-review-commit-counts-a-queued-reply ()
+  "A reply with no Pending Review implies one on the reply's commit.
+A reply that carries no commit (queued before replies did) implies none."
+  (let ((reply (prrr-state-test--write "1" "PR_1" 'reply '(:commit "at-reply")))
+        (old (prrr-state-test--write "2" "PR_1" 'reply nil))
+        (thread (prrr-state-test--write "3" "PR_1" 'thread '(:commit "at-thread"))))
+    (should (equal "at-reply" (prrr-state-review-commit (list :outbox (list old reply)))))
+    (should (equal "at-reply" (prrr-state-review-commit (list :outbox (list reply thread)))))
+    (should (equal "at-thread" (prrr-state-review-commit (list :outbox (list thread reply)))))
+    (should-not (prrr-state-review-commit (list :outbox (list old))))))
+
+(ert-deftest prrr-state-test-outbox-commit-problem ()
+  (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        (b "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+    (should-not (prrr-state-outbox-commit-problem nil a))
+    (should-not (prrr-state-outbox-commit-problem a a))
+    (let ((problem (prrr-state-outbox-commit-problem a b)))
+      (should (string-prefix-p "Pending Review is on aaaaaaa" problem))
+      (should (string-match-p "drop it with O k" problem))
+      (should-not (string-match-p "C-c C-i" problem)))))
+
+(ert-deftest prrr-state-test-unpulled-posts ()
+  "A posted Discussion Comment shows until forge lists its database id."
+  (let ((posted '((:database-id 5001 :body "One.") (:database-id 5002 :body "Two."))))
+    (should (equal posted (prrr-state-unpulled-posts posted nil)))
+    (should (equal '((:database-id 5002 :body "Two."))
+                   (prrr-state-unpulled-posts posted '(4000 5001))))
+    (should-not (prrr-state-unpulled-posts posted '(5002 5001)))))
 
 (ert-deftest prrr-state-test-review-commit-problem ()
   (let ((a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -1126,7 +1324,8 @@ One line rewritten at 12, two lines added after 20, three removed at 30."
     (should (eq bottom (prrr-state-stack-step middle prs "main" 'down)))
     (should (eq bottom (prrr-state-stack-step later prs "main" 'down)))
     (should-not (prrr-state-stack-step bottom prs "main" 'down))
-    (should-not (prrr-state-stack-step fork prs "main" 'down))))
+    (should-not (prrr-state-stack-step fork prs "main" 'down))
+    (should-error (prrr-state-stack-step bottom prs "main" 'sideways))))
 
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here

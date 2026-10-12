@@ -34,13 +34,16 @@
 ;; Stack.
 ;;
 ;; The Outbox's rules are here as well: which queued write goes next,
-;; which writes depend on which, and what a write leaves behind once
-;; GitHub accepts it.  prrr-sync.el carries them out.
+;; which writes depend on which, what a write leaves behind once
+;; GitHub accepts it, and whether an unconfirmed write landed.
+;; prrr-sync.el carries them out.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
+(require 'subr-x)
+(require 'parse-time)
 (require 'prrr-db)
 
 ;;;; Structs
@@ -502,6 +505,23 @@ GitHub allows 80 content creations a minute (SPEC section 4).")
 A write that acts on something still known by a local id waits."
   (not (seq-some #'prrr-state-local-id-p (prrr-state-outbox-references row))))
 
+(defun prrr-state-outbox-unconfirmed-p (row)
+  "Non-nil when the send of the write ROW started and got no answer yet.
+Such a write is unconfirmed: it may or may not have reached GitHub.
+Its payload's :sent-at, stored before the request goes out and removed
+by any answer, marks it, because the `outbox' layout is frozen.  It is
+never sent again blindly; a refetch of its PR decides
+\(`prrr-state-outbox-landed')."
+  (and (plist-get (prrr-outbox-payload row) :sent-at) t))
+
+(defun prrr-state-outbox-awaiting-user-p (row)
+  "Non-nil when the write ROW waits for the user to send it again or drop it.
+It is unconfirmed and failed: a refetch could not tell whether it
+reached GitHub, as for a Discussion Comment or a Submit.  It stays
+unconfirmed, so neither a refetch nor another write sends it again;
+only the user's retry (`prrr-sync-resend') does."
+  (and (prrr-state-outbox-unconfirmed-p row) (prrr-outbox-last-error row) t))
+
 (defun prrr-state--outbox-heads (rows)
   "Return the first row of each PR among ROWS, in the order of ROWS."
   (let ((seen nil) (heads nil))
@@ -512,13 +532,17 @@ A write that acts on something still known by a local id waits."
     (nreverse heads)))
 
 (defun prrr-state--sendable-p (row)
-  "Non-nil when the write ROW, the first of its PR, may be sent."
-  (and (null (prrr-outbox-last-error row)) (prrr-state-outbox-ready-p row)))
+  "Non-nil when the write ROW, the first of its PR, may be sent.
+Not when it failed, waits for an id, or is unconfirmed: clearing its
+error, as a retry does, does not make an unconfirmed write sendable."
+  (and (null (prrr-outbox-last-error row))
+       (not (prrr-state-outbox-unconfirmed-p row))
+       (prrr-state-outbox-ready-p row)))
 
 (defun prrr-state-outbox-busy-prs (rows)
   "Return the ids of the PRs among ROWS whose first write may be sent.
-The writes of one PR go out in order, so a failed or waiting first
-write holds back the rest of its PR."
+The writes of one PR go out in order, so a failed, waiting or
+unconfirmed first write holds back the rest of its PR."
   (mapcar #'prrr-outbox-pr-id
           (seq-filter #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
 
@@ -527,8 +551,9 @@ write holds back the rest of its PR."
 ROWS are every queued `prrr-outbox' row, oldest first; CREATIONS the
 times, as floats, at which content creations were sent; NOW the
 current float time.  Each PR's writes go out in order: only its first
-write is a candidate, and only when it has not failed and acts on no
-local id.  The oldest candidate wins.  Return nil when there is none,
+write is a candidate, and only when it has not failed, is not
+unconfirmed (`prrr-state-outbox-unconfirmed-p') and acts on no local
+id.  The oldest candidate wins.  Return nil when there is none,
 else (ROW . WAIT): send ROW after WAIT seconds, which is 0 unless ROW
 creates content and `prrr-state-creations-per-minute' were sent in the
 last minute."
@@ -641,7 +666,8 @@ the PR's `prrr-outbox' rows, oldest first.  Threads, comments, the
 Pending Review and Viewed flags change as each write will change them
 on GitHub; created things carry their local ids and a `local-state' of
 `unsent'.  A failed delete or discard changes nothing, so what it was
-meant to remove stays in view.  The result has DATA's keys plus:
+meant to remove stays in view; an unconfirmed write shows as unsent,
+like any write that has not failed.  The result has DATA's keys plus:
   :outbox      ROWS;
   :writes      a hash table from each comment id, Thread id and Viewed
                path a queued write touches to the newest such row;
@@ -730,6 +756,111 @@ DATA's structs are never changed."
                                   threads))))
     (list :threads threads :comments comments :pending-review pending :viewed viewed
           :outbox rows :writes writes :discussion (nreverse discussion) :submit submit)))
+
+;;;; Unconfirmed writes
+
+(defconst prrr-state-clock-skew 300
+  "Seconds GitHub's clock may run behind ours.
+A comment that an unconfirmed write may have created is looked for
+from this long before the write was queued.")
+
+(defun prrr-state--same-body-p (a b)
+  "Non-nil when the comment bodies A and B are the same text.
+Surrounding whitespace does not count: GitHub may trim it."
+  (and a b (equal (string-trim a) (string-trim b))))
+
+(defun prrr-state--landed-comment (row data taken thread-p)
+  "Return the comment in DATA that the creating write ROW may have made, or nil.
+It is by ROW's viewer, has ROW's body, was created no earlier than
+`prrr-state-clock-skew' seconds before ROW was queued, and is not one
+of TAKEN.  When THREAD-P, it starts a Thread on the path of ROW's
+anchor; otherwise it is in ROW's :thread-id Thread."
+  (let* ((payload (prrr-outbox-payload row))
+         (path (plist-get (plist-get payload :anchor) :path))
+         (since (- (float-time (parse-iso8601-time-string (prrr-outbox-created-at row)))
+                   prrr-state-clock-skew))
+         (paths (make-hash-table :test #'equal)))
+    (dolist (thread (plist-get data :threads))
+      (puthash (prrr-thread-thread-id thread) (prrr-thread-path thread) paths))
+    (seq-find (lambda (comment)
+                (and (equal (prrr-comment-author comment)
+                            (plist-get (plist-get payload :target) :me))
+                     (prrr-state--same-body-p (prrr-comment-body comment)
+                                              (plist-get payload :body))
+                     (prrr-comment-created-at comment)
+                     (<= since (float-time (parse-iso8601-time-string
+                                            (prrr-comment-created-at comment))))
+                     (not (member (prrr-comment-comment-id comment) taken))
+                     (if thread-p
+                         (and (null (prrr-comment-reply-to comment))
+                              (equal path (gethash (prrr-comment-thread-id comment) paths)))
+                       (equal (prrr-comment-thread-id comment) (plist-get payload :thread-id)))))
+              (plist-get data :comments))))
+
+(defun prrr-state-outbox-landed (row data taken)
+  "Decide from fresh review DATA whether the unconfirmed write ROW landed.
+DATA is a plist like the one `prrr-github-decode-review-data' returns,
+fetched after ROW's send started.  TAKEN are the ids of the comments
+stored before that refetch replaced them: such a comment came from
+another write or from the web, never from ROW, so it is never matched,
+even when it has the same body.  Return one of:
+  (landed . RESULT)  GitHub carried ROW out.  RESULT is shaped like
+                     GitHub's answer to ROW's kind: for a new Thread
+                     or reply the plist `prrr-state-outbox-created'
+                     reads, with :thread-id and :review-id; nil for
+                     the other kinds.
+  `missing'          it did not land: send it again.
+  `unknown'          review DATA cannot tell: Discussion Comments and
+                     a submitted review are not in it.
+A new Thread or reply landed when DATA has a comment by ROW's viewer
+with ROW's body, made no earlier than `prrr-state-clock-skew' seconds
+before ROW was queued, that starts a Thread on the anchor's path or,
+for a reply, is in ROW's Thread.  An edit landed when the comment has
+ROW's body, and a delete when the comment is gone; an edit of a comment
+that is gone landed too, since nothing is left to do.  A resolve landed
+when the Thread's resolved flag matches (or the Thread is gone), a
+Viewed change when the path's flag matches, and a discard when there
+is no Pending Review."
+  (let* ((payload (prrr-outbox-payload row))
+         (comment-id (plist-get payload :comment-id))
+         (comment (seq-find (lambda (comment)
+                              (equal (prrr-comment-comment-id comment) comment-id))
+                            (plist-get data :comments)))
+         (kind (prrr-outbox-kind row))
+         (landed
+          (pcase kind
+            ((or 'thread 'publish 'reply 'publish-reply)
+             (when-let* ((found (prrr-state--landed-comment
+                                 row data taken (memq kind '(thread publish)))))
+               (list :comment-id (prrr-comment-comment-id found)
+                     :database-id (prrr-comment-database-id found)
+                     :created-at (prrr-comment-created-at found)
+                     :thread-id (prrr-comment-thread-id found)
+                     :review-id (prrr-comment-review-id found))))
+            ('edit (or (null comment)
+                       (prrr-state--same-body-p (prrr-comment-body comment)
+                                                (plist-get payload :body))))
+            ('delete (null comment))
+            ('resolve
+             (let ((thread (seq-find (lambda (thread)
+                                       (equal (prrr-thread-thread-id thread)
+                                              (plist-get payload :thread-id)))
+                                     (plist-get data :threads))))
+               (or (null thread)
+                   (eq (and (prrr-thread-resolved-p thread) t)
+                       (and (plist-get payload :resolved) t)))))
+            ('viewed
+             (let ((flag (seq-find (lambda (flag)
+                                     (equal (prrr-viewed-path flag) (plist-get payload :path)))
+                                   (plist-get data :viewed))))
+               (eq (and flag (eq (prrr-viewed-state flag) 'viewed))
+                   (and (plist-get payload :viewed) t))))
+            ('discard (null (plist-get data :pending-review)))
+            (_ 'unknown))))
+    (cond ((eq landed 'unknown) 'unknown)
+          ((null landed) 'missing)
+          ((consp landed) (cons 'landed landed))
+          (t (list 'landed)))))
 
 ;;;; Anchors
 
@@ -837,7 +968,9 @@ that requests changes or only comments."
       "A comment review needs a summary or a comment")))
 
 (defun prrr-state-outbox-describe (row)
-  "Describe the queued write ROW in one line, for choosing it."
+  "Describe the queued write ROW in one line, for choosing it.
+A failed write names its error; an unconfirmed one says it waits for
+GitHub's answer."
   (let* ((payload (prrr-outbox-payload row))
          (body (car (split-string (or (plist-get payload :body) "") "\n")))
          (anchor (plist-get payload :anchor)))
@@ -855,16 +988,19 @@ that requests changes or only comments."
               ('discard "discard the Pending Review")
               (kind (symbol-name kind)))
             (and (not (string-empty-p body)) (format ": %s" (truncate-string-to-width body 40 nil nil "…")))
-            (and (prrr-outbox-last-error row) (format " (failed: %s)" (prrr-outbox-last-error row))))))
+            (cond ((prrr-outbox-last-error row)
+                   (format " (failed: %s)" (prrr-outbox-last-error row)))
+                  ((prrr-state-outbox-unconfirmed-p row)
+                   " (waiting for GitHub's answer)")))))
 
 ;;;; Ranges
 
-(cl-defstruct (prrr-range (:constructor prrr-range-create) (:copier nil))
+(cl-defstruct (prrr-range (:constructor prrr-range--make) (:copier nil))
   "A Range: the two commits whose diff the Review Buffer shows.
 KIND is one of `prrr-state-range-kinds'.  START is the commit the diff
 starts at, nil for `default', which starts at the merge base.  END is
 the commit it ends at, nil for the kinds that end at the PR's head:
-the head the buffer shows."
+the head the buffer shows.  Made with `prrr-range-create'."
   kind start end)
 
 (defconst prrr-state-range-kinds '(default since-review since-opened commit between)
@@ -873,6 +1009,15 @@ the head the buffer shows."
 of my latest submitted review to the head, `since-opened' the
 Bookmark's head to the head, `commit' one PR commit against its
 parent, and `between' one chosen commit to another.")
+
+(cl-defun prrr-range-create (&key kind start end)
+  "Return the `prrr-range' of KIND from START to END.
+Signal an error when KIND is not one of `prrr-state-range-kinds': every
+rule about Ranges dispatches on the kind, and an unknown one would be
+drawn as if it were some other."
+  (unless (memq kind prrr-state-range-kinds)
+    (error "Unknown kind of Range: %S" kind))
+  (prrr-range--make :kind kind :start start :end end))
 
 (defun prrr-state-range-ends (range merge-base head)
   "Return (START . END), the commits RANGE diffs.
@@ -894,16 +1039,18 @@ take comments and show their Threads inline (SPEC section 8)."
   "Return the sides, among `left' and `right', whose line Threads show inline.
 RANGE is the Range shown and SHOWN the PR head the buffer shows.
 GITHUB is the head the review data was fetched at, or nil when
-unknown.  A Thread's line is GitHub's number at GITHUB, so the right
-side is placed only when RANGE numbers it as GitHub does
-\(`prrr-state-range-github-side-p') and GITHUB is SHOWN or unknown.
-Every other line Thread goes to \"Not in this diff\" rather than onto
-a wrong line.  This governs placement only: a new comment is numbered
-at its own commit (`prrr-state-anchor-problem')."
-  (seq-filter (lambda (side)
-                (and (prrr-state-range-github-side-p range side)
-                     (or (eq side 'left) (null github) (equal github shown))))
-              '(left right)))
+unknown.  A Thread's line is GitHub's number in the diff from the
+merge base to GITHUB, so a side is placed only when RANGE numbers it
+as GitHub does (`prrr-state-range-github-side-p') and GITHUB is SHOWN
+or unknown.  That holds for the left side too: at another head, as
+after a rebase, the merge base may be another commit, and nothing
+stored says which one GitHub numbered against.  Every other line
+Thread goes to \"Not in this diff\" rather than onto a wrong line.
+This governs placement only: a new comment is numbered at its own
+commit (`prrr-state-anchor-problem')."
+  (and (or (null github) (equal github shown))
+       (seq-filter (lambda (side) (prrr-state-range-github-side-p range side))
+                   '(left right))))
 
 (defun prrr-state-anchor-problem (range anchor)
   "Return why RANGE refuses a comment on ANCHOR, or nil when it takes one.
@@ -944,12 +1091,38 @@ META is a `prrr-pr-meta' or nil.  A Pending Review does not count."
   "Return the commit of the viewer's Pending Review in review DATA, or nil.
 DATA is as `prrr-state-outbox-view' returns.  That is the stored
 Pending Review's commit; without one, the commit of the first queued
-new Thread, whose sending creates the Pending Review on it."
+new Thread or reply, whose sending creates the Pending Review on it.
+A reply carries the head it was written at, so the review it creates
+is on that commit, not on whatever GitHub's head is by then.  A reply
+queued without a commit (before replies carried one) implies none:
+its review's commit is unknown, so it is skipped, and a Thread
+behind it is judged by the Outbox against the review found then."
   (or (when-let* ((review (plist-get data :pending-review)))
         (prrr-pending-review-commit-oid review))
-      (when-let* ((row (seq-find (lambda (row) (eq (prrr-outbox-kind row) 'thread))
-                                 (plist-get data :outbox))))
-        (plist-get (prrr-outbox-payload row) :commit))))
+      (seq-some (lambda (row)
+                  (and (memq (prrr-outbox-kind row) '(thread reply))
+                       (plist-get (prrr-outbox-payload row) :commit)))
+                (plist-get data :outbox))))
+
+(defun prrr-state-unpulled-posts (posted numbers)
+  "Return the POSTED Discussion Comments that forge does not list yet.
+POSTED are plists with :database-id, GitHub's database id of each
+Discussion Comment GitHub accepted from the Outbox; NUMBERS are the
+database ids of the PR's Discussion Comments that forge lists.  A
+posted comment shows until forge lists it and no longer, so it is
+never missing from the Review Buffer and never there twice."
+  (seq-remove (lambda (post) (member (plist-get post :database-id) numbers)) posted))
+
+(defun prrr-state-outbox-commit-problem (review-commit commit)
+  "Return why the Outbox cannot send a new Thread on COMMIT, or nil.
+REVIEW-COMMIT is the commit of the Pending Review it would join.  The
+Thread was already accepted, so unlike `prrr-state-review-commit-problem'
+this tells the user how to get rid of the stuck write: submitting the
+review (S) would only queue behind it."
+  (when (and review-commit commit (not (equal review-commit commit)))
+    (format (concat "Pending Review is on %s: copy this comment, drop it with O k, "
+                    "then submit or discard the review")
+            (prrr-state-short-oid review-commit))))
 
 (defun prrr-state-review-commit-problem (review-commit commit)
   "Return why a new Thread on COMMIT cannot join a Pending Review on REVIEW-COMMIT.
@@ -1003,13 +1176,15 @@ find a line again at another commit (SPEC section 8)."
   "Return the PR next to PR in its Stack in DIRECTION, or nil.
 PRS are the repository's open `prrr-pr's, PR among them.  DIRECTION
 `down' is the PR that PR is stacked on (see `prrr-state--parent' for
-DEFAULT-BRANCH), `up' the oldest PR stacked on PR."
-  (if (eq direction 'down)
-      (prrr-state--parent pr prs default-branch)
-    (car (sort (seq-filter (lambda (other)
-                             (eq pr (prrr-state--parent other prs default-branch)))
-                           prs)
-               #'prrr-state--older-p))))
+DEFAULT-BRANCH), `up' the oldest PR stacked on PR.  Any other
+DIRECTION signals an error."
+  (pcase direction
+    ('down (prrr-state--parent pr prs default-branch))
+    ('up (car (sort (seq-filter (lambda (other)
+                                  (eq pr (prrr-state--parent other prs default-branch)))
+                                prs)
+                    #'prrr-state--older-p)))
+    (_ (error "Unknown Stack direction: %S" direction))))
 
 (provide 'prrr-state)
 ;;; prrr-state.el ends here

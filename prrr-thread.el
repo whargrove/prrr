@@ -102,10 +102,16 @@ is not part of the diff."
   (concat (prrr-thread-path thread) ", " (prrr-thread--location thread)))
 
 (defun prrr-thread--row-note (row)
-  "Return \"  unsent\", or \"  failed: \" and the error, for the queued write ROW."
+  "Return the note on the queued write ROW.
+\"  failed: \" and the error for a failed write; \"  waiting for
+GitHub's answer\" for an unconfirmed one, which is unsent too
+\(`prrr-state-outbox-unconfirmed-p'); else \"  unsent\"."
   (if-let* ((error (prrr-outbox-last-error row)))
       (propertize (concat "  failed: " error) 'font-lock-face 'prrr-failed)
-    (propertize "  unsent" 'font-lock-face 'prrr-unsent)))
+    (propertize (if (prrr-state-outbox-unconfirmed-p row)
+                    "  waiting for GitHub's answer"
+                  "  unsent")
+                'font-lock-face 'prrr-unsent)))
 
 (defun prrr-thread--write-note (id writes)
   "Return the note on the queued write of ID in WRITES, or nil.
@@ -122,6 +128,19 @@ A section of type `unsent-post' whose value is ROW's id."
       prrr-thread-indent
       (propertize "Your Discussion Comment" 'font-lock-face 'prrr-comment-author)
       (prrr-thread--row-note row)
+      "\n")
+    (prrr-thread--insert-body body nil)))
+
+(defun prrr-thread-insert-sent-post (body)
+  "Insert the Discussion Comment BODY that GitHub accepted from the Outbox.
+For one forge has not pulled yet (`prrr-sync-posted-discussion').  A
+section of type `sent-post'; no command acts on it, since the Outbox
+holds it no more."
+  (magit-insert-section (sent-post)
+    (magit-insert-heading
+      prrr-thread-indent
+      (propertize "Your Discussion Comment" 'font-lock-face 'prrr-comment-author)
+      (propertize "  sent" 'font-lock-face 'magit-dimmed)
       "\n")
     (prrr-thread--insert-body body nil)))
 
@@ -320,8 +339,10 @@ back.  Point returns to the same place in the same magit section,
 even when the buffer was redrawn meanwhile.  When ON-CONFIRM
 signals, the capture buffer stays, so no text is lost."
   (let ((origin (point-marker))
+        ;; magit's hunk method moves point while a region is active.
         (section-position (when-let* ((section (magit-section-at)))
-                            (cons section (magit-section-get-relative-position section))))
+                            (cons section (save-excursion
+                                            (magit-section-get-relative-position section)))))
         (windows (current-window-configuration))
         (buffer (generate-new-buffer "*prrr comment*")))
     (with-current-buffer buffer

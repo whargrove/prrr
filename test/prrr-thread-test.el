@@ -143,6 +143,21 @@ BODY sees `section', the first child of the root."
       (should (looking-at "    example-me  2026-09-02  failed: GitHub returned HTTP 502$"))
       (should (eq 'prrr-failed (get-text-property (- (line-end-position) 2) 'font-lock-face))))))
 
+(ert-deftest prrr-thread-test-unconfirmed ()
+  "A write whose send got no answer is unsent, waiting for GitHub's answer."
+  (let ((writes (make-hash-table :test #'equal))
+        (row (prrr-thread-test--row "1")))
+    (setf (prrr-outbox-payload row) '(:sent-at "2026-10-10T12:00:01Z"))
+    (puthash "C_1" row writes)
+    (prrr-thread-test--with-render
+        (prrr-thread-insert (prrr-test-thread) (list (prrr-thread-test--comment))
+                            :writes writes)
+      (should (eq 'thread (oref section type)))
+      (forward-line)
+      (should (looking-at "    example-bob  2026-09-02  waiting for GitHub's answer$"))
+      (should (eq 'prrr-unsent (get-text-property (- (line-end-position) 2)
+                                                  'font-lock-face))))))
+
 (ert-deftest prrr-thread-test-agent-comment ()
   (let ((comment (prrr-thread-test--comment)))
     (setf (prrr-comment-agent-p comment) t)
@@ -309,6 +324,32 @@ FINISH is the command that ends the capture; point must come back."
 
 (ert-deftest prrr-thread-test-capture-abort-survives-a-redraw ()
   (prrr-thread-test--with-redrawn-capture prrr-comment-abort))
+
+(ert-deftest prrr-thread-test-capture-keeps-point-with-an-active-region ()
+  "Starting a capture on a region in a hunk leaves point and the region alone.
+magit's hunk method of `magit-section-get-relative-position' moves
+point while a region is active."
+  (let ((origin (generate-new-buffer "prrr-test-origin")))
+    (unwind-protect
+        (with-current-buffer origin
+          (magit-section-mode)
+          (let ((inhibit-read-only t))
+            (magit-insert-section (prrr-thread-test-root)
+              (magit-insert-section (magit-hunk-section "a.el")
+                (insert "@@ -1,3 +1,3 @@\n one\n-two\n+deux\n three\n"))))
+          (transient-mark-mode 1)
+          (goto-char (point-min))
+          (search-forward "-two")
+          (set-mark (line-beginning-position))
+          (search-forward "deux")
+          (activate-mark)
+          (let ((before (point)))
+            (prrr-comment-capture "a.el:2 right" #'ignore)
+            (should (= before (with-current-buffer origin (point))))))
+      (dolist (buffer (buffer-list))
+        (when (string-prefix-p "*prrr comment*" (buffer-name buffer))
+          (kill-buffer buffer)))
+      (kill-buffer origin))))
 
 (ert-deftest prrr-thread-test-capture-origin-killed ()
   "Review Focus 5: confirming after the Review Buffer is gone still sends."

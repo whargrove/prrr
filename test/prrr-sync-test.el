@@ -28,6 +28,7 @@
 (require 'cl-lib)
 (require 'prrr-test-helper)
 (require 'prrr-sync)
+(require 'prrr-diff)
 
 (defconst prrr-sync-test--now (encode-time '(0 0 12 10 10 2026 nil nil t))
   "2026-10-10T12:00:00Z.")
@@ -563,8 +564,58 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
                                              :commit "2222"))
         (should-not prrr-test-requests)
-        (should (string-prefix-p "Your Pending Review is on 1111, not on the head shown (2222)"
+        (should (string-prefix-p "Pending Review is on 1111: copy this comment"
                                  (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-outbox-refuses-a-thread-for-a-review-found-on-another-commit ()
+  "A Pending Review found at GitHub, not stored, refuses a Thread on another commit too."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'prrr-github-find-pending-review)
+                 (lambda (_host _owner _name _number _me callback _errorback)
+                   (funcall callback (prrr-pending-review-create
+                                      :pr-id prrr-sync-test--pr :review-id "PRR_found"
+                                      :commit-oid "1111")))))
+        (prrr-test-with-ghub-dispatch nil
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit "2222"))
+          (should-not prrr-test-requests)
+          (should (string-prefix-p "Pending Review is on 1111: copy this comment"
+                                   (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))
+          (should (= 1 (length (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-refused-thread-is-not-a-creation ()
+  "A Thread the Outbox refuses never reaches GitHub, so it does not use the creation budget."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "2222"))
+        (should-not prrr-sync--outbox-creations)))))
+
+(ert-deftest prrr-sync-test-sent-thread-is-a-creation ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch
+          `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "1111"))
+        (should (= 1 (length prrr-sync--outbox-creations)))))))
+
+(ert-deftest prrr-sync-test-outbox-reply-creates-the-pending-review-on-its-commit ()
+  "A reply with no Pending Review creates one on the head the reply was written at."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "pending-review-none"))
+            (addPullRequestReview . ,(prrr-test-fixture "create-review"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-sync-test--write 'reply (list :thread-id "PRRT_kwDOexampleThread1" :body "Yes."
+                                            :commit prrr-test-head))
+        (should (equal prrr-test-head
+                       (alist-get 'commitOID (prrr-sync-test--input 'addPullRequestReview))))))))
 
 (ert-deftest prrr-sync-test-outbox-creates-the-pending-review ()
   "SPEC section 7: the first pending comment creates the Pending Review, after looking."
@@ -690,7 +741,7 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
           (should-not (prrr-db-outbox-rows)))))))
 
 (ert-deftest prrr-sync-test-outbox-no-answer-then-late-answer ()
-  "A write without an answer fails as offline; an answer that comes later still counts."
+  "A write without an answer is unconfirmed; an answer that comes later still counts."
   (prrr-db-with-test-db
     (prrr-test-with-outbox
       (let ((callback nil))
@@ -701,7 +752,9 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (let ((watchdog (seq-find (lambda (timer) (eql (car timer) prrr-sync-timeout))
                                   prrr-test-timers)))
           (apply (nth 1 watchdog) (nth 2 watchdog)))
-        (should (equal "No answer from GitHub" (prrr-outbox-last-error (car (prrr-db-outbox-rows)))))
+        (let ((row (car (prrr-db-outbox-rows))))
+          (should-not (prrr-outbox-last-error row))
+          (should (prrr-state-outbox-unconfirmed-p row)))
         (should-not prrr-sync--outbox-sending)
         (funcall callback prrr-sync-test--mark-viewed)
         (should-not (prrr-db-outbox-rows))
@@ -723,6 +776,35 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (should-not (prrr-db-outbox-rows))
         (funcall callback prrr-sync-test--mark-viewed)
         (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))))))
+
+(ert-deftest prrr-sync-test-outbox-late-answer-to-a-discarded-write-renames ()
+  "GitHub made what a discarded write asked for, so its ids are still learned.
+A reply that names the Thread's local id, from a buffer drawn before the
+discard, reaches the Thread under GitHub's id."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (let ((callback nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query _variables &rest args)
+                     (setq callback (plist-get args :callback)))))
+          (let* ((thread (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                              :body "Nit." :commit "1111")))
+                 (local (plist-get (prrr-outbox-payload thread) :thread)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            (prrr-sync-discard (prrr-outbox-id thread))
+            (prrr-sync-test--queue 'reply (list :thread-id local :comment "local:R"
+                                                :body "More."))
+            (prrr-test-with-ghub-dispatch
+                `((addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+              (funcall callback (prrr-test-fixture "add-thread"))
+              (should (equal "PRRT_kwDOexampleNew01" (gethash local prrr-sync--renames)))
+              (should (equal '(addPullRequestReviewThreadReply) prrr-test-requests))
+              (should (equal "PRRT_kwDOexampleNew01"
+                             (alist-get 'pullRequestReviewThreadId
+                                        (prrr-sync-test--input
+                                         'addPullRequestReviewThreadReply))))
+              (should-not (prrr-db-outbox-rows)))))))))
 
 (ert-deftest prrr-sync-test-outbox-sends-after-a-restart ()
   "A queued write carries all it needs: no forge object, no buffer."
@@ -825,6 +907,119 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
         (prrr-test-run-timers 'prrr-sync--refetch)
         (should (equal '(markFileAsViewed repository) prrr-test-requests))))))
 
+(defun prrr-sync-test--age-refetch-attempt ()
+  "Make the last refetch of the fixture PR look older than the retry spacing."
+  (let ((key (cons 'review prrr-sync-test--pr)))
+    (puthash key (plist-put (copy-sequence (gethash key prrr-sync--status)) :attempted-at
+                            (prrr-sync--timestamp
+                             (time-subtract nil (1+ prrr-sync-min-retry-spacing))))
+             prrr-sync--status)))
+
+(defun prrr-sync-test--refetch-timers ()
+  "The recorded timers that start a refetch."
+  (seq-filter (lambda (timer) (eq (nth 1 timer) 'prrr-sync--refetch)) prrr-test-timers))
+
+(ert-deftest prrr-sync-test-outbox-retries-a-failed-refetch ()
+  "A reply to a Thread published at once does not need G when the refetch fails.
+The reply waits for the Thread's id, which only a refetch brings; a
+failed refetch is tried again on a later pump, no sooner than
+`prrr-sync-min-retry-spacing' after it started, and the Outbox pumps
+by itself then."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      ;; What a successful Immediate Publish leaves: GitHub's comment id in a
+      ;; local Thread, and its PR marked for a refetch.
+      (prrr-db-insert (prrr-comment-create :comment-id "PRRC_kwDOexample0000006"
+                                           :thread-id "local:T" :pr-id prrr-sync-test--pr
+                                           :state 'submitted :local-state 'sent))
+      (let ((reply (prrr-sync-test--queue 'reply '(:thread-id "local:T" :comment "local:R"
+                                                   :body "More."))))
+        (prrr-sync--outbox-mark-dirty reply))
+      (prrr-test-with-ghub-dispatch '((repository . (:error (error http 502))))
+        (prrr-sync--outbox-pump)
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository) prrr-test-requests))
+        (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+        ;; Too soon: a pump now does not refetch.
+        (prrr-sync--outbox-pump)
+        (should-not (prrr-sync-test--refetch-timers))
+        (should (seq-find (lambda (timer) (eq (nth 1 timer) 'prrr-sync--retry-pump))
+                          prrr-test-timers)))
+      (prrr-sync-test--age-refetch-attempt)
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "review-data"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-test-run-timers 'prrr-sync--retry-pump)
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
+        (should (equal "PRRT_kwDOexample0000005"
+                       (alist-get 'pullRequestReviewThreadId
+                                  (prrr-sync-test--input 'addPullRequestReviewThreadReply))))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-refetch-after-a-recent-failure-is-pumped ()
+  "A PR changed shortly after a failed refetch is refetched once spacing allows.
+The failed refetch was a Review Buffer's, which the Outbox did not need;
+the Outbox still pumps by itself when the PR may be refetched, so the
+reply waiting for its Thread's id does not need G."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch '((repository . (:error (error http 502))))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+      (setq prrr-test-timers nil)
+      ;; Then an Immediate Publish succeeds: its comment sits in a local Thread.
+      (prrr-db-insert (prrr-comment-create :comment-id "PRRC_kwDOexample0000006"
+                                           :thread-id "local:T" :pr-id prrr-sync-test--pr
+                                           :state 'submitted :local-state 'sent))
+      (prrr-sync--outbox-mark-dirty
+       (prrr-sync-test--queue 'reply '(:thread-id "local:T" :comment "local:R" :body "More.")))
+      (prrr-sync--outbox-pump)
+      (should-not (prrr-sync-test--refetch-timers))
+      (let ((pumps (seq-filter (lambda (timer) (eq (nth 1 timer) 'prrr-sync--retry-pump))
+                               prrr-test-timers)))
+        (should (= 1 (length pumps)))
+        (should (< 0 (car (car pumps)) (1+ prrr-sync-min-retry-spacing))))
+      ;; Another pump meanwhile does not stack a second timer.
+      (prrr-sync--outbox-pump)
+      (should (= 1 (seq-count (lambda (timer) (eq (nth 1 timer) 'prrr-sync--retry-pump))
+                              prrr-test-timers)))
+      (prrr-sync-test--age-refetch-attempt)
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "review-data"))
+            (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+        (prrr-test-run-timers 'prrr-sync--retry-pump)
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository addPullRequestReviewThreadReply) prrr-test-requests))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-retries-a-refetch-without-answer ()
+  "A refetch the Outbox needed that GitHub never answers is tried again too."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (puthash prrr-sync-test--pr (prrr-sync--target (prrr-sync-test--repo)
+                                                     (prrr-sync-test--pullreq))
+               prrr-sync--outbox-dirty)
+      (prrr-sync--outbox-pump)
+      (cl-letf (((symbol-function 'ghub-query) #'ignore))
+        (prrr-test-run-timers 'prrr-sync--refetch))
+      (should-not (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+      (let ((watchdog (seq-find (lambda (timer) (eql (car timer) prrr-sync-timeout))
+                                prrr-test-timers)))
+        (apply (nth 1 watchdog) (nth 2 watchdog)))
+      (should (eq 'offline (plist-get (prrr-sync-review-status prrr-sync-test--pr) :state)))
+      (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty)))))
+
+(ert-deftest prrr-sync-test-failed-refetch-not-needed-is-not-retried ()
+  "A refetch the Outbox did not ask for, such as a Review Buffer's, is not retried."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch '((repository . (:error (error http 502))))
+        (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq))
+        (should (equal '(repository) prrr-test-requests))
+        (should-not (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))))))
+
 (ert-deftest prrr-sync-test-refetch-names-a-published-thread ()
   "A reply to a Thread published at once goes out once a refetch names the Thread."
   (prrr-db-with-test-db
@@ -919,6 +1114,333 @@ Return the local ids it was written under, as (THREAD . COMMENT)."
                        (alist-get 'pullRequestReviewThreadId
                                   (prrr-sync-test--input 'addPullRequestReviewThreadReply))))))))
 
+;;;; Unconfirmed writes (bead prrr-3ha)
+
+(defun prrr-sync-test--landed-data (&optional body)
+  "The review-data fixture with my new Thread on src/example.el, made now.
+Its one comment, PRRC_kwDOexampleLanded in PRRT_kwDOexampleLanded, has
+BODY, \"Nit.\" by default, as a Thread the Outbox could not confirm left it."
+  (let* ((data (copy-tree (prrr-test-fixture "review-data")))
+         (pr (cdr (assq 'pullRequest (cdr (assq 'repository (cdr data))))))
+         (threads (assq 'reviewThreads pr)))
+    (setcdr threads
+            (append (cdr threads)
+                    `(((id . "PRRT_kwDOexampleLanded") (path . "src/example.el") (line . 12)
+                       (startLine) (diffSide . "RIGHT") (startDiffSide) (originalLine . 12)
+                       (isOutdated) (isResolved) (subjectType . "LINE")
+                       (viewerCanResolve . t) (viewerCanUnresolve . t)
+                       (comments
+                        ((id . "PRRC_kwDOexampleLanded") (fullDatabaseId . "2009")
+                         (author (login . "example-me")) (body . ,(or body "Nit."))
+                         (createdAt . ,(prrr-sync--timestamp)) (lastEditedAt) (replyTo)
+                         (state . "PENDING")
+                         (pullRequestReview (id . "PRR_kwDOexamplePending1"))
+                         (originalCommit (oid . ,prrr-test-head))))))))
+    data))
+
+(defun prrr-sync-test--unconfirmed-thread ()
+  "Comment on the fixture PR; GitHub never answers, and the watchdog ends the send.
+The Pending Review is the review-data fixture's.  Return the row of the write."
+  (prrr-db-insert (prrr-pending-review-create :pr-id prrr-sync-test--pr
+                                              :review-id "PRR_kwDOexamplePending1"
+                                              :commit-oid prrr-test-head))
+  (cl-letf (((symbol-function 'ghub-query) #'ignore))
+    (prog1 (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                                :commit prrr-test-head))
+      (prrr-test-run-timers 'prrr-sync--outbox-timed-out))))
+
+(ert-deftest prrr-sync-test-outbox-timeout-then-retry-does-not-resend ()
+  "A write without an answer is unconfirmed: a retry re-checks the PR, never resends."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (let ((sent 0))
+        (cl-letf (((symbol-function 'ghub-query) (lambda (&rest _) (cl-incf sent))))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit "1111"))
+          (should (plist-get (prrr-outbox-payload (car (prrr-db-outbox-rows))) :sent-at))
+          (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+          (should-not prrr-sync--outbox-sending)
+          (let ((row (car (prrr-db-outbox-rows))))
+            (should (prrr-state-outbox-unconfirmed-p row))
+            (should-not (prrr-outbox-last-error row)))
+          ;; The PR is refetched to decide, though its first write is not sent.
+          (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+          (should (seq-find (lambda (timer) (eq (nth 1 timer) 'prrr-sync--refetch))
+                            prrr-test-timers))
+          (remhash prrr-sync-test--pr prrr-sync--outbox-dirty)
+          (prrr-sync-retry prrr-sync-test--pr)
+          (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+          (prrr-sync-retry)
+          (should (= 1 sent)))))))
+
+(ert-deftest prrr-sync-test-outbox-refetch-confirms-an-unconfirmed-thread ()
+  "A refetch that finds the comment records it once, with GitHub's ids, and renames."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let* ((thread (prrr-sync-test--unconfirmed-thread))
+             (local (plist-get (prrr-outbox-payload thread) :thread)))
+        (prrr-test-with-ghub-dispatch nil
+          (prrr-sync-test--write 'reply (list :thread-id local :body "And this."))
+          (should-not prrr-test-requests))
+        (prrr-test-with-ghub-dispatch
+            `((repository . ,(prrr-sync-test--landed-data))
+              (addPullRequestReviewThreadReply . ,(prrr-test-fixture "add-reply")))
+          (prrr-test-run-timers 'prrr-sync--refetch)
+          ;; Any later request is the refetch that follows the reply's success.
+          (should (equal '(repository addPullRequestReviewThreadReply)
+                         (seq-take prrr-test-requests 2)))
+          (should (equal "PRRT_kwDOexampleLanded"
+                         (alist-get 'pullRequestReviewThreadId
+                                    (prrr-sync-test--input 'addPullRequestReviewThreadReply)))))
+        (should-not (prrr-db-outbox-rows))
+        (should (equal "PRRT_kwDOexampleLanded" (gethash local prrr-sync--renames)))
+        (should (= 1 (seq-count (lambda (comment) (equal "Nit." (prrr-comment-body comment)))
+                                (prrr-db-select 'review-comment :pr-id prrr-sync-test--pr))))
+        (should (equal "2009" (prrr-comment-database-id
+                               (prrr-db-get 'review-comment "PRRC_kwDOexampleLanded"))))))))
+
+(ert-deftest prrr-sync-test-outbox-refetch-without-the-write-resends-it ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--unconfirmed-thread)
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-sync-test--landed-data "Something else."))
+            (addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository addPullRequestReviewThread) prrr-test-requests)))
+      (should-not (prrr-db-outbox-rows))
+      (should (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01")))))
+
+(ert-deftest prrr-sync-test-outbox-edit-of-an-unconfirmed-comment-waits ()
+  "An edit while the creation is unconfirmed is its own write, sent once it is confirmed."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((comment (plist-get (prrr-outbox-payload (prrr-sync-test--unconfirmed-thread))
+                                :comment)))
+        (prrr-test-with-ghub-dispatch nil
+          (prrr-sync-test--write 'edit (list :comment-id comment :body "Better.")))
+        (should (equal '(thread edit) (mapcar #'prrr-outbox-kind (prrr-db-outbox-rows))))
+        (should (equal "Nit." (plist-get (prrr-outbox-payload (car (prrr-db-outbox-rows)))
+                                         :body)))
+        (prrr-test-with-ghub-dispatch
+            `((repository . ,(prrr-sync-test--landed-data))
+              (updatePullRequestReviewComment . ((data (updatePullRequestReviewComment
+                                                        (clientMutationId))))))
+          (prrr-test-run-timers 'prrr-sync--refetch)
+          ;; Any later request is the refetch that follows the edit's success.
+          (should (equal '(repository updatePullRequestReviewComment)
+                         (seq-take prrr-test-requests 2)))
+          (let ((input (prrr-sync-test--input 'updatePullRequestReviewComment)))
+            (should (equal "PRRC_kwDOexampleLanded"
+                           (alist-get 'pullRequestReviewCommentId input)))
+            (should (equal "Better." (alist-get 'body input)))))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-restart-refetches-before-sending ()
+  "Bead prrr-nfa: a write cut off by a restart is checked, then sent, without a buffer."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--queue 'viewed (list :path "docs/notes.md" :viewed t
+                                           :sent-at (prrr-sync--timestamp))))
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch
+          `((repository . ,(prrr-test-fixture "review-data"))
+            (markFileAsViewed . ,prrr-sync-test--mark-viewed))
+        (prrr-sync-outbox-start)
+        (prrr-sync-outbox-start)
+        (should (= 1 (seq-count (lambda (timer) (eq (nth 1 timer) 'prrr-sync--outbox-pump))
+                                prrr-test-timers)))
+        (prrr-test-run-timers 'prrr-sync--outbox-pump)
+        (should-not prrr-test-requests)
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository markFileAsViewed) prrr-test-requests))
+        (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-starts-when-the-database-opens ()
+  "Opening the database is the one step every entry point takes first."
+  (should (memq #'prrr-sync-outbox-start prrr-db-open-hook)))
+
+(ert-deftest prrr-sync-test-outbox-discard-of-an-unconfirmed-write-refetches ()
+  "An unconfirmed write may be dropped; the PR is refetched to show what GitHub has."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--unconfirmed-thread)
+      (clrhash prrr-sync--outbox-dirty)
+      (should (= 1 (prrr-sync-discard (prrr-outbox-id (car (prrr-db-outbox-rows))))))
+      (should-not (prrr-db-outbox-rows))
+      (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty)))))
+
+(defvar prrr-sync-test--held nil
+  "Requests `prrr-sync-test--with-held-answers' held, newest first.")
+
+(defmacro prrr-sync-test--with-held-answers (answers &rest body)
+  "Run BODY with `ghub-query' answering `repository' requests from ANSWERS.
+ANSWERS is a function of no argument returning the review data to
+answer with.  Every other request is held: its field, callback and
+errorback are pushed onto `prrr-sync-test--held', newest first."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'ghub-query)
+              (lambda (query _variables &rest args)
+                (let ((field (car (cadr query))))
+                  (if (and (eq field 'repository) ,answers)
+                      (funcall (plist-get args :callback) (funcall ,answers))
+                    (push (list field (plist-get args :callback) (plist-get args :errorback))
+                          prrr-sync-test--held))))))
+     ,@body))
+
+(ert-deftest prrr-sync-test-outbox-late-setup-starts-no-mutation ()
+  "A Pending Review found after the watchdog ended the send adds no Thread."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-sync-test--held nil))
+        (prrr-sync-test--with-held-answers nil
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit prrr-test-head))
+          (should (equal '(repository) (mapcar #'car prrr-sync-test--held)))
+          (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+          (funcall (nth 1 (car prrr-sync-test--held)) (prrr-test-fixture "pending-review"))
+          (should (equal '(repository) (mapcar #'car prrr-sync-test--held)))
+          (should-not prrr-sync--outbox-creations)
+          (should (prrr-state-outbox-unconfirmed-p (car (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-outbox-late-success-records-the-stored-row ()
+  "An edit made after a refetch judged the write missing is not lost to a late success."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-sync-test--held nil))
+        (prrr-db-insert (prrr-pending-review-create :pr-id prrr-sync-test--pr
+                                                    :review-id "PRR_kwDOexamplePending1"
+                                                    :commit-oid prrr-test-head))
+        (prrr-sync-test--with-held-answers
+            (lambda () (prrr-sync-test--landed-data "Something else."))
+          (let* ((row (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                           :body "Nit." :commit prrr-test-head)))
+                 (comment (plist-get (prrr-outbox-payload row) :comment))
+                 (first (car prrr-sync-test--held)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            ;; The refetch says missing; a rate limit keeps it from going out again.
+            (setq prrr-sync--outbox-paused-until "2999-01-01T00:00:00Z")
+            (prrr-test-run-timers 'prrr-sync--refetch)
+            (should-not (prrr-state-outbox-unconfirmed-p (car (prrr-db-outbox-rows))))
+            (prrr-sync-test--write 'edit (list :comment-id comment :body "Better."))
+            (should (= 1 (length (prrr-db-outbox-rows))))
+            (funcall (nth 1 first) (prrr-test-fixture "add-thread"))
+            (should (equal "Better." (prrr-comment-body
+                                      (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01"))))
+            ;; GitHub has the old body: an edit carries the new one there.
+            (let ((edit (car (prrr-db-outbox-rows))))
+              (should (eq 'edit (prrr-outbox-kind edit)))
+              (should (equal '("PRRC_kwDOexampleNew01" "Better.")
+                             (list (plist-get (prrr-outbox-payload edit) :comment-id)
+                                   (plist-get (prrr-outbox-payload edit) :body)))))))))))
+
+(ert-deftest prrr-sync-test-outbox-late-failure-of-an-earlier-send-is-ignored ()
+  "A failure answering the first send leaves the marker of the second alone."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((prrr-sync-test--held nil))
+        (prrr-sync-test--with-held-answers (lambda () (prrr-test-fixture "review-data"))
+          (prrr-sync-test--write 'viewed '(:path "docs/notes.md" :viewed t))
+          (let ((first (car prrr-sync-test--held)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            ;; The refetch says missing and the write goes out again, a second later.
+            (cl-letf (((symbol-function 'prrr-sync--timestamp)
+                       (lambda (&optional _time) "2099-01-01T00:00:00Z")))
+              (prrr-test-run-timers 'prrr-sync--refetch))
+            (should (= 2 (length prrr-sync-test--held)))
+            (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+            (funcall (nth 2 first) '(error http 502) nil nil nil)
+            (let ((row (car (prrr-db-outbox-rows))))
+              (should (equal "2099-01-01T00:00:00Z"
+                             (plist-get (prrr-outbox-payload row) :sent-at)))
+              (should-not (prrr-outbox-last-error row))
+              (should (= 0 (prrr-outbox-attempts row))))))))))
+
+(ert-deftest prrr-sync-test-outbox-late-failure-is-recorded ()
+  "A failure that answers after the watchdog counts, without touching the next send."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((errorback nil))
+        (cl-letf (((symbol-function 'ghub-query)
+                   (lambda (_query _variables &rest args)
+                     (setq errorback (plist-get args :errorback)))))
+          (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t)))
+        (prrr-test-run-timers 'prrr-sync--outbox-timed-out)
+        (let ((other (prrr-outbox-create :id "other" :pr-id "PR_other" :kind 'viewed)))
+          ;; Another PR's write is being sent now.
+          (setq prrr-sync--outbox-sending other)
+          (cl-incf prrr-sync--outbox-token)
+          (funcall errorback '(error http 502) nil nil nil)
+          (should (eq other prrr-sync--outbox-sending)))
+        (let ((row (car (prrr-db-outbox-rows))))
+          (should (equal "GitHub returned HTTP 502" (prrr-outbox-last-error row)))
+          (should (= 1 (prrr-outbox-attempts row)))
+          (should-not (prrr-state-outbox-unconfirmed-p row)))))))
+
+(ert-deftest prrr-sync-test-outbox-unconfirmed-discussion-fails-asking-to-check ()
+  "A refetch cannot show a Discussion Comment: the user checks the PR, then decides."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'ghub-query) #'ignore))
+        (prrr-sync-test--write 'discussion '(:body "Thanks!"))
+        (prrr-test-run-timers 'prrr-sync--outbox-timed-out))
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should (equal '(repository) prrr-test-requests)))
+      (let ((row (car (prrr-db-outbox-rows))))
+        (should (equal prrr-sync-unconfirmed-message (prrr-outbox-last-error row)))
+        (should (string-match-p "check" (prrr-outbox-last-error row)))
+        (should (prrr-state-outbox-awaiting-user-p row))))))
+
+(defun prrr-sync-test--discussion-awaiting-user ()
+  "Post a Discussion Comment GitHub never answers; a refetch cannot confirm it."
+  (cl-letf (((symbol-function 'ghub-query) #'ignore))
+    (prrr-sync-test--write 'discussion '(:body "Thanks!"))
+    (prrr-test-run-timers 'prrr-sync--outbox-timed-out))
+  (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+    (prrr-test-run-timers 'prrr-sync--refetch))
+  (setq prrr-test-timers nil)
+  (should (prrr-state-outbox-awaiting-user-p (car (prrr-db-outbox-rows)))))
+
+(ert-deftest prrr-sync-test-outbox-awaiting-user-survives-a-refetch ()
+  "A later refetch keeps a write a refetch could not confirm for the user."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--discussion-awaiting-user)
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (should (prrr-sync-refetch (prrr-sync-test--repo) (prrr-sync-test--pullreq)))
+        (prrr-test-run-timers 'prrr-sync--outbox-pump)
+        (should (equal '(repository) prrr-test-requests)))
+      (should (equal prrr-sync-unconfirmed-message
+                     (prrr-outbox-last-error (car (prrr-db-outbox-rows))))))))
+
+(ert-deftest prrr-sync-test-outbox-awaiting-user-survives-another-write ()
+  "Another write on the PR does not send it either."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--discussion-awaiting-user)
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "review-data")))
+        (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t))
+        (prrr-test-run-timers 'prrr-sync--refetch)
+        (should-not (memq 'addComment prrr-test-requests))
+        (should-not (memq 'markFileAsViewed prrr-test-requests)))
+      (let ((row (car (prrr-db-outbox-rows))))
+        (should (eq 'discussion (prrr-outbox-kind row)))
+        (should (prrr-state-outbox-awaiting-user-p row))))))
+
+(ert-deftest prrr-sync-test-outbox-awaiting-user-goes-on-resend ()
+  "The user's retry (O r) sends it, and what waited behind it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--discussion-awaiting-user)
+      (prrr-test-with-ghub-dispatch `((addComment . ,(prrr-test-fixture "add-comment")))
+        (prrr-sync-retry prrr-sync-test--pr)
+        (should-not prrr-test-requests)
+        (prrr-sync-resend prrr-sync-test--pr)
+        (should (equal '(addComment) prrr-test-requests)))
+      (should-not (prrr-db-outbox-rows)))))
+
 ;;;; Every kind of write
 
 (ert-deftest prrr-sync-test-outbox-publish ()
@@ -933,6 +1455,40 @@ Return the local ids it was written under, as (THREAD . COMMENT)."
                            (prrr-comment-thread-id comment)))
             (should (eq 'submitted (prrr-comment-state comment)))
             (should (equal "3001" (prrr-comment-database-id comment)))))))))
+
+(ert-deftest prrr-sync-test-outbox-success-without-ids-is-unconfirmed ()
+  "GitHub made the comment, but its answer does not name it: never resent blindly.
+Another write on the PR does not send it again; the refetch that finds
+the comment records it once."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (let ((posts 0))
+        (prrr-test-with-rest-stub
+            (progn (cl-incf posts)
+                   (mapcar (lambda (pair) (if (eq (car pair) 'node_id) (list 'node_id) pair))
+                           (prrr-test-fixture "publish-comment")))
+            captured
+          (let ((row (prrr-sync-test--write 'publish (list :anchor prrr-sync-test--anchor
+                                                           :body "Nit." :commit prrr-test-head))))
+            (should (equal "POST" (car captured)))
+            (let ((stored (prrr-db-get 'outbox (prrr-outbox-id row))))
+              (should (prrr-state-outbox-unconfirmed-p stored))
+              (should-not (prrr-outbox-last-error stored)))
+            (should-not prrr-sync--outbox-sending)
+            (should (gethash prrr-sync-test--pr prrr-sync--outbox-dirty))
+            (prrr-test-with-ghub-dispatch nil
+              (prrr-sync-test--write 'viewed '(:path "a.el" :viewed t))
+              (should-not prrr-test-requests))
+            (should (= 1 posts))
+            (prrr-test-with-ghub-dispatch `((repository . ,(prrr-sync-test--landed-data))
+                                            (markFileAsViewed . ,prrr-sync-test--mark-viewed))
+              (prrr-test-run-timers 'prrr-sync--refetch)
+              (should (equal '(repository markFileAsViewed) (seq-take prrr-test-requests 2))))
+            (should (= 1 posts))
+            (should-not (prrr-db-outbox-rows))
+            (should (= 1 (seq-count (lambda (comment) (equal "Nit." (prrr-comment-body comment)))
+                                    (prrr-db-select 'review-comment
+                                                    :pr-id prrr-sync-test--pr))))))))))
 
 (ert-deftest prrr-sync-test-outbox-publish-reply ()
   (prrr-db-with-test-db
@@ -955,13 +1511,31 @@ Return the local ids it was written under, as (THREAD . COMMENT)."
           (setq-local forge-buffer-topic 'example-topic)
           (cl-letf (((symbol-function 'forge-pull-topic)
                      (lambda (topic) (interactive) (setq pulled topic))))
-            (prrr-test-with-ghub-dispatch '((addComment . ((data (addComment (clientMutationId))))))
+            (prrr-test-with-ghub-dispatch `((addComment . ,(prrr-test-fixture "add-comment")))
               (prrr-sync-write (prrr-sync-test--repo) (prrr-sync-test--pullreq) 'discussion
                                '(:body "Thanks!") (current-buffer))
               (should (equal prrr-sync-test--pr
                              (alist-get 'subjectId (prrr-sync-test--input 'addComment)))))))
         (should (eq 'example-topic pulled))
         (should-not (prrr-db-outbox-rows))))))
+
+(ert-deftest prrr-sync-test-outbox-discussion-shows-until-forge-has-it ()
+  "A posted Discussion Comment stays visible until forge's topic lists it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-test-with-ghub-dispatch `((addComment . ,(prrr-test-fixture "add-comment")))
+        (prrr-sync-test--write 'discussion '(:body "Thanks!")))
+      (should-not (prrr-db-outbox-rows))
+      (should-not (plist-get (prrr-sync-review-data prrr-sync-test--pr) :discussion))
+      (let ((posted (prrr-sync-posted-discussion prrr-sync-test--pr nil)))
+        (should (equal '(("Thanks!" 5001))
+                       (mapcar (lambda (post) (list (plist-get post :body)
+                                                    (plist-get post :database-id)))
+                               posted))))
+      (should (prrr-sync-posted-discussion
+               prrr-sync-test--pr (list (forge-pullreq-post :id "other" :number 4001))))
+      (should-not (prrr-sync-posted-discussion
+                   prrr-sync-test--pr (list (forge-pullreq-post :id "p" :number 5001)))))))
 
 (ert-deftest prrr-sync-test-outbox-edit-amends-an-unsent-comment ()
   "Review Focus 3: editing what GitHub has not got changes the queued write."
@@ -1102,7 +1676,7 @@ Return the local ids it was written under, as (THREAD . COMMENT)."
 ;;;; Bookmark and pinned commits
 
 (ert-deftest prrr-sync-test-pin-keeps-a-commit ()
-  "SPEC section 8: a pinned commit survives a force-push and git gc."
+  "SPEC section 8: pinning a commit creates its ref, once however often it is pinned."
   (prrr-test-with-repo
     (let ((first (car (process-lines "git" "rev-parse" "refs/pullreqs/1~1"))))
       (should (prrr-sync-pin 1 first))
@@ -1124,12 +1698,76 @@ Return the local ids it was written under, as (THREAD . COMMENT)."
     (prrr-test-with-repo
       (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
             (pullreq (forge-pullreq :id "forge-1" :number 1 :their-id "PR_1")))
-        (prrr-sync-record-bookmark pullreq head)
+        (should (prrr-sync-record-bookmark pullreq head))
         (let ((bookmark (prrr-db-get 'pr-bookmark "PR_1")))
           (should (equal head (prrr-bookmark-last-opened-head-oid bookmark)))
           (should (prrr-bookmark-last-opened-at bookmark)))
         (should (equal (list head)
                        (process-lines "git" "rev-parse" (format "refs/prrr/1/%s" head))))))))
+
+(ert-deftest prrr-sync-test-record-bookmark-of-a-missing-commit ()
+  "The Bookmark is recorded even when its commit cannot be pinned."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (let ((missing "2222222222222222222222222222222222222222"))
+        (should-not (prrr-sync-record-bookmark
+                     (forge-pullreq :id "forge-1" :number 1 :their-id "PR_1") missing))
+        (should (equal missing (prrr-bookmark-last-opened-head-oid
+                                (prrr-db-get 'pr-bookmark "PR_1"))))
+        (should-not (process-lines "git" "for-each-ref" "refs/prrr/"))))))
+
+(defun prrr-sync-test--pin-refs ()
+  "Return the sorted names of the pins in the repository of `default-directory'."
+  (sort (process-lines "git" "for-each-ref" "--format=%(refname:strip=2)" "refs/prrr/")
+        #'string<))
+
+(ert-deftest prrr-sync-test-prune-pins-of-closed-pullreqs ()
+  "SPEC section 8: only the pins of PRs that are no longer open go."
+  (prrr-test-with-repo
+    (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1")))
+          (first (car (process-lines "git" "rev-parse" "refs/pullreqs/1~1"))))
+      (dolist (number '(1 2 3))
+        (prrr-sync-pin number head))
+      (prrr-sync-pin 3 first)
+      (should (= 3 (prrr-sync-prune-pins '(1))))
+      (should (equal (list (format "1/%s" head)) (prrr-sync-test--pin-refs)))
+      (should (= 0 (prrr-sync-prune-pins '(1)))))))
+
+(ert-deftest prrr-sync-test-prune-pins-keeps-a-live-review-buffer ()
+  "A PR whose Review Buffer is live keeps its pins, closed or not."
+  (prrr-test-with-repo
+    (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1"))))
+      (prrr-sync-pin 2 head)
+      (prrr-sync-pin 3 head)
+      (with-temp-buffer
+        (setq major-mode 'prrr-diff-mode
+              prrr-diff--pullreq (forge-pullreq :id "forge-2" :number 2))
+        (should (= 1 (prrr-sync-prune-pins nil))))
+      (should (equal (list (format "2/%s" head)) (prrr-sync-test--pin-refs)))
+      ;; Once the buffer is gone, so are the pins.
+      (should (= 1 (prrr-sync-prune-pins nil)))
+      (should-not (prrr-sync-test--pin-refs)))))
+
+(ert-deftest prrr-sync-test-prune-pins-without-pins ()
+  (prrr-test-with-repo
+    (should (= 0 (prrr-sync-prune-pins '(1))))))
+
+(ert-deftest prrr-sync-test-pull-prunes-pins-of-closed-pullreqs ()
+  "A pull prunes against the PRs it just stored: the fixture queue has 1, 2 and 3."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-test-with-repo
+        (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1"))))
+          (prrr-test-with-ghub-dispatch `((viewer . ,(prrr-test-fixture "teams"))
+                                          (repository . ,(prrr-test-fixture "queue")))
+            (cl-letf (((symbol-function 'forge-get-worktree)
+                       (lambda (_) default-directory)))
+              (prrr-sync-pin 3 head)
+              (prrr-sync-pin 999 head)
+              (prrr-sync-pull (prrr-sync-test--repo))
+              (should (eq 'ok (plist-get (prrr-sync-status "example-repo-id") :state)))
+              (should (equal (list (format "3/%s" head))
+                             (prrr-sync-test--pin-refs))))))))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here
