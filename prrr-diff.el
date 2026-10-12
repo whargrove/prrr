@@ -768,6 +768,10 @@ older head ends the visit of that head here, as leaving would
                              (magit-rev-verify (prrr-diff--head-ref pullreq)))))
         (prrr-diff-record-bookmark)))))
 
+(defvar prrr-review-buffer-opened-hook nil
+  "Functions run with the `forge-pullreq' once `prrr-diff-open' shows its buffer.
+The Review Buffer is current while they run.")
+
 (defun prrr-diff-open (pullreq)
   "Show the Review Buffer of PULLREQ and refetch its review data in the background.
 The buffer renders at once from the database and refreshes when the
@@ -795,7 +799,10 @@ buffer."
   ;; never during the render.
   (let ((buffer (get-buffer-create (prrr-diff--buffer-name pullreq))))
     (prrr-sync-refetch (forge-get-repository pullreq) pullreq buffer)
-    (prrr-diff-setup-buffer pullreq)))
+    (let ((shown (prrr-diff-setup-buffer pullreq)))
+      (with-current-buffer shown
+        (prrr-sync-run-hook 'prrr-review-buffer-opened-hook pullreq))
+      shown)))
 
 (defun prrr-diff-pullreq ()
   "Return the current Review Buffer's pull request.

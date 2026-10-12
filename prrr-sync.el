@@ -951,6 +951,45 @@ so an edit of the comment RESULT names carries STORED's body there."
                                    :comment-id (plist-get result :comment-id)
                                    :body body)))))
 
+(defvar prrr-comment-created-hook nil
+  "Functions run with the `prrr-comment' starting a new Thread, once GitHub has it.
+Runs for Threads added to the Pending Review and published at once,
+whoever wrote them.")
+
+(defvar prrr-reply-created-hook nil
+  "Functions run with the `prrr-comment' of a reply, once GitHub has it.")
+
+(defvar prrr-review-submitted-hook nil
+  "Functions run once GitHub has a Submit of the Pending Review.
+Each gets a plist (:pr-id :verdict :body :commit); :verdict is
+`approve', `request-changes' or `comment'.")
+
+(defun prrr-sync-run-hook (hook &rest args)
+  "Run HOOK with ARGS; show any error as a message instead of signaling.
+A hook must never stop the Outbox."
+  (condition-case err
+      (apply #'run-hook-with-args hook args)
+    (error (message "prrr: %s failed: %s" hook (error-message-string err)))))
+
+(defun prrr-sync--run-outbox-hooks (row outcome)
+  "Run the hook for the write ROW that GitHub accepted.
+OUTCOME is `prrr-sync--outbox-outcome' of ROW, whose rows hold the
+comment a creating write made."
+  (let ((payload (prrr-outbox-payload row)))
+    (pcase (prrr-outbox-kind row)
+      ((and (or 'thread 'publish 'reply 'publish-reply) kind)
+       (when-let* ((comment (seq-find #'prrr-comment-p (plist-get outcome :insert))))
+         (prrr-sync-run-hook (if (memq kind '(thread publish))
+                                 'prrr-comment-created-hook
+                               'prrr-reply-created-hook)
+                             comment)))
+      ('submit
+       (prrr-sync-run-hook 'prrr-review-submitted-hook
+                           (list :pr-id (prrr-outbox-pr-id row)
+                                 :verdict (plist-get payload :verdict)
+                                 :body (plist-get payload :body)
+                                 :commit (plist-get payload :commit)))))))
+
 (defun prrr-sync--outbox-record-success (row result)
   "Record that GitHub carried out the queued write ROW, as RESULT says.
 RESULT is GitHub's answer to ROW's send or, for an unconfirmed write,
@@ -963,7 +1002,8 @@ pulled it (`prrr-sync--outbox-record-post').  The caller refreshes
 buffers and pumps."
   (let ((outcome (prrr-sync--outbox-outcome row result)))
     (apply #'prrr-db-outbox-done (prrr-outbox-id row) outcome)
-    (prrr-sync--learn-renames (plist-get outcome :renames)))
+    (prrr-sync--learn-renames (plist-get outcome :renames))
+    (prrr-sync--run-outbox-hooks row outcome))
   (prrr-sync--outbox-record-post row result))
 
 (defvar prrr-sync--posted (make-hash-table :test #'equal)

@@ -1852,5 +1852,53 @@ the comment records it once."
               (should (equal (list (format "3/%s" head))
                              (prrr-sync-test--pin-refs))))))))))
 
+(ert-deftest prrr-sync-test-hooks-run-when-github-confirms ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-db-replace-review-data
+       prrr-sync-test--pr
+       (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-sync-test--pr))
+      (prrr-sync-test--store-pending-review)
+      (prrr-db-insert (prrr-pr-meta-create :pr-id prrr-sync-test--pr
+                                           :forge-repo-id "example-repo-id" :number 1))
+      (let (seen)
+        (let ((prrr-comment-created-hook
+               (list (lambda (c) (push (list 'thread (prrr-comment-body c)) seen))))
+              (prrr-reply-created-hook
+               (list (lambda (c) (push (list 'reply (prrr-comment-body c)) seen))))
+              (prrr-review-submitted-hook
+               (list (lambda (p) (push (list 'submit (plist-get p :verdict)) seen)))))
+          (prrr-test-with-ghub-dispatch
+              `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread"))
+                (submitPullRequestReview
+                 . ((data (submitPullRequestReview (clientMutationId))))))
+            (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                 :body "New thread body" :commit "1111"))
+            (prrr-test-with-rest-stub (prrr-test-fixture "publish-reply") captured
+              (prrr-sync-test--write 'publish-reply '(:thread-id "PRRT_kwDOexample0000001"
+                                                      :body "Reply body"))
+              (should captured))
+            (prrr-sync-test--write 'submit '(:verdict approve :body "LGTM" :commit "1111"))))
+        (should (equal '((thread "New thread body") (reply "Reply body") (submit approve))
+                       (reverse seen)))))))
+
+(ert-deftest prrr-sync-test-signalling-hook-does-not-stop-the-outbox ()
+  "Review Focus 4."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (let* ((calls 0)
+             (prrr-comment-created-hook (list (lambda (_) (cl-incf calls) (error "Boom")))))
+        (prrr-test-with-ghub-dispatch
+            `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                               :body "First" :commit "1111"))
+          (should-not (prrr-db-outbox-rows))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                               :body "Second" :commit "1111"))
+          (should-not (prrr-db-outbox-rows))
+          (should (= 2 calls))
+          (should (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01")))))))
+
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

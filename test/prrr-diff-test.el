@@ -630,6 +630,19 @@ SETUP runs first, inside the fixture repository and a fresh database.
                   (should (eq pullreq (prrr-current-pullreq)))))
             (kill-buffer buffer)))))))
 
+(ert-deftest prrr-diff-test-open-runs-the-opened-hook-in-the-review-buffer ()
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (prrr-diff-test--with-open-stubs
+        (let* ((pullreq (prrr-diff-test--pullreq))
+               (seen nil)
+               (prrr-review-buffer-opened-hook
+                (list (lambda (pr) (push (list pr (derived-mode-p 'prrr-diff-mode)) seen))))
+               (buffer (prrr-diff-open pullreq)))
+          (unwind-protect
+              (should (equal (list (list pullreq 'prrr-diff-mode)) seen))
+            (kill-buffer buffer)))))))
+
 (ert-deftest prrr-diff-test-review-missing-ref-offers-pull ()
   "Review Focus 1: no Review Buffer without the PR's head."
   (prrr-db-with-test-db
