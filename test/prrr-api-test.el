@@ -236,5 +236,90 @@ each stays queued for BODY to inspect and none reaches the network."
         (should-error (prrr-api-reply pullreq thread-id "More") :type 'user-error))
       (should (= 1 (length (prrr-db-outbox-rows (oref pullreq their-id))))))))
 
+(ert-deftest prrr-api-test-to-json ()
+  (should (equal "{\"agent\":false,\"comments\":[],\"n\":1}"
+                 (prrr-api--to-json '((agent) (comments) (n . 1)))))
+  ;; A nested alist stays an object, a list of strings an array, and
+  ;; a boolean key keeps a value that is not nil (the summary's agent count).
+  (should (equal "{\"pr\":{\"agent\":2,\"draft\":false,\"files\":[\"a\",\"b\"]}}"
+                 (prrr-api--to-json '((pr (agent . 2) (draft) (files "a" "b"))))))
+  (should (equal "{\"comments\":[{\"resolved\":true,\"replies\":[{\"body\":\"x\"}]}]}"
+                 (prrr-api--to-json '((comments ((resolved . t) (replies ((body . "x"))))))))))
+
+(ert-deftest prrr-api-test-export-is-crit-shaped ()
+  (prrr-api-test--with-pr
+    (let* ((file (prrr-api-export pullreq))
+           (json (with-temp-buffer
+                   (insert-file-contents file)
+                   (json-parse-buffer :object-type 'alist :array-type 'list
+                                      :null-object nil :false-object :false))))
+      (should (file-name-absolute-p file))
+      (should (string-suffix-p "prrr/review-1.json" file))
+      (should (= 1 (alist-get 'version json)))
+      (should (alist-get 'base json))
+      (should (equal 1 (alist-get 'number (alist-get 'pr json))))
+      (let ((comment (car (alist-get 'comments json))))
+        (dolist (key '(id type file start_line end_line side quote anchor body author round
+                          resolved replies thread_id comment_id state local_state agent outdated))
+          (should (assq key comment)))
+        (should (memq (alist-get 'resolved comment) '(t :false)))))))
+
+(ert-deftest prrr-api-test-export-quotes-the-commented-lines ()
+  (prrr-api-test--with-pr
+    (prrr-api-add-comment pullreq "src/example.el" 12 "On this line")
+    (let* ((json (with-temp-buffer
+                   (insert-file-contents (prrr-api-export pullreq))
+                   (json-parse-buffer :object-type 'alist :array-type 'list :null-object nil)))
+           (mine (seq-find (lambda (c) (equal "On this line" (alist-get 'body c)))
+                           (alist-get 'comments json))))
+      (should (stringp (alist-get 'quote mine)))
+      (should (equal "unsent" (alist-get 'local_state mine))))))
+
+(ert-deftest prrr-api-test-import-round-trip ()
+  (prrr-api-test--with-pr
+    (let* ((file (make-temp-file "prrr-import" nil ".json"))
+           (thread-id (alist-get 'thread_id (car (prrr-api-threads pullreq)))))
+      (with-temp-file file
+        (insert (json-encode
+                 `((version . 1)
+                   (comments . [((type . "line") (file . "src/example.el") (start_line . 12)
+                                 (end_line . 12) (side . "new") (body . "New from import"))
+                                ((type . "file") (file . "src/example.el") (body . "File-level"))
+                                ((type . "review") (body . "Overall fine"))
+                                ((thread_id . ,thread-id) (comment_id . "C_existing") (body . "old")
+                                 (replies . [((body . "A reply from import"))
+                                             ((comment_id . "C_x") (body . "already there"))]))])))))
+      (should (equal '((comments . 2) (replies . 1) (skipped . 1))
+                     (prrr-api-import pullreq file)))
+      (should (= 3 (length (prrr-db-outbox-rows (oref pullreq their-id))))))))
+
+(ert-deftest prrr-api-test-import-is-all-or-nothing ()
+  (prrr-api-test--with-pr
+    (let ((file (make-temp-file "prrr-import" nil ".json")))
+      (with-temp-file file
+        (insert (json-encode
+                 '((comments . [((type . "line") (file . "src/example.el") (end_line . 12) (body . "ok"))
+                                ((type . "line") (file . "src/example.el") (end_line . 999) (body . "bad"))])))))
+      (should-error (prrr-api-import pullreq file) :type 'user-error)
+      (should-not (prrr-db-outbox-rows (oref pullreq their-id))))))
+
+(ert-deftest prrr-api-test-import-reply-to-a-proposed-thread-queues-nothing ()
+  "A reply the Outbox would refuse is refused before anything is queued."
+  (prrr-api-test--with-pr
+    (let* ((prrr-agent-comment-mode 'proposed)
+           (_ (prrr-api-add-comment pullreq "src/example.el" 12 "Consider a guard."))
+           (thread-id (plist-get (prrr-outbox-payload
+                                  (car (prrr-db-outbox-rows (oref pullreq their-id))))
+                                 :thread))
+           (file (make-temp-file "prrr-import" nil ".json")))
+      (with-temp-file file
+        (insert (json-encode
+                 `((comments . [((type . "line") (file . "src/example.el") (end_line . 12) (body . "ok"))
+                                ((thread_id . ,thread-id) (comment_id . "C_p")
+                                 (replies . [((body . "More"))]))])))))
+      (let ((prrr-agent-comment-mode 'pending))
+        (should-error (prrr-api-import pullreq file) :type 'user-error))
+      (should (= 1 (length (prrr-db-outbox-rows (oref pullreq their-id))))))))
+
 (provide 'prrr-api-test)
 ;;; prrr-api-test.el ends here

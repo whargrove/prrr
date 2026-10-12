@@ -35,6 +35,7 @@
 
 (require 'cl-lib)
 (require 'seq)
+(require 'json)
 (require 'magit)
 (require 'forge)
 (require 'prrr-db)
@@ -474,6 +475,200 @@ when the user declined."
                                        (prrr-api--context-head context)))
         (error (message "prrr: could not record the Bookmark: %s" (error-message-string err))))
       t)))
+
+;;;; JSON export and import
+
+(defconst prrr-api--json-booleans '(resolved outdated agent draft)
+  "Keys whose nil value is JSON false rather than null.
+A value that is not nil is kept: the summary's agent is a count.")
+
+(defconst prrr-api--json-arrays '(comments replies)
+  "Keys whose value is a JSON array, empty or not.")
+
+(defun prrr-api--jsonify (data)
+  "Return DATA, alists and lists from the API, ready for `json-encode'.
+An alist stays an object and a list of atoms an array; the keys in
+`prrr-api--json-booleans' and `prrr-api--json-arrays' get JSON's
+false and array where nil would otherwise be null."
+  (cond ((and (consp data) (symbolp (car data)) (car data))
+         ;; One (KEY . VALUE) of an alist.
+         (let ((key (car data)) (value (cdr data)))
+           (cons key (cond ((and (memq key prrr-api--json-booleans) (null value)) :json-false)
+                           ((memq key prrr-api--json-arrays)
+                            (vconcat (mapcar #'prrr-api--jsonify value)))
+                           (t (prrr-api--jsonify value))))))
+        ((and (consp data) (consp (car data))) (mapcar #'prrr-api--jsonify data))
+        (t data)))
+
+(defun prrr-api--to-json (data)
+  "Return DATA, an alist from the API, as a JSON string."
+  (json-encode (prrr-api--jsonify data)))
+
+(defun prrr-api--quote (context thread)
+  "Return the text of the lines THREAD, a thread alist, comments on in CONTEXT.
+New-side lines come from the head, old-side lines from the merge base.
+Return nil for a File Comment or lines the file does not have."
+  (let ((line (alist-get 'end_line thread))
+        (start (alist-get 'start_line thread))
+        (rev (if (equal (alist-get 'side thread) "old")
+                 (prrr-api--context-merge-base context)
+               (prrr-api--context-head context))))
+    (when (and line start rev (<= 1 start line))
+      (prrr-api--in context
+        (let ((lines (magit-git-lines "show" (format "%s:%s" rev (alist-get 'file thread)))))
+          (and (<= line (length lines))
+               (string-join (seq-subseq lines (1- start) line) "\n")))))))
+
+(defun prrr-api--export-comment (context thread)
+  "Return THREAD, a thread alist of CONTEXT, as an exported crit-review comment.
+Its first comment gives the body; the others are its replies."
+  (let ((first (car (alist-get 'comments thread)))
+        (rest (cdr (alist-get 'comments thread))))
+    `((id . ,(alist-get 'thread_id thread))
+      (type . ,(alist-get 'type thread))
+      (file . ,(alist-get 'file thread))
+      (start_line . ,(alist-get 'start_line thread))
+      (end_line . ,(alist-get 'end_line thread))
+      (side . ,(or (alist-get 'side thread) "new"))
+      (quote . ,(prrr-api--quote context thread))
+      (anchor . nil)
+      (body . ,(alist-get 'body first))
+      (author . ,(alist-get 'author first))
+      (round . 1)
+      (resolved . ,(alist-get 'resolved thread))
+      (outdated . ,(alist-get 'outdated thread))
+      (thread_id . ,(alist-get 'thread_id thread))
+      (comment_id . ,(alist-get 'comment_id first))
+      (database_id . ,(alist-get 'database_id first))
+      (state . ,(alist-get 'state first))
+      (local_state . ,(alist-get 'local_state first))
+      (agent . ,(alist-get 'agent first))
+      (replies . ,(mapcar (lambda (reply)
+                            `((author . ,(alist-get 'author reply))
+                              (body . ,(alist-get 'body reply))
+                              (at . ,(alist-get 'at reply))
+                              (comment_id . ,(alist-get 'comment_id reply))
+                              (state . ,(alist-get 'state reply))
+                              (local_state . ,(alist-get 'local_state reply))
+                              (agent . ,(alist-get 'agent reply))))
+                          rest)))))
+
+;;;###autoload
+(defun prrr-api-export (pr &optional file range)
+  "Write PR's review as JSON to FILE and return FILE's absolute name.
+PR is a pull request designator (see the Commentary).  The shape is
+crit-review's version-1 handoff extended with GitHub ids (SPEC
+section 10): one entry in comments per Thread, its later comments
+as replies, and the summary `prrr-api-pullreq' returns as pr.  FILE
+defaults to prrr/review-N.json in the repository's git directory;
+its directory is created.  RANGE, a Range designator, keeps only the
+Threads on files it changes."
+  (let* ((context (prrr-api--context pr))
+         (pullreq (prrr-api--context-pullreq context))
+         (threads (prrr-api-threads pullreq range))
+         (file (prrr-api--in context
+                 (expand-file-name
+                  (or file (expand-file-name (format "prrr/review-%d.json" (oref pullreq number))
+                                             (magit-gitdir)))))))
+    (make-directory (file-name-directory file) t)
+    (let ((json (prrr-api--to-json
+                 `((version . 1)
+                   (base_ref . ,(oref pullreq base-ref))
+                   (base . ,(prrr-api--context-merge-base context))
+                   (head . ,(prrr-api--context-head context))
+                   (round . 1)
+                   (generated_at . ,(format-time-string "%FT%T%z"))
+                   (unresolved . ,(seq-count (lambda (thread) (not (alist-get 'resolved thread)))
+                                             threads))
+                   (pr . ,(prrr-api-pullreq pullreq))
+                   (comments . ,(mapcar (lambda (thread) (prrr-api--export-comment context thread))
+                                        threads))))))
+      (with-temp-file file
+        (insert json)))
+    file))
+
+(defun prrr-api--proposed-ids (context)
+  "Return the local ids that queued proposals of CONTEXT's pull request create."
+  (mapcan #'prrr-state-outbox-created-ids
+          (seq-filter #'prrr-state-outbox-held-p
+                      (prrr-db-outbox-rows (prrr-api--pr-id context)))))
+
+(defun prrr-api--import-body (entry)
+  "Return ENTRY's body, or signal a `user-error' when it has none."
+  (let ((body (alist-get 'body entry)))
+    (unless (and (stringp body) (not (string-empty-p body)))
+      (user-error "Entry without a body: %S" entry))
+    body))
+
+(defun prrr-api--import-actions (context data entries)
+  "Return (ACTIONS . SKIPPED): the writes ENTRIES ask of CONTEXT, checked.
+DATA is CONTEXT's review data and ENTRIES the comments of an imported
+file.  Each action is (KIND . PAYLOAD) for `prrr-api--write'; SKIPPED
+counts the entries that ask for nothing.  Signal a `user-error' for
+an entry that cannot be queued, before anything is."
+  (let ((threads (mapcar #'prrr-thread-thread-id (plist-get data :threads)))
+        ;; A reply to a proposal would wait on the user (`prrr-sync-write'
+        ;; refuses it); a reply that is itself a proposal does not.
+        (proposed (and (not (eq prrr-agent-comment-mode 'proposed))
+                       (prrr-api--proposed-ids context)))
+        (head (prrr-api--context-head context))
+        (actions nil)
+        (skipped 0))
+    (dolist (entry entries)
+      (let ((thread-id (alist-get 'thread_id entry)))
+        (cond
+         ((alist-get 'comment_id entry)
+          (dolist (reply (alist-get 'replies entry))
+            (unless (alist-get 'comment_id reply)
+              (unless (member thread-id threads)
+                (user-error "Reply to unknown Thread %S" thread-id))
+              (when (member thread-id proposed)
+                (user-error "Reply to %s: accept the proposed Thread first" thread-id))
+              (push (list 'reply :thread-id thread-id :body (prrr-api--import-body reply)
+                          :commit head)
+                    actions))))
+         ((member (alist-get 'type entry) '("line" "file"))
+          (push (list 'thread
+                      :anchor (prrr-api--anchor context (alist-get 'file entry)
+                                                (alist-get 'end_line entry)
+                                                :start-line (alist-get 'start_line entry)
+                                                :side (alist-get 'side entry)
+                                                :file (equal (alist-get 'type entry) "file"))
+                      :body (prrr-api--import-body entry)
+                      :commit head)
+                actions))
+         (t (cl-incf skipped)))))
+    (cons (nreverse actions) skipped)))
+
+;;;###autoload
+(defun prrr-api-import (pr file)
+  "Queue the new comments and replies in FILE, a JSON review, on PR.
+PR is a pull request designator (see the Commentary).  FILE has the
+shape `prrr-api-export' writes; only each comments entry's type,
+file, start_line, end_line, side, body, thread_id, comment_id and
+replies are read.  An entry without a comment_id of type \"line\" or
+\"file\" becomes a new Thread; a reply without a comment_id under an
+entry with a comment_id becomes a reply to the entry's thread_id;
+any other entry, such as one of type \"review\", is skipped.  Every
+entry is checked before anything is queued, so one bad entry queues
+nothing.  All are agent comments (`prrr-agent-comment-mode').
+Return an alist ((comments . N) (replies . M) (skipped . K))."
+  (let* ((context (prrr-api--context pr))
+         (data (prrr-api--review-data context))
+         (entries (alist-get 'comments
+                             (with-temp-buffer
+                               (insert-file-contents file)
+                               (json-parse-buffer :object-type 'alist :array-type 'list
+                                                  :null-object nil :false-object nil))))
+         (checked (prrr-api--import-actions context data entries))
+         (actions (car checked)))
+    (when (assq 'thread actions)
+      (prrr-api--check-commit context data))
+    (dolist (action actions)
+      (prrr-api--write context (car action) (cdr action)))
+    `((comments . ,(seq-count (lambda (action) (eq (car action) 'thread)) actions))
+      (replies . ,(seq-count (lambda (action) (eq (car action) 'reply)) actions))
+      (skipped . ,(cdr checked)))))
 
 (provide 'prrr-api)
 ;;; prrr-api.el ends here

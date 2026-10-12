@@ -85,6 +85,8 @@
 (autoload 'prrr-api-reply "prrr-api" "Reply to a Thread of a pull request, as an agent comment.")
 (autoload 'prrr-api-delete-pending-comment "prrr-api" "Delete a comment from a Pending Review.")
 (autoload 'prrr-api-submit "prrr-api" "Submit the Pending Review of a pull request.")
+(autoload 'prrr-api-export "prrr-api" "Write the review of a pull request as JSON to a file.")
+(autoload 'prrr-api-import "prrr-api" "Queue the new comments and replies of a JSON review file.")
 
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))
