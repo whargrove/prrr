@@ -167,13 +167,24 @@ you expanded and folded.
 
 ### Syntax highlighting
 
-A file is colored the first time it is shown, using the tree-sitter rules
-of its language. The language is the one visiting the file would pick.
-When that is `foo-mode` and `foo-ts-mode` exists, its rules are used, so
-no `major-mode-remap-alist` setup is needed. Files without a grammar stay
-uncolored. Very large files, and files redrawn by a refresh, are colored
-a moment later, when Emacs is idle. `treesit-font-lock-level` sets how
-much is colored. `L` turns it off and on in one buffer.
+Diff lines are colored with the tree-sitter rules of the file's
+language. The language is the one visiting the file would pick. When
+that is `foo-mode` and `foo-ts-mode` exists, its rules are used, without
+any `major-mode-remap-alist` setup and without changing the mode your
+own files open in. `prrr-highlight-modes` covers the built-in ts-modes
+that rule can't find: JavaScript, TypeScript, shell, JSON, HTML, Go,
+Rust, YAML, TOML, Lua, Dockerfile and CMake; the rule itself covers C,
+C++, C#, Python, Java, Ruby and CSS. Add entries for other languages.
+Each language's grammar must be installed
+(`treesit-install-language-grammar`); files without one stay uncolored.
+
+A file expanded in an open buffer is colored at once. Files shown when
+the buffer opens or refreshes, and very large files, are colored a
+moment later, when Emacs is idle. Files over ten times
+`prrr-highlight-max-lines` stay uncolored. `treesit-font-lock-level`
+sets how much is colored. `L` turns highlighting off and on in one
+buffer, for as long as it lives, reopening included, and rereads the
+rules, so a changed `treesit-font-lock-level` applies.
 
 ### Keys in the Review Buffer
 
@@ -212,10 +223,11 @@ and `q` work as in any magit diff. Keys that later milestones use
 
 ### Review Buffer options
 
-| Option                     | Default | Meaning                                                    |
-|----------------------------|---------|------------------------------------------------------------|
-| `prrr-highlight`           | `t`     | Highlight diff lines                                       |
-| `prrr-highlight-max-lines` | `3000`  | Larger file sections are highlighted when Emacs is idle    |
+| Option                     | Default  | Meaning                                                                  |
+|----------------------------|----------|--------------------------------------------------------------------------|
+| `prrr-highlight`           | `t`      | Highlight diff lines                                                     |
+| `prrr-highlight-max-lines` | `3000`   | Larger files are highlighted when Emacs is idle, ten times larger never  |
+| `prrr-highlight-modes`     | built-in | ts-mode by file-name regexp or major mode, where `foo-ts-mode` misses    |
 
 ## Commenting and reviewing
 

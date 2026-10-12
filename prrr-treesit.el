@@ -41,9 +41,15 @@ file's language; files without one are left unhighlighted."
   :type 'boolean
   :group 'prrr)
 
+;; `prrr-toggle-highlight' sets it in one buffer, for as long as that
+;; buffer lives: reopening a Review Buffer runs its mode again.
+(put 'prrr-highlight 'permanent-local t)
+
 (defcustom prrr-highlight-max-lines 3000
   "Largest file section, in lines, highlighted as soon as it is shown.
-A larger one is highlighted when Emacs is next idle."
+A larger one is highlighted when Emacs is next idle, and one over ten
+times as large, a generated or vendored file say, never is: Emacs
+would be busy for too long."
   :type 'natnum
   :group 'prrr)
 
@@ -55,16 +61,64 @@ SETTINGS are the mode's compiled `treesit-font-lock-settings', with the
 features `treesit-font-lock-level' enables.  `none' when the mode
 offers no rules here, for want of a grammar, say.")
 
+(defcustom prrr-highlight-modes
+  '(("\\.ts\\'" . typescript-ts-mode)
+    ("\\.tsx\\'" . tsx-ts-mode)
+    ("\\.go\\'" . go-ts-mode)
+    ("\\(?:\\`\\|/\\)go\\.mod\\'" . go-mod-ts-mode)
+    ("\\.rs\\'" . rust-ts-mode)
+    ("\\.ya?ml\\'" . yaml-ts-mode)
+    ("\\.toml\\'" . toml-ts-mode)
+    ("\\.lua\\'" . lua-ts-mode)
+    ("\\(?:\\`\\|/\\)Dockerfile\\'" . dockerfile-ts-mode)
+    ("\\(?:\\`\\|/\\)CMakeLists\\.txt\\'" . cmake-ts-mode)
+    (sh-mode . bash-ts-mode)
+    (js-json-mode . json-ts-mode)
+    (mhtml-mode . html-ts-mode))
+  "Tree-sitter major modes whose rules highlight files, beyond the usual ones.
+Each entry is (KEY . TS-MODE).  KEY is a regexp matched against a
+file's name, which wins over everything else, or a major mode, which
+applies when visiting the file would choose that mode.  These cover
+languages the FOO-mode to FOO-ts-mode rule of `prrr-treesit-mode'
+misses; entries whose TS-MODE is not defined are passed over."
+  :type '(alist :key-type (choice (symbol :tag "Major mode")
+                                  (regexp :tag "File name"))
+                :value-type (symbol :tag "Tree-sitter mode"))
+  :group 'prrr)
+
 (defun prrr-treesit--auto-mode (path)
   "Return the major mode `auto-mode-alist' gives PATH, or nil.
 Only entries naming a mode count: one asking to strip a suffix and look
-again, as a compressed file's does, is passed over."
-  (let ((case-fold-search nil))
-    (seq-some (lambda (entry)
-                (and (cdr entry) (symbolp (cdr entry))
-                     (string-match-p (car entry) path)
-                     (cdr entry)))
-              auto-mode-alist)))
+again, as a compressed file's does, is passed over.  As when visiting,
+a name no entry matches is tried again ignoring case, if
+`auto-mode-case-fold' says to.  `interpreter-mode-alist' is not
+consulted: it needs the file's first line."
+  (cl-flet ((lookup (fold)
+              (let ((case-fold-search fold))
+                (seq-some (lambda (entry)
+                            (and (cdr entry) (symbolp (cdr entry))
+                                 (string-match-p (car entry) path)
+                                 (cdr entry)))
+                          auto-mode-alist))))
+    (or (lookup nil)
+        (and auto-mode-case-fold (lookup t)))))
+
+(defun prrr-treesit--option (match)
+  "Return the TS-MODE of the first `prrr-highlight-modes' entry MATCH accepts.
+MATCH is called with the entry's key.  Entries whose TS-MODE is not
+defined are passed over."
+  (seq-some (lambda (entry)
+              (and (funcall match (car entry))
+                   (fboundp (cdr entry))
+                   (cdr entry)))
+            prrr-highlight-modes))
+
+(defun prrr-treesit--unalias (mode)
+  "Return the mode MODE is an alias of, through any chain of aliases, else MODE."
+  (while (and (symbolp (symbol-function mode))
+              (symbol-function mode))
+    (setq mode (symbol-function mode)))
+  mode)
 
 (defun prrr-treesit--remap (mode)
   "Return the mode MODE is remapped to, else MODE.
@@ -76,27 +130,48 @@ On Emacs 30 and later `major-mode-remap' also reads
 
 (defun prrr-treesit-mode (path)
   "Return the tree-sitter major mode whose rules highlight PATH, or nil.
-The mode is the one visiting PATH would choose, through `auto-mode-alist'
-and the remapping options.  When that is FOO-mode, not a tree-sitter
-mode, FOO-ts-mode stands in if it is defined: prrr borrows only its
-highlighting rules, so how the user edits is unchanged."
-  (when-let* ((mode (prrr-treesit--auto-mode path)))
-    (let* ((mode (prrr-treesit--remap mode))
-           (name (symbol-name mode)))
-      (cond ((string-suffix-p "-ts-mode" name) mode)
-            ((string-suffix-p "-mode" name)
-             (let ((ts (intern-soft (concat (string-remove-suffix "-mode" name) "-ts-mode"))))
-               (and ts (fboundp ts) ts)))))))
+A file-name regexp of `prrr-highlight-modes' decides first.  Else the
+mode is the one visiting PATH would choose, through `auto-mode-alist',
+aliases and the remapping options.  When that is not a tree-sitter
+mode, `prrr-highlight-modes' may name one for it; failing that,
+FOO-ts-mode stands in for FOO-mode if it is defined.  prrr borrows only
+the highlighting rules, so how the user edits is unchanged."
+  (let ((case-fold-search nil))
+    (or (prrr-treesit--option (lambda (key) (and (stringp key) (string-match-p key path))))
+        (when-let* ((mode (prrr-treesit--auto-mode path)))
+          (let* ((mode (prrr-treesit--remap
+                        (prrr-treesit--unalias (prrr-treesit--remap mode))))
+                 (name (symbol-name mode)))
+            (cond ((string-suffix-p "-ts-mode" name) mode)
+                  ((prrr-treesit--option (lambda (key) (eq key mode))))
+                  ((string-suffix-p "-mode" name)
+                   (let ((ts (intern-soft (concat (string-remove-suffix "-mode" name)
+                                                  "-ts-mode"))))
+                     (and ts (fboundp ts) ts)))))))))
 
 (defun prrr-treesit--extract (mode)
   "Run MODE in a temporary buffer; return its (LANGUAGE . SETTINGS) or nil.
 Its mode hooks are delayed and never run, so nothing the user hooked
-on, a language server say, starts.  Warnings are silenced: a missing
-grammar means no highlighting, not a message."
+on, a language server say, starts.  Warnings and messages are silenced:
+a missing grammar means no highlighting, not a message, and what a mode
+says about its buffer would read as if it were about the user's.
+
+Running MODE may load its file, and many ts-mode files then add
+themselves to `auto-mode-alist', `interpreter-mode-alist' or
+`major-mode-remap-defaults', which would change the mode the user's own
+files open in.  Those are bound around the call, so the additions are
+dropped.  The cost: the file is now loaded, so a later `require' of it
+adds nothing either, and only the user's own settings pick that mode."
   (with-temp-buffer
-    (let ((warning-minimum-level :emergency)
-          (warning-minimum-log-level :emergency))
-      (delay-mode-hooks (funcall mode)))
+    (let ((globals (seq-filter #'boundp '(auto-mode-alist
+                                          interpreter-mode-alist
+                                          major-mode-remap-defaults))))
+      (cl-progv globals (mapcar #'symbol-value globals)
+        (let ((warning-minimum-level :emergency)
+              (warning-minimum-log-level :emergency)
+              (inhibit-message t)
+              (message-log-max nil))
+          (delay-mode-hooks (funcall mode)))))
     (when-let* ((settings treesit-font-lock-settings)
                 (language (if-let* ((primary (bound-and-true-p treesit-primary-parser)))
                               (treesit-parser-language primary)
@@ -277,16 +352,18 @@ It runs while magit paints, where an error would break the whole redraw."
 A file painted during a refresh, or longer than
 `prrr-highlight-max-lines', waits for Emacs to be idle, so neither the
 first paint nor a refresh waits on it.  `magit--refreshing-buffer-p' is
-magit's own flag for deferring paint work in a refresh."
+magit's own flag for deferring paint work in a refresh.  A file over
+ten times that long is never highlighted."
   (when (and prrr-highlight (eq (oref file type) 'file))
     (unless prrr-treesit--done
       (setq prrr-treesit--done (make-hash-table :test #'eq :weakness 'key)))
     (unless (gethash file prrr-treesit--done)
       (puthash file t prrr-treesit--done)
-      (if (or magit--refreshing-buffer-p
-              (> (count-lines (oref file content) (oref file end)) prrr-highlight-max-lines))
-          (prrr-treesit--enqueue file)
-        (prrr-treesit--highlight-reporting file)))))
+      (let ((lines (count-lines (oref file content) (oref file end))))
+        (cond ((> lines (* 10 prrr-highlight-max-lines)))
+              ((or magit--refreshing-buffer-p (> lines prrr-highlight-max-lines))
+               (prrr-treesit--enqueue file))
+              (t (prrr-treesit--highlight-reporting file)))))))
 
 (defun prrr-treesit--enqueue (file)
   "Queue FILE to be highlighted when Emacs is next idle."
@@ -317,21 +394,28 @@ time."
               (run-with-idle-timer 0 nil #'prrr-treesit--drain buffer))))))
 
 (defun prrr-treesit--cancel ()
-  "Cancel this buffer's idle highlighting; for `kill-buffer-hook'."
+  "Cancel this buffer's idle highlighting and forget its queue.
+For `kill-buffer-hook', and for `change-major-mode-hook': reopening a
+Review Buffer runs its mode again, which would forget the timer while
+it is still pending."
   (when prrr-treesit--timer
     (cancel-timer prrr-treesit--timer)
-    (setq prrr-treesit--timer nil)))
+    (setq prrr-treesit--timer nil))
+  (setq prrr-treesit--queue nil))
 
 (defun prrr-treesit--setup ()
-  "Make killing this Review Buffer cancel its idle highlighting (SPEC section 11)."
-  (add-hook 'kill-buffer-hook #'prrr-treesit--cancel nil t))
+  "Make killing or reopening this Review Buffer cancel its idle highlighting.
+See SPEC section 11."
+  (add-hook 'kill-buffer-hook #'prrr-treesit--cancel nil t)
+  (add-hook 'change-major-mode-hook #'prrr-treesit--cancel nil t))
 
 (add-hook 'prrr-diff-mode-hook #'prrr-treesit--setup)
 
 ;;;###autoload
 (defun prrr-toggle-highlight ()
   "Toggle syntax highlighting in this Review Buffer.
-Sets `prrr-highlight' in this buffer only, rereads the languages'
+Sets `prrr-highlight' in this buffer only, for as long as it lives,
+reopening included, rereads the languages'
 highlighting rules, so a changed `treesit-font-lock-level' applies, and
 redraws at the head shown."
   (interactive)

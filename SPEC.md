@@ -317,14 +317,31 @@ or `treesit-range-settings`. Faces go on the `prrr-treesit-face`
 property and are put in front of `font-lock-face` after every paint of
 the hunk, since magit resets `font-lock-face` when point enters or
 leaves a hunk; the diff line's face stays behind them. Language is
-chosen from the file name through `auto-mode-alist` and the remapping
-options (`major-mode-remap-alist`, and `major-mode-remap-defaults` on
-Emacs 30 and later); when that gives FOO-mode, FOO-ts-mode stands in if
-it is defined. Files without an available grammar are left
+chosen from the file name: a file-name regexp of `prrr-highlight-modes`
+first, else `auto-mode-alist` (with its case-folded second pass, but not
+`interpreter-mode-alist`, which needs the file's content), aliases
+resolved (`javascript-mode` is `js-mode`), and the remapping options
+(`major-mode-remap-alist`, and `major-mode-remap-defaults` on Emacs 30
+and later). When that is not a ts-mode, a major-mode key of
+`prrr-highlight-modes` may name one; else FOO-ts-mode stands in for
+FOO-mode if it is defined. `prrr-highlight-modes` is seeded with the
+built-in ts-modes the rename can't reach (bash, JSON, HTML, TypeScript,
+TSX, Go, go.mod, Rust, YAML, TOML, Lua, Dockerfile, CMake); entries
+naming an undefined mode are skipped. Running the ts-mode loads its
+file, and many ts-mode files add themselves to `auto-mode-alist`,
+`interpreter-mode-alist` or `major-mode-remap-defaults` at load; those
+are bound around the call, so borrowing rules never changes the mode
+the user's own files open in. Messages and warnings from the mode body
+are silenced. Files without an available grammar are left
 unhighlighted, silently. `prrr-highlight` (default t) turns it on; `L`
-toggles it in one buffer. Files painted during a refresh, and sections
+toggles it in one buffer, for the buffer's life (`prrr-highlight` is
+permanent-local, so reopening keeps it; the idle timer is cancelled
+when the mode reruns). Files painted during a refresh, and sections
 larger than `prrr-highlight-max-lines` (default 3,000), are highlighted
 on an idle timer, so first paint and refresh never wait on it.
+Sections over ten times `prrr-highlight-max-lines` are never
+highlighted: the idle work on one file can't be split, and would block
+for about a second per 30,000 lines.
 Measured: 1.3 / 9.7 / 34 ms per 100 / 300 / 1,000-line section.
 
 ## 7. Threads, comments, and the Pending Review (prrr-t9q.2, prrr-t9q.7)
