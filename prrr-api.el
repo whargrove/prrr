@@ -345,6 +345,10 @@ Buffer's comments, so both queue the same write for the same line."
          (anchor (if file
                      (prrr-state-file-anchor path)
                    (unless (natnump line) (user-error "A line comment needs a line number"))
+                   ;; GitHub refuses startLine > line only when the write is sent.
+                   (when (and start-line (> start-line line))
+                     (user-error "START-LINE must not come after LINE: %d is after %d"
+                                 start-line line))
                    (append (list :path path :line line :side side)
                            (and start-line (/= start-line line)
                                 (list :start-line start-line :start-side side))

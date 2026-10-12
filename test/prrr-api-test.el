@@ -161,6 +161,15 @@ each stays queued for BODY to inspect and none reaches the network."
       (should (equal '(:path "src/example.el" :subject-type file) (nth 0 anchors)))
       (should (eql 11 (plist-get (nth 1 anchors) :start-line))))))
 
+(ert-deftest prrr-api-test-reversed-range-is-refused ()
+  "GitHub refuses a start line after the line, later, where the agent cannot see."
+  (prrr-api-test--with-pr
+    (let ((err (should-error (prrr-api-add-comment pullreq "src/example.el" 12 "Back"
+                                                   :start-line 15)
+                             :type 'user-error)))
+      (should (string-match-p "START-LINE must not come after LINE" (cadr err))))
+    (should-not (prrr-db-outbox-rows (oref pullreq their-id)))))
+
 (ert-deftest prrr-api-test-prefix-is-prepended ()
   (prrr-api-test--with-pr
     (let ((prrr-agent-comment-prefix "[bot] "))
