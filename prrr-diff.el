@@ -138,7 +138,7 @@ either limit ends the run."
             (push (prrr-diff-file-path file) paths)))))
     paths))
 
-(defun prrr-diff--merge-base (pullreq head)
+(defun prrr-diff-pullreq-merge-base (pullreq head)
   "Return the merge base of PULLREQ's base commit and HEAD, or nil.
 nil when forge recorded no base commit or it is not in the repository."
   (when-let* ((base-rev (oref pullreq base-rev)))
@@ -686,7 +686,7 @@ Outbox's writes applied."
          (local (magit-rev-verify ref))
          (head (or prrr-diff--head local))
          (merge-base (and head (eq (prrr-range-kind range) 'default)
-                          (prrr-diff--merge-base pullreq head)))
+                          (prrr-diff-pullreq-merge-base pullreq head)))
          (ends (prrr-state-range-ends range merge-base head))
          (start (and head (car ends)))
          (end (and head (cdr ends)))
@@ -1003,7 +1003,7 @@ Either is nil when the diff could not be drawn."
 (defun prrr-diff-merge-base ()
   "Return the merge base of the current Review Buffer's PR and its head, or nil.
 The head is the one the buffer shows."
-  (and prrr-diff--head (prrr-diff--merge-base prrr-diff--pullreq prrr-diff--head)))
+  (and prrr-diff--head (prrr-diff-pullreq-merge-base prrr-diff--pullreq prrr-diff--head)))
 
 (defun prrr-diff-position ()
   "Return where point is in the diff, as (PATH SIDE LINE COMMIT NAME), or nil.

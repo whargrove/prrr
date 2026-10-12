@@ -86,10 +86,10 @@
     (let ((head (prrr-diff-test--rev "refs/pullreqs/1"))
           (expected (prrr-diff-test--rev "main~1")))
       (should (equal expected
-                     (prrr-diff--merge-base
+                     (prrr-diff-pullreq-merge-base
                       (forge-pullreq :id "f" :number 1 :base-rev prrr-test-repo-base) head)))
-      (should-not (prrr-diff--merge-base (forge-pullreq :id "f" :number 1 :base-rev nil) head))
-      (should-not (prrr-diff--merge-base
+      (should-not (prrr-diff-pullreq-merge-base (forge-pullreq :id "f" :number 1 :base-rev nil) head))
+      (should-not (prrr-diff-pullreq-merge-base
                    (forge-pullreq :id "f" :number 1
                                   :base-rev "2222222222222222222222222222222222222222")
                    head)))))
