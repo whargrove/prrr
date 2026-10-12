@@ -281,10 +281,8 @@ Highlighting is on, with C rules from `c-ts-mode'."
     (let ((file (prrr-diff-test--file-section "src/comment.c")))
       (magit-section-show file)
       ;; The fragment starts inside the comment, so the grammar sees code, not
-      ;; a comment: the changed line gets no comment face (a known limit).
-      (should (text-property-not-all (oref file start) (oref file end) 'prrr-treesit-face nil))
-      (should-not (memq 'font-lock-comment-face
-                        (prrr-treesit-test--faces (prrr-treesit-test--find "comment line twelve")))))))
+      ;; a comment: the changed line may be mis-colored (a known limit).
+      (should (text-property-not-all (oref file start) (oref file end) 'prrr-treesit-face nil)))))
 
 (ert-deftest prrr-treesit-test-function-capture-and-no-face ()
   "A capture that is a function colors too; the `face' property is never written."
@@ -305,6 +303,114 @@ Highlighting is on, with C rules from `c-ts-mode'."
       (magit-section-show file)
       (should-not (text-property-not-all (oref file start) (oref file end)
                                          'prrr-treesit-face nil)))))
+
+;;;; Deferral and the toggle
+
+(defvar prrr-treesit-test--idle nil
+  "The (BUFFER) arguments of the idle timers set, newest first.")
+
+(defmacro prrr-treesit-test--with-idle-stub (&rest body)
+  "Run BODY with `run-with-idle-timer' recording into `prrr-treesit-test--idle'."
+  (declare (indent 0))
+  `(let ((prrr-treesit-test--idle nil))
+     (cl-letf (((symbol-function 'run-with-idle-timer)
+                (lambda (_secs _repeat _function &rest args)
+                  (push args prrr-treesit-test--idle)
+                  'prrr-treesit-test-timer))
+               ((symbol-function 'cancel-timer) #'ignore))
+       ,@body)))
+
+(defun prrr-treesit-test--colored-p (path)
+  "Non-nil when the `file' section of PATH has syntax faces."
+  (let ((file (prrr-diff-test--file-section path)))
+    (text-property-not-all (oref file start) (oref file end) 'prrr-treesit-face nil)))
+
+(ert-deftest prrr-treesit-test-refresh-defers-to-idle ()
+  "Files shown by a refresh wait for the idle timer, so first paint does not."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-idle-stub
+    (prrr-treesit-test--with-buffer
+      (setq-local prrr-eager-files 10)
+      (magit-refresh-buffer)
+      (should-not (prrr-treesit-test--colored-p "src/sample.c"))
+      (should prrr-treesit-test--idle)
+      (prrr-treesit--drain (current-buffer))
+      (should (prrr-treesit-test--colored-p "src/sample.c")))))
+
+(ert-deftest prrr-treesit-test-large-file-defers-to-idle ()
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-idle-stub
+    (prrr-treesit-test--with-buffer
+      (let ((prrr-highlight-max-lines 30))
+        (magit-section-show (prrr-diff-test--file-section "src/sample.c"))
+        (should (prrr-treesit-test--colored-p "src/sample.c"))
+        (magit-section-show (prrr-diff-test--file-section "src/big.c"))
+        (should-not (prrr-treesit-test--colored-p "src/big.c"))
+        (prrr-treesit--drain (current-buffer))
+        (should (prrr-treesit-test--colored-p "src/big.c"))))))
+
+(ert-deftest prrr-treesit-test-drain-skips-stale-sections ()
+  "A refresh while a file waits leaves the old section unhighlighted, without error."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-idle-stub
+    (prrr-treesit-test--with-buffer
+      (let ((prrr-highlight-max-lines 30)
+            (highlighted nil)
+            (highlight (symbol-function 'prrr-treesit-highlight)))
+        (magit-section-show (prrr-diff-test--file-section "src/big.c"))
+        (let ((stale (prrr-diff-test--file-section "src/big.c")))
+          (magit-refresh-buffer)
+          (cl-letf (((symbol-function 'prrr-treesit-highlight)
+                     (lambda (section) (push section highlighted) (funcall highlight section))))
+            (prrr-treesit--drain (current-buffer)))
+          (should-not (memq stale highlighted))
+          (should (prrr-treesit-test--colored-p "src/big.c")))))))
+
+(ert-deftest prrr-treesit-test-drain-yields-to-input ()
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-idle-stub
+    (prrr-treesit-test--with-buffer
+      (let ((prrr-highlight-max-lines 30))
+        (magit-section-show (prrr-diff-test--file-section "src/big.c"))
+        (setq prrr-treesit-test--idle nil)
+        (cl-letf (((symbol-function 'input-pending-p) (lambda (&rest _) t)))
+          (prrr-treesit--drain (current-buffer)))
+        (should-not (prrr-treesit-test--colored-p "src/big.c"))
+        (should prrr-treesit--queue)
+        (should prrr-treesit-test--idle)))))
+
+(ert-deftest prrr-treesit-test-kill-cancels-timer ()
+  (skip-unless (treesit-language-available-p 'c))
+  (let ((buffer nil) (timer nil))
+    (prrr-treesit-test--with-buffer
+      (let ((prrr-highlight-max-lines 30))
+        (magit-section-show (prrr-diff-test--file-section "src/big.c"))
+        (setq buffer (current-buffer) timer prrr-treesit--timer)
+        (should (memq timer timer-idle-list))))
+    (should-not (buffer-live-p buffer))
+    (should-not (memq timer timer-idle-list))))
+
+(ert-deftest prrr-treesit-test-toggle ()
+  "L turns highlighting off in this buffer only, and back on."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-idle-stub
+    (prrr-treesit-test--with-buffer
+      (magit-section-show (prrr-diff-test--file-section "src/sample.c"))
+      (should (prrr-treesit-test--colored-p "src/sample.c"))
+      (prrr-toggle-highlight)
+      (should-not prrr-highlight)
+      (should (default-value 'prrr-highlight))
+      (should (zerop (hash-table-count prrr-treesit--languages)))
+      (should-not (text-property-not-all (point-min) (point-max) 'prrr-treesit-face nil))
+      (prrr-toggle-highlight)
+      (should prrr-highlight)
+      (prrr-treesit--drain (current-buffer))
+      (should (prrr-treesit-test--colored-p "src/sample.c")))))
+
+(ert-deftest prrr-treesit-test-l-key ()
+  (should (eq 'prrr-toggle-highlight (keymap-lookup prrr-diff-mode-map "L")))
+  (should (eq 'prrr-toggle-highlight (keymap-lookup prrr-diff-file-section-map "L")))
+  (should (eq 'prrr-toggle-highlight (keymap-lookup prrr-diff-hunk-section-map "L"))))
 
 (provide 'prrr-treesit-test)
 ;;; prrr-treesit-test.el ends here

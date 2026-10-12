@@ -35,6 +35,7 @@
 (require 'prrr-sync)
 (require 'prrr-review)
 (require 'prrr-range)
+(require 'prrr-treesit)
 
 (defun prrr-transient--shown (what value)
   "Describe a toggle for WHAT that is on when VALUE is non-nil."
@@ -130,7 +131,8 @@ Milestone 7 adds the Agent group."
    ["View"
     ("v" "toggle Viewed" prrr-toggle-viewed)
     ("z" "collapse all" prrr-collapse-all)
-    ("Z" "expand all" prrr-expand-all)]
+    ("Z" "expand all" prrr-expand-all)
+    ("L" "toggle highlighting" prrr-toggle-highlight)]
    ["Range"
     ("D" "choose…" prrr-range)
     ("." "default Range here" prrr-goto-default-range)

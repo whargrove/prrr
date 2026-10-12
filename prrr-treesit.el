@@ -266,14 +266,81 @@ It runs while magit paints, where an error would break the whole redraw."
     (error (message "prrr: highlighting %s failed: %s"
                     (oref file value) (error-message-string err)))))
 
+(defvar-local prrr-treesit--queue nil
+  "The `file' sections waiting for the idle timer, oldest first.")
+
+(defvar-local prrr-treesit--timer nil
+  "The idle timer that highlights `prrr-treesit--queue', or nil.")
+
 (defun prrr-treesit--request (file)
-  "Highlight FILE, a `file' section, unless it was already or highlighting is off."
+  "Highlight FILE, a `file' section, unless it was already or highlighting is off.
+A file painted during a refresh, or longer than
+`prrr-highlight-max-lines', waits for Emacs to be idle, so neither the
+first paint nor a refresh waits on it.  `magit--refreshing-buffer-p' is
+magit's own flag for deferring paint work in a refresh."
   (when (and prrr-highlight (eq (oref file type) 'file))
     (unless prrr-treesit--done
       (setq prrr-treesit--done (make-hash-table :test #'eq :weakness 'key)))
     (unless (gethash file prrr-treesit--done)
       (puthash file t prrr-treesit--done)
-      (prrr-treesit--highlight-reporting file))))
+      (if (or magit--refreshing-buffer-p
+              (> (count-lines (oref file content) (oref file end)) prrr-highlight-max-lines))
+          (prrr-treesit--enqueue file)
+        (prrr-treesit--highlight-reporting file)))))
+
+(defun prrr-treesit--enqueue (file)
+  "Queue FILE to be highlighted when Emacs is next idle."
+  (setq prrr-treesit--queue (nconc prrr-treesit--queue (list file)))
+  (unless prrr-treesit--timer
+    (setq prrr-treesit--timer
+          (run-with-idle-timer 0 nil #'prrr-treesit--drain (current-buffer)))))
+
+(defun prrr-treesit--live-p (file)
+  "Non-nil when FILE is still a section of the current buffer.
+A refresh replaces every section."
+  (eq file (magit-get-section (magit-section-ident file))))
+
+(defun prrr-treesit--drain (buffer)
+  "Highlight the queued files of BUFFER, oldest first, yielding to input.
+A file a refresh replaced is dropped: its new section queues itself
+when painted.  What is left when input arrives waits for the next idle
+time."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq prrr-treesit--timer nil)
+      (while (and prrr-treesit--queue (not (input-pending-p)))
+        (let ((file (pop prrr-treesit--queue)))
+          (when (prrr-treesit--live-p file)
+            (prrr-treesit--highlight-reporting file))))
+      (when prrr-treesit--queue
+        (setq prrr-treesit--timer
+              (run-with-idle-timer 0 nil #'prrr-treesit--drain buffer))))))
+
+(defun prrr-treesit--cancel ()
+  "Cancel this buffer's idle highlighting; for `kill-buffer-hook'."
+  (when prrr-treesit--timer
+    (cancel-timer prrr-treesit--timer)
+    (setq prrr-treesit--timer nil)))
+
+(defun prrr-treesit--setup ()
+  "Make killing this Review Buffer cancel its idle highlighting (SPEC section 11)."
+  (add-hook 'kill-buffer-hook #'prrr-treesit--cancel nil t))
+
+(add-hook 'prrr-diff-mode-hook #'prrr-treesit--setup)
+
+;;;###autoload
+(defun prrr-toggle-highlight ()
+  "Toggle syntax highlighting in this Review Buffer.
+Sets `prrr-highlight' in this buffer only, rereads the languages'
+highlighting rules, so a changed `treesit-font-lock-level' applies, and
+redraws at the head shown."
+  (interactive)
+  (unless (derived-mode-p 'prrr-diff-mode)
+    (user-error "Not in a Review Buffer"))
+  (setq-local prrr-highlight (not prrr-highlight))
+  (clrhash prrr-treesit--languages)
+  (magit-refresh-buffer)
+  (message "Syntax highlighting %s" (if prrr-highlight "on" "off")))
 
 (cl-defmethod magit-section-paint :after ((section magit-hunk-section) _highlight
                                           &context (major-mode prrr-diff-mode))

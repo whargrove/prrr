@@ -777,7 +777,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
                    ("j" . prrr-jump-to-file) ("v" . prrr-toggle-viewed)
                    ("z" . prrr-collapse-all) ("Z" . prrr-expand-all)
                    ("o" . prrr-open-topic) ("b" . prrr-browse) ("B" . prrr-checkout)
-                   ("g" . prrr-refresh) ("G" . prrr-refetch)))
+                   ("g" . prrr-refresh) ("G" . prrr-refetch) ("L" . prrr-toggle-highlight)))
     (should (eq command (keymap-lookup prrr-diff-mode-map key)))
     (let ((suffix (transient-get-suffix 'prrr-menu key)))
       (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))

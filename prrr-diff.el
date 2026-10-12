@@ -413,13 +413,14 @@ Buffer that child may be a File Comment."
     ("s" . prrr-comment-suggest)
     ("S" . prrr-submit) ("O" . prrr-outbox)
     ("D" . prrr-range) ("." . prrr-goto-default-range) ("m" . prrr-mark-seen)
-    (">" . prrr-stack-up) ("<" . prrr-stack-down))
+    (">" . prrr-stack-up) ("<" . prrr-stack-down)
+    ("L" . prrr-toggle-highlight))
   "The commenting and reviewing keys of a Review Buffer (SPEC section 9).
 They are bound in the section keymaps too, which win over the mode's
 and in which magit binds several of them.")
 
 (defconst prrr-diff--later-keys
-  '("@" "L")
+  '("@")
   "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
 They are `undefined' until then, so magit's diff arguments or log never
 run from a Review Buffer.")
