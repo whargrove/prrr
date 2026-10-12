@@ -170,14 +170,28 @@ follow, one line each."
                           (length (alist-get 'comments thread))))
                 resolved ""))))
 
+(defun prrr-agent--fence (lines)
+  "Return a backtick fence no line of LINES can close.
+A line closes a fence when it starts, after a diff's +, - or space and
+any indentation, with as many backticks or more; the fence is one
+backtick longer than the longest such run, and at least three."
+  (make-string (1+ (seq-reduce (lambda (longest line)
+                                 (if (string-match "\\`[-+ ]? *\\(`+\\)" line)
+                                     (max longest (length (match-string 1 line)))
+                                   longest))
+                               lines 2))
+               ?`))
+
 (defun prrr-agent--diff (diff files)
   "Return the Markdown of DIFF, cut after `prrr-agent-max-diff-lines' lines.
 FILES are the paths DIFF changes, named when it is cut."
   (let* ((lines (split-string (string-remove-suffix "\n" diff) "\n"))
-         (cut (> (length lines) prrr-agent-max-diff-lines)))
-    (concat "## Diff\n\n```diff\n"
-            (string-join (if cut (seq-take lines prrr-agent-max-diff-lines) lines) "\n")
-            "\n```\n"
+         (cut (> (length lines) prrr-agent-max-diff-lines))
+         (shown (if cut (seq-take lines prrr-agent-max-diff-lines) lines))
+         (fence (prrr-agent--fence shown)))
+    (concat "## Diff\n\n" fence "diff\n"
+            (string-join shown "\n")
+            "\n" fence "\n"
             (and cut
                  (format (concat "\nThe diff cut after %d lines; call prrr-api-diff with a file"
                                  " for the rest.  Files changed: %s.\n")

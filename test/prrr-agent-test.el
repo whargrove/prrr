@@ -114,5 +114,18 @@
       (should (eq pullreq (plist-get (nth 1 sent) :pullreq)))
       (should (equal worktree (plist-get (nth 1 sent) :directory))))))
 
+(ert-deftest prrr-agent-test-diff-fence-outlasts-the-diff ()
+  "Final review 11: a ``` line in the diff does not close the fence early."
+  (let* ((diff (concat "diff --git a/README.md b/README.md\n"
+                       "@@ -1,3 +1,4 @@\n"
+                       " ```\n"
+                       "+````sh\n"
+                       " code\n"))
+         (md (prrr-agent--diff diff '("README.md"))))
+    (should (string-match-p "^`````diff\n" md))
+    (should (string-match-p "\n`````\n\\'" md))
+    (should (string-search " ```\n+````sh\n code\n" md)))
+  (should (string-match-p "^```diff\n" (prrr-agent--diff " plain\n" '("a")))))
+
 (provide 'prrr-agent-test)
 ;;; prrr-agent-test.el ends here
