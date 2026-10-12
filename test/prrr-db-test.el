@@ -377,3 +377,20 @@
 
 (provide 'prrr-db-test)
 ;;; prrr-db-test.el ends here
+
+(ert-deftest prrr-db-test-replace-review-data-keeps-agent-flags ()
+  "GitHub knows nothing of agents: a refetch keeps prrr's flag by comment id."
+  (prrr-db-with-test-db
+    (prrr-db-replace-review-data
+     "PR_1" (list :comments (list (prrr-comment-create :comment-id "C_1" :pr-id "PR_1" :thread-id "T_1"
+                                                       :body "a" :state 'pending :local-state 'sent
+                                                       :agent-p t))))
+    (prrr-db-replace-review-data
+     "PR_1" (list :comments (list (prrr-comment-create :comment-id "C_1" :pr-id "PR_1" :thread-id "T_1"
+                                                       :body "a edited" :state 'pending
+                                                       :local-state 'sent :agent-p nil)
+                                  (prrr-comment-create :comment-id "C_2" :pr-id "PR_1" :thread-id "T_1"
+                                                       :body "b" :state 'pending :local-state 'sent
+                                                       :agent-p nil))))
+    (should (prrr-comment-agent-p (prrr-db-get 'review-comment "C_1")))
+    (should-not (prrr-comment-agent-p (prrr-db-get 'review-comment "C_2")))))

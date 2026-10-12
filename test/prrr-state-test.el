@@ -1329,3 +1329,25 @@ One line rewritten at 12, two lines added after 20, three removed at 30."
 
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here
+
+(ert-deftest prrr-state-test-outbox-agent-flag-reaches-comment ()
+  "An agent's write shows as an agent comment before and after GitHub accepts it."
+  (let* ((row (prrr-outbox-create
+               :id "1" :pr-id "PR_1" :kind 'thread :attempts 0
+               :payload (list :target (list :me "example-me") :thread "local:t" :comment "local:c"
+                              :anchor '(:path "a.el" :line 3 :side right :subject-type line)
+                              :body "Nit" :commit prrr-test-head :agent t)))
+         (view (prrr-state-outbox-view (list :threads nil :comments nil) (list row)))
+         (created (car (prrr-state-outbox-created
+                        row '(:comment-id "C_1" :database-id "11" :created-at "2026-10-12T00:00:00Z"
+                              :thread-id "T_1" :review-id "R_1")))))
+    (should (prrr-comment-agent-p (car (plist-get view :comments))))
+    (should (prrr-comment-agent-p (seq-find #'prrr-comment-p created)))))
+
+(ert-deftest prrr-state-test-outbox-user-write-is-not-agent ()
+  (let ((row (prrr-outbox-create :id "1" :pr-id "PR_1" :kind 'reply :attempts 0
+                                 :payload (list :target (list :me "example-me") :comment "local:c"
+                                                :thread-id "T_1" :body "Yes"))))
+    (should-not (prrr-comment-agent-p
+                 (car (plist-get (prrr-state-outbox-view (list :threads nil :comments nil) (list row))
+                                 :comments))))))

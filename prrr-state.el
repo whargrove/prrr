@@ -471,7 +471,10 @@ Every payload has :target, the PR as the Outbox reaches it:
   discussion     a Discussion Comment: :comment (its local id), :body.
   submit         :verdict (`approve', `request-changes' or `comment'),
                  :body, :commit.
-  discard        nothing more.")
+  discard        nothing more.
+A thread or reply write may also carry :agent, non-nil when an agent
+wrote it through the API (prrr-api.el); the comment it makes is
+flagged `agent-p'.")
 
 (defconst prrr-state-local-prefix "local:"
   "Prefix of the ids prrr gives what it created before GitHub names it.")
@@ -623,7 +626,8 @@ CREATED-AT is its creation time."
                          :state (if (memq (prrr-outbox-kind row) '(thread reply))
                                     'pending
                                   'submitted)
-                         :local-state 'unsent :agent-p nil)))
+                         :local-state 'unsent
+                         :agent-p (and (plist-get payload :agent) t))))
 
 (defun prrr-state-outbox-created (row result)
   "Return (ROWS . RENAMES) once GitHub accepted the creating write ROW.

@@ -414,9 +414,22 @@ DATA is the plist `prrr-github-decode-review-data' returns, or nil: its
 These tables hold only what GitHub sent or accepted; the Outbox's
 unsent writes live in the `outbox' table, which this leaves alone apart
 from RENAMES, an alist from local id to GitHub's applied to the PR's
-queued writes.  One transaction."
+queued writes.  A comment that was flagged `agent-p' keeps the flag,
+since GitHub's answer never carries it.  One transaction."
   (let ((db (prrr-db)))
     (emacsql-with-transaction db
+      (let ((agents (mapcar #'prrr-comment-comment-id
+                            (seq-filter #'prrr-comment-agent-p
+                                        (prrr-db-select 'review-comment :pr-id pr-id)))))
+        (setq data (plist-put (copy-sequence data) :comments
+                              (mapcar (lambda (comment)
+                                        (if (and (member (prrr-comment-comment-id comment) agents)
+                                                 (not (prrr-comment-agent-p comment)))
+                                            (let ((copy (copy-sequence comment)))
+                                              (setf (prrr-comment-agent-p copy) t)
+                                              copy)
+                                          comment))
+                                      (plist-get data :comments)))))
       (dolist (table '(thread review-comment pending-review viewed))
         (prrr-db-delete table :pr-id pr-id))
       (dolist (rows (list (plist-get data :threads)

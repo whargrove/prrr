@@ -663,6 +663,30 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                                              :commit "1111"))
         (should (= 1 (length prrr-sync--outbox-creations)))))))
 
+(ert-deftest prrr-sync-test-agent-flag-survives-send-and-refetch ()
+  "An agent's Thread is flagged once sent, and stays so when a refetch replaces the comments."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch
+          `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "1111" :agent t)))
+      (let ((id "PRRC_kwDOexampleNew01")
+            (data (prrr-github-decode-review-data (prrr-test-fixture "review-data")
+                                                  prrr-sync-test--pr "2026-10-10T12:00:00Z")))
+        (should (prrr-comment-agent-p (prrr-db-get 'review-comment id)))
+        (prrr-db-replace-review-data
+         prrr-sync-test--pr
+         (plist-put data :comments
+                    (cons (prrr-comment-create :comment-id id :pr-id prrr-sync-test--pr
+                                               :thread-id "PRRT_kwDOexampleNew01" :body "Nit."
+                                               :state 'pending :local-state 'sent)
+                          (plist-get data :comments))))
+        (should (prrr-comment-agent-p
+                 (seq-find (lambda (comment) (equal id (prrr-comment-comment-id comment)))
+                           (plist-get (prrr-sync-review-data prrr-sync-test--pr) :comments))))))))
+
 (ert-deftest prrr-sync-test-outbox-reply-creates-the-pending-review-on-its-commit ()
   "A reply with no Pending Review creates one on the head the reply was written at."
   (prrr-db-with-test-db
