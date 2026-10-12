@@ -23,14 +23,17 @@
 ;; Generates repositories of 417 and 2,516 changed files with
 ;; bench/make-diff-repo.sh and measures first paint, expanding one
 ;; 300-line file, and a refresh with three files expanded, each as the
-;; median of several runs in a fresh buffer.  Highlighting arrives in
-;; milestone 6; until then the expand budget is measured without it.
+;; median of several runs in a fresh buffer.  The expanded files are C,
+;; highlighted when the C grammar is installed
+;; (`treesit-install-language-grammar'); without it the expand budget is
+;; measured unhighlighted and says so.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
 (require 'prrr-diff)
+(require 'prrr-treesit)
 
 (defconst prrr-diff-bench-tolerance 1.25
   "A run fails when a median exceeds its budget by more than this factor.")
@@ -70,6 +73,13 @@
   "Return the current Review Buffer's files not washed yet."
   (seq-filter (lambda (file) (oref file washer)) (prrr-diff--files)))
 
+(defun prrr-diff-bench--check-highlighted (file)
+  "Signal an error when expanding FILE did not highlight it though it could."
+  (when (and (prrr-treesit-rules "x.c")
+             (not (text-property-not-all (oref file start) (oref file end)
+                                         'prrr-treesit-face nil)))
+    (error "Expanding %s did not highlight it" (oref file value))))
+
 (defun prrr-diff-bench--measure (files)
   "Measure a repository of FILES changed files; return a plist of medians.
 :open is first paint in a fresh buffer, :expand washing one file not
@@ -87,8 +97,10 @@ expanded."
                  (opens (cl-loop repeat 5 collect (prrr-diff-bench--open pullreq)))
                  (expands (with-current-buffer (prrr-diff-bench--buffer pullreq)
                             (mapcar (lambda (file)
-                                      (prrr-diff-bench--ms (lambda () (magit-section-show file))))
-                                    (seq-take (prrr-diff-bench--unwashed) 5))))
+                                      (prog1 (prrr-diff-bench--ms (lambda () (magit-section-show file)))
+                                        (prrr-diff-bench--check-highlighted file)))
+                                    (seq-filter (lambda (file) (string-suffix-p ".c" (oref file value)))
+                                                (prrr-diff-bench--unwashed)))))
                  (refreshes (progn
                               (prrr-diff-bench--open pullreq)
                               (with-current-buffer (prrr-diff-bench--buffer pullreq)
@@ -109,6 +121,8 @@ expanded."
 
 (defun prrr-diff-bench-run ()
   "Measure the Review Buffer budgets of SPEC section 12; exit 1 over budget."
+  (unless (treesit-language-available-p 'c)
+    (message "No C grammar: the expand budget is measured without highlighting"))
   (let* ((prrr-database-file (make-temp-file "prrr-bench" nil ".sqlite"))
          ;; The Outbox stays out of the measurements.
          (prrr-db-open-hook nil)

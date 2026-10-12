@@ -15,12 +15,15 @@ opened the PR, or in one commit, and step up and down a Stack without
 leaving the Review Buffer.
 
 > **Status:** early development. The Review Queue, the Review Buffer,
-> commenting and submitting, Ranges and Stacks work. Syntax highlighting
-> of the diff is next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
+> commenting and submitting, Ranges, Stacks and syntax highlighting work.
+> The agent API is next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
 
 ## Requirements
 
 - Emacs 29.1 or later
+- Syntax highlighting needs Emacs built with tree-sitter and the grammars
+  of your languages (`M-x treesit-install-language-grammar`); without
+  them the diff shows uncolored.
 - magit 4.7, forge 0.5, emacsql 4.4, transient 0.13, compat 31
 - A GitHub token that forge can use (see forge's manual,
   [Setup for GitHub](https://docs.magit.vc/forge/Setup-for-Githubcom.html))
@@ -162,6 +165,16 @@ Files you marked Viewed, here or on GitHub, are folded and marked `✓
 viewed`. `g` redraws at the pull request's current head and keeps what
 you expanded and folded.
 
+### Syntax highlighting
+
+A file is colored the first time it is shown, using the tree-sitter rules
+of its language. The language is the one visiting the file would pick.
+When that is `foo-mode` and `foo-ts-mode` exists, its rules are used, so
+no `major-mode-remap-alist` setup is needed. Files without a grammar stay
+uncolored. Very large files, and files redrawn by a refresh, are colored
+a moment later, when Emacs is idle. `treesit-font-lock-level` sets how
+much is colored. `L` turns it off and on in one buffer.
+
 ### Keys in the Review Buffer
 
 | Key       | Command                                             | Does                                       |
@@ -188,13 +201,21 @@ you expanded and folded.
 | `o`       | `prrr-open-topic`                                   | forge's topic buffer                       |
 | `b`       | `prrr-browse`                                       | Open the PR on GitHub                      |
 | `B`       | `prrr-checkout`                                     | Check out the PR's branch                  |
+| `L`       | `prrr-toggle-highlight`                             | Toggle syntax highlighting in this buffer  |
 | `g`       | `prrr-refresh`                                      | Redraw, at the PR's current head           |
 | `G`       | `prrr-refetch`                                      | Refetch threads and Viewed flags now       |
 | `?`, `C-o`| `prrr-menu`                                         | Menu with the same keys                    |
 
 magit's `TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`, `1`-`4`, `E` (ediff), `h`
 and `q` work as in any magit diff. Keys that later milestones use
-(`@`, `L`) do nothing yet.
+(`@`) do nothing yet.
+
+### Review Buffer options
+
+| Option                     | Default | Meaning                                                    |
+|----------------------------|---------|------------------------------------------------------------|
+| `prrr-highlight`           | `t`     | Highlight diff lines                                       |
+| `prrr-highlight-max-lines` | `3000`  | Larger file sections are highlighted when Emacs is idle    |
 
 ## Commenting and reviewing
 

@@ -61,7 +61,7 @@ depends only on the files above it.
 | `prrr-sync.el`      | Freshness rules and the Outbox: pull queue inputs, refetch per PR, every write to GitHub with its order, spacing, retry and reconciliation, Bookmark and ref pinning. | prrr-db, prrr-github, prrr-state, forge, magit-mode |
 | `prrr-state.el`     | Pure functions: Review State, Queue Group membership, FIFO ordering, Stack detection, line mapping between Ranges.           | prrr-db structs only                   |
 | `prrr-queue.el`     | The Review Queue section in magit-status and its keymap, `prrr-queue-mode` and the `prrr-queue` command.                                                                     | prrr-state, prrr-sync, forge objects   |
-| `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync |
+| `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync (loads prrr-treesit when a Review Buffer starts) |
 | `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, unsent and failed writes and suggestions; the comment capture buffer. | magit-section, magit-diff, prrr-db, prrr-state |
 | `prrr-range.el`     | Range commands, switching with point kept, since-review and since-opened starts, fetching a missing start, `prrr-mark-seen`. | prrr-state, prrr-sync, prrr-diff       |
 | `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
@@ -305,15 +305,26 @@ additionally forces the per-PR refetch.
 jump, `1`-`4` section levels, ediff from a hunk with `E`.
 
 **Syntax highlighting** (`prrr-treesit.el`). Applied when a file section is
-expanded, never while collapsed: one `treesit` parser per file section per
-side with included ranges set to the line bodies (prefix char excluded),
-using the cached `treesit-font-lock-settings` of the language's ts-mode and
-a small `treesit-query-capture` loop that prepends faces to `font-lock-face`.
-Never `treesit-font-lock-fontify-region` or `treesit-range-settings`.
-Language is chosen from the file name through `auto-mode-alist` and
-`major-mode-remap-alist`; files without an available grammar are left
-unhighlighted. `prrr-highlight` (default t) toggles it; sections larger than
-`prrr-highlight-max-lines` (default 3,000) are highlighted on an idle timer.
+first shown, never while collapsed: when a hunk of it is first painted.
+One `treesit` parser per side, new (context and `+` lines) and old
+(context and `-` lines), with included ranges set to the line bodies
+(prefix char excluded); context lines take the new side's faces. The
+parsers live only for the call. The rules are the cached
+`treesit-font-lock-settings` of the language's ts-mode, run once in a
+temporary buffer with its hooks delayed, applied by a small
+`treesit-query-capture` loop. Never `treesit-font-lock-fontify-region`
+or `treesit-range-settings`. Faces go on the `prrr-treesit-face`
+property and are put in front of `font-lock-face` after every paint of
+the hunk, since magit resets `font-lock-face` when point enters or
+leaves a hunk; the diff line's face stays behind them. Language is
+chosen from the file name through `auto-mode-alist` and the remapping
+options (`major-mode-remap-alist`, and `major-mode-remap-defaults` on
+Emacs 30 and later); when that gives FOO-mode, FOO-ts-mode stands in if
+it is defined. Files without an available grammar are left
+unhighlighted, silently. `prrr-highlight` (default t) turns it on; `L`
+toggles it in one buffer. Files painted during a refresh, and sections
+larger than `prrr-highlight-max-lines` (default 3,000), are highlighted
+on an idle timer, so first paint and refresh never wait on it.
 Measured: 1.3 / 9.7 / 34 ms per 100 / 300 / 1,000-line section.
 
 ## 7. Threads, comments, and the Pending Review (prrr-t9q.2, prrr-t9q.7)
