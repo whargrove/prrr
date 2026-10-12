@@ -323,6 +323,7 @@ Highlighting is on, with C rules from `c-ts-mode'."
   (prrr-treesit-test--with-buffer
     (let ((hunk (car (prrr-diff-test--hunks "src/sample.c")))
           (pos (prrr-treesit-test--find "int answer = 42")))
+      (setq-local magit-diff-highlight-hunk-body t)
       (dolist (highlight '(t nil t))
         (save-excursion
           (goto-char (oref hunk start))

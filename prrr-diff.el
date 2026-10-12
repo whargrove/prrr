@@ -63,6 +63,14 @@ every file after it, are washed when first expanded."
   :type 'natnum
   :group 'prrr)
 
+(defcustom prrr-highlight-hunk-body nil
+  "Whether Review Buffers highlight the body of the hunk at point.
+This is `magit-diff-highlight-hunk-body' for Review Buffers.  nil
+leaves every diff line in its usual face wherever point is: magit's
+highlighted faces can lower the contrast of the lines under review."
+  :type 'boolean
+  :group 'prrr)
+
 ;;;; Changed files
 
 (cl-defstruct (prrr-diff-file (:constructor prrr-diff-file-create) (:copier nil))
@@ -478,6 +486,7 @@ section keymaps.")
                      not-in-range outdated outdated-files))
   ;; magit's hunk fontifier walks every line of a hunk, Threads included.
   (setq-local magit-diff-fontify-hunk nil)
+  (setq-local magit-diff-highlight-hunk-body prrr-highlight-hunk-body)
   ;; Leaving the buffer, by killing it or quitting its window, ends a
   ;; visit: since-opened starts from what the visit showed.
   (add-hook 'kill-buffer-hook #'prrr-diff-record-bookmark nil t)

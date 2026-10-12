@@ -643,6 +643,15 @@ SETUP runs first, inside the fixture repository and a fresh database.
               (should (equal (list (list pullreq 'prrr-diff-mode)) seen))
             (kill-buffer buffer)))))))
 
+;; The hunk at point keeps its usual faces unless the user asks.
+(ert-deftest prrr-diff-test-hunk-body-highlight-follows-option ()
+  (dolist (option '(nil t))
+    (with-temp-buffer
+      (let ((prrr-highlight-hunk-body option)
+            (magit-diff-highlight-hunk-body (not option)))
+        (prrr-diff-mode)
+        (should (eq option magit-diff-highlight-hunk-body))))))
+
 (ert-deftest prrr-diff-test-review-missing-ref-offers-pull ()
   "Review Focus 1: no Review Buffer without the PR's head."
   (prrr-db-with-test-db
