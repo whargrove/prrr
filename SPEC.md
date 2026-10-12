@@ -636,13 +636,17 @@ bodies; nothing else is added.
 
 ## 11. Errors, auth, and offline
 
-- Authentication failures (HTTP 401, or 403 without rate-limit headers)
-  show prrr's classified message, "GitHub rejected the token (HTTP N)",
-  and leave the buffer usable for reading local diffs. A missing token that
+- Authentication failures show prrr's classified message: "GitHub rejected
+  the token (HTTP 401)", or "GitHub denied access (HTTP 403): " followed by
+  GitHub's own message for a permission, SSO or IP allow-list denial. They
+  leave the buffer usable for reading local diffs. A missing token that
   forge reports before sending shows forge's own message.
 - Rate-limit responses (primary or secondary) pause the Outbox and the
-  background refetch until the reset time and say so in the header. An HTTP
-  403 with quota left is GitHub's secondary limit and waits one minute.
+  background refetch until the reset time and say so in the header. A 403
+  or 429 with retry-after or no quota left waits for those headers; a 429,
+  or a 403 whose message names a rate limit, is otherwise GitHub's
+  secondary limit and waits one minute. Every other 403 is a denial, since
+  GitHub sends quota headers on those too.
 - A pull that gets no answer within `prrr-sync-timeout` (default 60
   seconds), as when the connection fails, ends as offline; a later answer
   is ignored.

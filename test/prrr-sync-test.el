@@ -172,7 +172,7 @@ The stored Teams stay, the failure is not retried before
         (should (equal '(repository viewer) requests)))
       (let ((status (prrr-sync-status "example-repo-id")))
         (should (eq 'ok (plist-get status :state)))
-        (should (equal "Teams unavailable: GitHub rejected the token (HTTP 403)"
+        (should (equal "Teams unavailable: GitHub denied access (HTTP 403)"
                        (plist-get status :message))))
       (should (prrr-db-select 'pullreq-meta :forge-repo-id "example-repo-id"))
       (should (equal '("example-org/reviewers")

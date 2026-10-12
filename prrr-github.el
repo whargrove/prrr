@@ -304,6 +304,14 @@ NOW, a Lisp time); without either, one minute after NOW."
           (message (format "GitHub refused: %s" message))
           (t "GitHub refused the request (HTTP 422)"))))
 
+(defun prrr-github--http-message (rest)
+  "Return the message GitHub sent with an HTTP failure, or \"\".
+REST is what follows the status code in ghub's (error http CODE ...);
+ghub appends the decoded response body last when an errorback is set."
+  (let* ((payload (car (last rest)))
+         (message (and (consp payload) (alist-get 'message payload))))
+    (if (stringp message) message "")))
+
 (defun prrr-github-error (err &optional headers now)
   "Classify ERR, a failed request, as (:kind KIND :message TEXT :reset-at TIME).
 ERR is what ghub hands an errorback: (errors ERROR...) for GraphQL
@@ -312,8 +320,10 @@ transport failures.  HEADERS is the response header alist; NOW, a Lisp
 time defaulting to the current time, anchors a retry-after delay.
 KIND is one of:
   `rate-limited'  a primary or secondary limit; RESET-AT says when it ends.
-                  An HTTP 403 with quota left is GitHub's secondary limit;
-  `auth'          the token was rejected;
+                  The secondary limit is an HTTP 429, or a 403 whose
+                  message names a rate limit;
+  `auth'          the token was rejected (HTTP 401), or access was denied
+                  (any other 403: permissions, SSO, an IP allow-list);
   `not-found'     the repository or pull request does not exist;
   `offline'       no connection or a server error, worth retrying later;
   `error'         anything else, such as GitHub refusing a write (HTTP 422).
@@ -338,19 +348,26 @@ RESET-AT is nil unless KIND is `rate-limited'."
               (list :kind 'rate-limited
                     :message (format "GitHub rate limit (HTTP %d)" code)
                     :reset-at (prrr-github--reset-at headers now)))
-             ((and (eq code 403)
-                   (let ((remaining (prrr-github--header headers "x-ratelimit-remaining")))
-                     (and remaining (not (equal remaining "0")))))
-              ;; GitHub's secondary limit: quota left, no retry-after.  Its
-              ;; documentation says to wait at least a minute; the
-              ;; x-ratelimit-reset header belongs to the primary limit.
+             ((or (eq code 429)
+                  (and (eq code 403)
+                       (string-match-p "rate limit" (prrr-github--http-message rest))))
+              ;; GitHub's secondary limit without retry-after.  Only its
+              ;; message tells it from a permission, SSO or IP allow-list
+              ;; denial, which carries the same quota headers.  GitHub says
+              ;; to wait at least a minute; x-ratelimit-reset belongs to the
+              ;; primary limit.
               (list :kind 'rate-limited
-                    :message "GitHub secondary rate limit (HTTP 403)"
+                    :message (format "GitHub secondary rate limit (HTTP %d)" code)
                     :reset-at (format-time-string "%Y-%m-%dT%H:%M:%SZ" (time-add now 60) t)))
-             ((memq code '(401 403))
-              (list :kind 'auth
-                    :message (format "GitHub rejected the token (HTTP %d)" code)
-                    :reset-at nil))
+             ((eq code 401)
+              (list :kind 'auth :message "GitHub rejected the token (HTTP 401)" :reset-at nil))
+             ((eq code 403)
+              (let ((message (prrr-github--http-message rest)))
+                (list :kind 'auth
+                      :message (if (string-empty-p message)
+                                   "GitHub denied access (HTTP 403)"
+                                 (format "GitHub denied access (HTTP 403): %s" message))
+                      :reset-at nil)))
              ((eq code 422)
               (list :kind 'error :message (prrr-github--refusal (car (last rest))) :reset-at nil))
              ((eq code 404)
