@@ -384,7 +384,7 @@ To hand it to another agent, set `prrr-agent-invoke-function`.
 | `prrr-api-pending`                | Your pending review and its comments                         |
 | `prrr-api-add-comment`            | A new thread on a line, lines or a file                      |
 | `prrr-api-reply`                  | A reply to a thread                                          |
-| `prrr-api-delete-pending-comment` | Delete a comment of your pending review                      |
+| `prrr-api-delete-pending-comment` | Delete an agent comment or proposal of your pending review   |
 | `prrr-api-submit`                 | Submit your pending review, after asking you                 |
 | `prrr-api-export`                 | Write the review as JSON                                     |
 | `prrr-api-import`                 | Add the new comments and replies of a JSON file              |
@@ -411,8 +411,11 @@ emacsclient -e '(prrr-api-import (quote ("example-org/example-repo" . 42)) "/tmp
 
 A new comment must sit on lines of the pull request's diff, on the new
 side unless it passes `:side "old"`; anything else is refused at once,
-with the line ranges the diff has, before it is queued. Writes go
-through the same queue as yours and never wait on the network.
+with the line ranges the diff has, before it is queued, as is any
+comment while the pull request's base commit is not in your repository.
+Writes go through the same queue as yours and never wait on the network.
+An agent can delete only its own comments and proposals; yours are
+yours to delete.
 
 ### Agent comments
 
@@ -420,8 +423,8 @@ Everything is posted under your account. Comments an agent adds show
 with an `agent` badge, and `prrr-agent-comment-prefix` goes before their
 text. They are in your pending review, to edit or delete like your own,
 and submitting asks once more when an agent wrote some of them.
-`prrr-api-submit` asks you too, with the counts, unless
-`prrr-api-confirm-submit` is nil.
+`prrr-api-submit` asks you too, with the counts and the body (its first
+200 characters), unless `prrr-api-confirm-submit` is nil.
 
 With `prrr-agent-comment-mode` set to `proposed`, an agent's comments
 stay in Emacs, marked `proposed`, until you decide: `a` (or `e`) opens
@@ -429,7 +432,9 @@ one to edit and accept into your pending review, `k` rejects it.
 Proposals are not part of the pending review: its counts and Submit
 leave them out, and the header shows `N proposed, a to accept`. A reply
 to a proposed thread, yours or an agent's, is refused until you accept
-the thread, unless the reply is a proposal itself.
+the thread, unless the reply is a proposal itself. A proposed thread
+written at another commit than your pending review's is refused too,
+as your own would be.
 
 ### Export and import
 
@@ -439,8 +444,9 @@ worktree. The shape is crit-review's handoff extended with GitHub's ids,
 so a tool that reads crit-review's file can read this one.
 `prrr-api-import` reads the same shape and adds, as agent comments, each
 entry without a `comment_id` as a new thread and each reply without one
-as a reply; entries of type `review` are skipped. It checks every entry
-first: one it cannot add adds nothing.
+as a reply to its entry's existing thread; entries of type `review` are
+skipped. A reply under a new thread has no thread to go to yet, and is
+refused. It checks every entry first: one it cannot add adds nothing.
 
 ### Hooks
 
@@ -451,7 +457,8 @@ first: one it cannot add adds nothing.
 | `prrr-review-submitted-hook`      | A plist `(:pr-id :verdict :body :commit)` once submitted  |
 | `prrr-review-buffer-opened-hook`  | forge's pull request, in the Review Buffer just opened    |
 
-A hook that signals shows the error as a message and stops nothing.
+A hook function that signals shows the error, with its name, as a
+message and stops nothing: the hook's other functions still run.
 
 ### Agent options
 

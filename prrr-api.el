@@ -133,19 +133,30 @@ RANGE is nil or (default), a `prrr-range', (since-review),
        (prrr-range-create :kind 'between :start from :end to))
       (_ (user-error "Not a Range: %S" range)))))
 
+(defun prrr-api--missing-commit (oid)
+  "Signal a `user-error' that the commit OID is not in the repository.
+OID nil stands for the merge base, unknown when the PR's base commit
+is not local.  The Review Buffer fetches missing commits, the API
+does not."
+  (user-error (concat "Commit %s is not in the repository;"
+                      " show this Range in the Review Buffer once to fetch it")
+              (or oid "(merge base)")))
+
+(defun prrr-api--merge-base (context)
+  "Return CONTEXT's merge base, or signal a `user-error' when it is not local."
+  (or (prrr-api--context-merge-base context)
+      (prrr-api--missing-commit nil)))
+
 (defun prrr-api--ends (context range)
   "Return (START . END), the commits RANGE designates in CONTEXT.
-Signal a `user-error' when either is not in the repository: the
-Review Buffer fetches missing commits, the API does not."
+Signal a `user-error' when either is not in the repository."
   (let ((ends (prrr-state-range-ends (prrr-api--range context range)
                                      (prrr-api--context-merge-base context)
                                      (prrr-api--context-head context))))
     (prrr-api--in context
       (dolist (oid (list (car ends) (cdr ends)))
         (unless (and oid (magit-commit-p oid))
-          (user-error (concat "Commit %s is not in the repository;"
-                              " show this Range in the Review Buffer once to fetch it")
-                      (or oid "(merge base)")))))
+          (prrr-api--missing-commit oid))))
     ends))
 
 ;;;; Alists
@@ -318,11 +329,13 @@ reject each one."
 
 (defun prrr-api--hunks (context path side)
   "Return the (FIRST . LAST) line ranges PATH's hunks cover on SIDE in CONTEXT.
-SIDE `left' reads the old lines of each hunk, `right' the new ones."
+SIDE `left' reads the old lines of each hunk, `right' the new ones.
+Signal a `user-error' when the merge base is not local: without it
+git would diff the worktree against the head instead."
   (prrr-api--in context
     (let (hunks)
       (dolist (line (magit-git-lines "diff" "--no-ext-diff" "--no-color" "-M"
-                                     (prrr-api--context-merge-base context)
+                                     (prrr-api--merge-base context)
                                      (prrr-api--context-head context) "--" path))
         (when (string-match "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@"
                             line)
@@ -383,9 +396,10 @@ Return the local id of the comment it creates.
 KIND is `thread' or `reply'.  The body gets `prrr-agent-comment-prefix'
 and the write the agent flag; in `proposed' mode it is queued as a
 proposal (`prrr-agent-comment-mode')."
-  (let* ((payload (append (list :body (concat prrr-agent-comment-prefix (plist-get payload :body))
-                                :agent t)
-                          payload))
+  (let* ((payload (plist-put (plist-put (copy-sequence payload) :body
+                                        (concat prrr-agent-comment-prefix
+                                                (plist-get payload :body)))
+                             :agent t))
          (row (if (eq prrr-agent-comment-mode 'proposed)
                   (prrr-api--sync-write context 'proposed (append (list :as kind) payload))
                 (prrr-api--sync-write context kind payload))))
@@ -426,15 +440,19 @@ Return the reply's local id."
 
 ;;;###autoload
 (defun prrr-api-delete-pending-comment (pr comment-id)
-  "Delete the comment COMMENT-ID from PR's Pending Review.
-Only the viewer's pending comments, queued or sent, can be deleted.
-Return t."
+  "Delete the agent comment COMMENT-ID from PR's Pending Review.
+Only the viewer's pending agent comments, queued or sent, and agent
+proposals can be deleted; the user's own comments are the user's to
+delete.  Return t."
   (let* ((context (prrr-api--context pr))
          (comment (seq-find (lambda (c) (equal (prrr-comment-comment-id c) comment-id))
                             (plist-get (prrr-api--review-data context) :comments))))
     (unless (and comment (eq (prrr-comment-state comment) 'pending)
                  (equal (prrr-comment-author comment) (prrr-api--in context (prrr-github-viewer))))
       (user-error "No pending comment %s of yours" comment-id))
+    (unless (or (prrr-comment-agent-p comment)
+                (eq (prrr-comment-local-state comment) 'proposed))
+      (user-error "Only agent comments can be deleted through the API"))
     (prrr-api--sync-write context 'delete (list :comment-id comment-id))
     t))
 
@@ -447,13 +465,25 @@ That is `approve', `request-changes' or `comment'."
     ((or 'comment "comment") 'comment)
     (_ (user-error "Not a Verdict: %S (approve, request-changes or comment)" verdict))))
 
+(defconst prrr-api--prompt-body-length 200
+  "How many characters of a Submit's body the confirmation shows.")
+
+(defun prrr-api--prompt-body (body)
+  "Return BODY as the Submit confirmation shows it.
+That is \"(no body)\" for an empty BODY, and its first
+`prrr-api--prompt-body-length' characters and \"…\" for a long one."
+  (cond ((string-empty-p body) "(no body)")
+        ((> (length body) prrr-api--prompt-body-length)
+         (concat (substring body 0 prrr-api--prompt-body-length) "…"))
+        (t body)))
+
 ;;;###autoload
 (defun prrr-api-submit (pr verdict &optional body)
   "Submit PR's Pending Review with VERDICT and BODY.
 VERDICT is `approve', `request-changes' or `comment' (or a string).
 Unless `prrr-api-confirm-submit' is nil, ask the user first, showing
-the counts of pending and agent comments.  Return t when queued, nil
-when the user declined."
+the counts of pending and agent comments and the body, cut to 200
+characters.  Return t when queued, nil when the user declined."
   (let* ((context (prrr-api--context pr))
          (verdict (prrr-api--verdict verdict))
          (body (or body ""))
@@ -463,10 +493,11 @@ when the user declined."
     (when-let* ((problem (prrr-state-submit-problem verdict body (length pending))))
       (user-error "%s" problem))
     (when (or (not prrr-api-confirm-submit)
-              (yes-or-no-p (format "An agent asks to Submit #%d (%s) with %d pending comment(s)%s. Submit? "
+              (yes-or-no-p (format "An agent asks to Submit #%d (%s) with %d pending comment(s)%s and body: %s\nSubmit? "
                                    (oref (prrr-api--context-pullreq context) number) verdict
                                    (length pending)
-                                   (if (> agents 0) (format ", %d by an agent" agents) ""))))
+                                   (if (> agents 0) (format ", %d by an agent" agents) "")
+                                   (prrr-api--prompt-body body))))
       (prrr-api--sync-write context 'submit (list :verdict verdict :body body
                                                   :commit (prrr-api--context-head context)))
       (condition-case err
@@ -577,7 +608,7 @@ Threads on files it changes."
                    (base . ,(prrr-api--context-merge-base context))
                    (head . ,(prrr-api--context-head context))
                    (round . 1)
-                   (generated_at . ,(format-time-string "%FT%T%z"))
+                   (generated_at . ,(format-time-string "%FT%T%:z"))
                    (unresolved . ,(seq-count (lambda (thread) (not (alist-get 'resolved thread)))
                                              threads))
                    (pr . ,(prrr-api-pullreq pullreq))
@@ -600,6 +631,15 @@ Threads on files it changes."
       (user-error "Entry without a body: %S" entry))
     body))
 
+(defun prrr-api--import-entry-name (entry)
+  "Return a few words naming ENTRY, an imported comments entry, for an error."
+  (let-alist entry
+    (cond (.thread_id (format "Thread %s" .thread_id))
+          (.file (format "the %s entry on %s%s" (or .type "untyped") .file
+                         (if .end_line (format ":%s" .end_line) "")))
+          (t (format "the %s entry %S" (or .type "untyped")
+                     (truncate-string-to-width (if (stringp .body) .body "") 40 nil nil t))))))
+
 (defun prrr-api--import-actions (context data entries)
   "Return (ACTIONS . SKIPPED): the writes ENTRIES ask of CONTEXT, checked.
 DATA is CONTEXT's review data and ENTRIES the comments of an imported
@@ -615,19 +655,11 @@ an entry that cannot be queued, before anything is."
         (actions nil)
         (skipped 0))
     (dolist (entry entries)
-      (let ((thread-id (alist-get 'thread_id entry)))
+      (let* ((thread-id (alist-get 'thread_id entry))
+             (new-thread (and (not (alist-get 'comment_id entry))
+                              (member (alist-get 'type entry) '("line" "file")))))
         (cond
-         ((alist-get 'comment_id entry)
-          (dolist (reply (alist-get 'replies entry))
-            (unless (alist-get 'comment_id reply)
-              (unless (member thread-id threads)
-                (user-error "Reply to unknown Thread %S" thread-id))
-              (when (member thread-id proposed)
-                (user-error "Reply to %s: accept the proposed Thread first" thread-id))
-              (push (list 'reply :thread-id thread-id :body (prrr-api--import-body reply)
-                          :commit head)
-                    actions))))
-         ((member (alist-get 'type entry) '("line" "file"))
+         (new-thread
           (push (list 'thread
                       :anchor (prrr-api--anchor context (alist-get 'file entry)
                                                 (alist-get 'end_line entry)
@@ -637,7 +669,19 @@ an entry that cannot be queued, before anything is."
                       :body (prrr-api--import-body entry)
                       :commit head)
                 actions))
-         (t (cl-incf skipped)))))
+         ((not (alist-get 'comment_id entry)) (cl-incf skipped)))
+        (dolist (reply (alist-get 'replies entry))
+          (unless (alist-get 'comment_id reply)
+            ;; A new Thread has no id to reply to until GitHub has it.
+            (unless (and (not new-thread) (member thread-id threads))
+              (user-error (concat "Reply under %s has no Thread to attach to:"
+                                  " import the entry first, then reply to its Thread")
+                          (prrr-api--import-entry-name entry)))
+            (when (member thread-id proposed)
+              (user-error "Reply to %s: accept the proposed Thread first" thread-id))
+            (push (list 'reply :thread-id thread-id :body (prrr-api--import-body reply)
+                        :commit head)
+                  actions)))))
     (cons (nreverse actions) skipped)))
 
 ;;;###autoload
@@ -647,11 +691,12 @@ PR is a pull request designator (see the Commentary).  FILE has the
 shape `prrr-api-export' writes; only each comments entry's type,
 file, start_line, end_line, side, body, thread_id, comment_id and
 replies are read.  An entry without a comment_id of type \"line\" or
-\"file\" becomes a new Thread; a reply without a comment_id under an
-entry with a comment_id becomes a reply to the entry's thread_id;
-any other entry, such as one of type \"review\", is skipped.  Every
-entry is checked before anything is queued, so one bad entry queues
-nothing.  All are agent comments (`prrr-agent-comment-mode').
+\"file\" becomes a new Thread; any other entry without a comment_id,
+such as one of type \"review\", is skipped.  A reply without a
+comment_id becomes a reply to its entry's thread_id; one under a new
+Thread, or under an entry whose thread_id names no Thread of PR, is
+an error.  Every entry is checked before anything is queued, so one
+bad entry queues nothing.  All are agent comments (`prrr-agent-comment-mode').
 Return an alist ((comments . N) (replies . M) (skipped . K))."
   (let* ((context (prrr-api--context pr))
          (data (prrr-api--review-data context))

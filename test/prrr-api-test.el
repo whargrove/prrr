@@ -321,5 +321,88 @@ each stays queued for BODY to inspect and none reaches the network."
         (should-error (prrr-api-import pullreq file) :type 'user-error))
       (should (= 1 (length (prrr-db-outbox-rows (oref pullreq their-id))))))))
 
+(ert-deftest prrr-api-test-add-comment-without-a-local-merge-base-is-refused ()
+  "Final review 1: without the merge base the hunks would come from the wrong diff."
+  (prrr-api-test--with-pr
+    (oset pullreq base-rev nil)
+    (let ((err (should-error (prrr-api-add-comment pullreq "src/example.el" 12 "Here")
+                             :type 'user-error)))
+      (should (string-match-p "(merge base) is not in the repository" (cadr err))))
+    (should-not (prrr-db-outbox-rows (oref pullreq their-id)))))
+
+(ert-deftest prrr-api-test-import-reply-without-a-thread-queues-nothing ()
+  "Final review 2: a reply under a new entry has no Thread to attach to."
+  (prrr-api-test--with-pr
+    (dolist (entry '(((type . "line") (file . "src/example.el") (end_line . 12) (body . "New")
+                      (replies . [((body . "Lost reply"))]))
+                     ((type . "review") (body . "Overall")
+                      (replies . [((body . "Lost reply"))]))))
+      (let ((file (make-temp-file "prrr-import" nil ".json")))
+        (with-temp-file file
+          (insert (json-encode `((comments . [,entry])))))
+        (let ((err (should-error (prrr-api-import pullreq file) :type 'user-error)))
+          (should (string-match-p "no Thread" (cadr err))))
+        (should-not (prrr-db-outbox-rows (oref pullreq their-id)))))))
+
+(ert-deftest prrr-api-test-import-reply-under-an-entry-naming-a-thread ()
+  "A new reply attaches to its entry's thread_id when that Thread exists."
+  (prrr-api-test--with-pr
+    (let ((file (make-temp-file "prrr-import" nil ".json"))
+          (thread-id (alist-get 'thread_id (car (prrr-api-threads pullreq)))))
+      (with-temp-file file
+        (insert (json-encode `((comments . [((thread_id . ,thread-id)
+                                             (replies . [((body . "Attached"))]))])))))
+      (should (equal '((comments . 0) (replies . 1) (skipped . 1))
+                     (prrr-api-import pullreq file))))))
+
+(ert-deftest prrr-api-test-delete-only-agent-comments ()
+  "Final review 3: the API never deletes the user's own pending comment."
+  (prrr-api-test--with-pr
+    (let* ((mine (seq-find (lambda (c) (not (alist-get 'agent c)))
+                           (alist-get 'comments (prrr-api-pending pullreq))))
+           (err (should-error (prrr-api-delete-pending-comment pullreq (alist-get 'comment_id mine))
+                              :type 'user-error)))
+      (should (string-match-p "Only agent comments can be deleted through the API" (cadr err)))
+      (should-not (prrr-db-outbox-rows (oref pullreq their-id))))
+    (let ((agent (prrr-api-add-comment pullreq "src/example.el" 12 "Mine")))
+      (should (prrr-api-delete-pending-comment pullreq agent)))
+    (let* ((prrr-agent-comment-mode 'proposed)
+           (proposal (prrr-api-add-comment pullreq "src/example.el" 12 "Maybe")))
+      (should (prrr-api-delete-pending-comment pullreq proposal)))
+    (should-not (prrr-db-outbox-rows (oref pullreq their-id)))))
+
+(ert-deftest prrr-api-test-submit-prompt-shows-the-body ()
+  "Final review 4: the user sees what the agent would submit."
+  (prrr-api-test--with-pr
+    (let (prompts)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (prompt) (push prompt prompts) nil)))
+        (prrr-api-submit pullreq "comment" "Looks fine to the agent")
+        (prrr-api-submit pullreq "comment" (make-string 300 ?x))
+        (prrr-api-submit pullreq 'approve))
+      (setq prompts (nreverse prompts))
+      (should (string-match-p "Looks fine to the agent" (nth 0 prompts)))
+      (should (string-match-p (concat (make-string 200 ?x) "…") (nth 1 prompts)))
+      (should-not (string-match-p (make-string 201 ?x) (nth 1 prompts)))
+      (should (string-match-p "(no body)" (nth 2 prompts))))))
+
+(ert-deftest prrr-api-test-agent-write-has-one-body ()
+  "Final review 7: the stored payload has a single, prefixed :body."
+  (prrr-api-test--with-pr
+    (let ((prrr-agent-comment-prefix "[bot] "))
+      (prrr-api-add-comment pullreq "src/example.el" 12 "Hi"))
+    (let ((payload (prrr-outbox-payload (car (prrr-db-outbox-rows (oref pullreq their-id))))))
+      (should (= 1 (cl-loop for key in payload by #'cddr count (eq key :body))))
+      (should (equal "[bot] Hi" (plist-get payload :body))))))
+
+(ert-deftest prrr-api-test-export-time-is-rfc-3339 ()
+  "Final review 10."
+  (prrr-api-test--with-pr
+    (let ((json (with-temp-buffer
+                  (insert-file-contents (prrr-api-export pullreq))
+                  (json-parse-buffer :object-type 'alist :null-object nil))))
+      (should (string-match-p
+               "\\`[0-9]\\{4\\}-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][+-][0-9][0-9]:[0-9][0-9]\\'"
+               (alist-get 'generated_at json))))))
+
 (provide 'prrr-api-test)
 ;;; prrr-api-test.el ends here

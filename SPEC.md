@@ -67,8 +67,8 @@ depends only on the files above it.
 | `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
 | `prrr-stack.el`     | Stack navigation in the Review Queue and the Review Buffer.                                                                  | prrr-state, prrr-queue, prrr-diff      |
 | `prrr-treesit.el`   | Deferred per-file tree-sitter highlighting.                                                                                  | prrr-diff, treesit                     |
-| `prrr-api.el`       | The public `prrr-api-*` functions, JSON export and import. (The hooks are defined where they fire, in `prrr-sync.el` and `prrr-diff.el`.) | prrr-sync, prrr-diff, prrr-queue, prrr-state, prrr-github |
-| `prrr-agent.el`     | `prrr-send-to-agent`, the Markdown payload, the default invoke function; the only file that names agent-shell, never required. | prrr-api, prrr-diff, prrr-thread       |
+| `prrr-api.el`       | The public `prrr-api-*` functions, JSON export and import. (The hooks are defined where they fire, in `prrr-sync.el` and `prrr-diff.el`.) | prrr-db, prrr-sync, prrr-diff, prrr-queue, prrr-state, prrr-github, magit, forge |
+| `prrr-agent.el`     | `prrr-send-to-agent`, the Markdown payload, the default invoke function; the only file that names agent-shell, never required. | prrr-api, prrr-diff, prrr-thread, magit |
 | `prrr-transient.el` | All transient prefixes.                                                                                                      | every command file                     |
 
 Rules:
@@ -636,12 +636,18 @@ validated before it is queued, since GitHub would otherwise refuse it later
 on an Outbox row the agent never sees: its anchor must pass
 `prrr-state-anchor-problem` for the default Range, a line comment's lines
 must lie inside one hunk of the PR's diff on that side (the refusal lists
-the hunks' line ranges), and a start line may not come after the line. A
-new Thread must also fit the Pending Review's commit, as in the Review
-Buffer. `prrr-api-submit` asks the user with `yes-or-no-p`, showing the
-Verdict and the counts of pending and agent comments, unless
-`prrr-api-confirm-submit` is nil, so an agent cannot publish a review
-unattended by default; it returns nil when the user declines.
+the hunks' line ranges), and a start line may not come after the line.
+Without the merge base in the repository the hunks cannot be known, so
+the comment is refused as a Range with a missing commit is. A new Thread
+must also fit the Pending Review's commit, as in the Review Buffer.
+`prrr-api-delete-pending-comment` deletes only agent comments (`agent-p`,
+sent or queued) and proposals; the user's own comments are a
+`user-error` ("Only agent comments can be deleted through the API").
+`prrr-api-submit` asks the user with `yes-or-no-p`, showing the Verdict,
+the counts of pending and agent comments and the body (cut to 200
+characters with "…", or "(no body)"), unless `prrr-api-confirm-submit`
+is nil, so an agent cannot publish a review unattended by default; it
+returns nil when the user declines.
 
 **Agent comments.** `prrr-agent-comment-mode` is `pending` (default): a
 comment added through the API goes straight to the Pending Review with the
@@ -653,7 +659,9 @@ kind `proposed`, which the Outbox never sends and which hold back none of
 the PR's other writes. They show with `local-state` `proposed` until the
 user accepts (`a`, or `e`, then `C-c C-c`: `prrr-accept-comment`) or
 rejects (`k`) each one. Accepting converts the proposal in place into the
-write it proposed, with the body as edited, still flagged as the agent's.
+write it proposed, with the body as edited, still flagged as the agent's;
+a proposed Thread whose commit is not the Pending Review's is refused
+(`prrr-state-review-commit-problem`) and stays a proposal.
 Proposals are not part of the Pending Review: its counts, the header and
 Submit leave them out (the header shows `N proposed, a to accept`), and a
 discard keeps them. A reply to a still-proposed Thread is refused ("Accept
@@ -669,14 +677,17 @@ comment `thread_id comment_id database_id state local_state agent
 outdated`, and per reply `comment_id state local_state agent`. One comment
 entry stands for one Thread, its later comments being the replies; `type`
 gains `"file"` for File Comments. `prrr-api-import` reads the same shape: an
-entry without `comment_id` of type `"line"` or `"file"` is a new Thread, a
-reply without `comment_id` under an entry with one is a new reply to its
-`thread_id`, and any other entry, such as one of type `"review"`, is
-skipped and counted. All become agent comments. Every entry is validated
+entry without `comment_id` of type `"line"` or `"file"` is a new Thread,
+any other entry without one, such as one of type `"review"`, is skipped
+and counted, and a reply without `comment_id` is a new reply to its
+entry's `thread_id`. Such a reply under a new Thread, or under an entry
+whose `thread_id` names no Thread of the PR, is a `user-error` naming
+the entry. `generated_at` is RFC 3339. All become agent comments. Every entry is validated
 before anything is queued: one bad entry queues nothing.
 
-**Hooks.** Each is defined where it fires and run so that a function that
-signals shows a message and never stops the Outbox.
+**Hooks.** Each is defined where it fires and its functions run one by
+one, so that a function that signals shows a message naming it, the
+others still run, and nothing stops the Outbox.
 `prrr-comment-created-hook` and `prrr-reply-created-hook` (`prrr-sync.el`)
 run with the stored `prrr-comment` once GitHub confirms it.
 `prrr-review-submitted-hook` (`prrr-sync.el`) runs with a plist `(:pr-id

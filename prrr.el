@@ -84,7 +84,7 @@
 (autoload 'prrr-api-pending "prrr-api" "Return the Pending Review of a pull request as an alist.")
 (autoload 'prrr-api-add-comment "prrr-api" "Add an agent comment as a new Thread of a pull request.")
 (autoload 'prrr-api-reply "prrr-api" "Reply to a Thread of a pull request, as an agent comment.")
-(autoload 'prrr-api-delete-pending-comment "prrr-api" "Delete a comment from a Pending Review.")
+(autoload 'prrr-api-delete-pending-comment "prrr-api" "Delete an agent comment from a Pending Review.")
 (autoload 'prrr-api-submit "prrr-api" "Submit the Pending Review of a pull request.")
 (autoload 'prrr-api-export "prrr-api" "Write the review of a pull request as JSON to a file.")
 (autoload 'prrr-api-import "prrr-api" "Queue the new comments and replies of a JSON review file.")
