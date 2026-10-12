@@ -80,6 +80,10 @@
 (autoload 'prrr-api-threads "prrr-api" "Return the Threads of a pull request as alists.")
 (autoload 'prrr-api-diff "prrr-api" "Return the unified diff of a pull request as a string.")
 (autoload 'prrr-api-pending "prrr-api" "Return the Pending Review of a pull request as an alist.")
+(autoload 'prrr-api-add-comment "prrr-api" "Add an agent comment as a new Thread of a pull request.")
+(autoload 'prrr-api-reply "prrr-api" "Reply to a Thread of a pull request, as an agent comment.")
+(autoload 'prrr-api-delete-pending-comment "prrr-api" "Delete a comment from a Pending Review.")
+(autoload 'prrr-api-submit "prrr-api" "Submit the Pending Review of a pull request.")
 
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))

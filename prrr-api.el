@@ -289,5 +289,188 @@ unresolved the Threads not resolved."
       (unresolved . ,(seq-count (lambda (thread) (not (prrr-thread-resolved-p thread)))
                                 (plist-get data :threads))))))
 
+;;;; Writes
+
+(defcustom prrr-agent-comment-mode 'pending
+  "Where comments an agent adds through the API go.
+`pending': straight to the Pending Review, flagged as the agent's.
+`proposed': kept local until you accept (\\[prrr-accept-comment]) or
+reject each one."
+  :type '(choice (const :tag "Pending Review" pending) (const :tag "Proposed" proposed))
+  :group 'prrr)
+
+(defcustom prrr-agent-comment-prefix ""
+  "Text put before the body of every comment an agent writes."
+  :type 'string
+  :group 'prrr)
+
+(defcustom prrr-api-confirm-submit t
+  "Non-nil means `prrr-api-submit' asks you before it submits."
+  :type 'boolean
+  :group 'prrr)
+
+(defun prrr-api--normalize-side (side)
+  "Return SIDE, a symbol or JSON string, as `left' or `right'."
+  (pcase side
+    ((or 'nil 'right "new" "right") 'right)
+    ((or 'left "old" "left") 'left)
+    (_ (user-error "Not a side: %S (use \"new\" or \"old\")" side))))
+
+(defun prrr-api--hunks (context path side)
+  "Return the (FIRST . LAST) line ranges PATH's hunks cover on SIDE in CONTEXT.
+SIDE `left' reads the old lines of each hunk, `right' the new ones."
+  (prrr-api--in context
+    (let (hunks)
+      (dolist (line (magit-git-lines "diff" "--no-ext-diff" "--no-color" "-M"
+                                     (prrr-api--context-merge-base context)
+                                     (prrr-api--context-head context) "--" path))
+        (when (string-match "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@"
+                            line)
+          (let* ((old (eq side 'left))
+                 (first (string-to-number (match-string (if old 1 3) line)))
+                 (count (if (match-string (if old 2 4) line)
+                            (string-to-number (match-string (if old 2 4) line))
+                          1)))
+            (when (> count 0)
+              (push (cons first (+ first count -1)) hunks)))))
+      (nreverse hunks))))
+
+(cl-defun prrr-api--anchor (context path line &key start-line side file)
+  "Return the anchor of a new comment on PATH in CONTEXT.
+Signal a `user-error' when the comment cannot go there.
+LINE, START-LINE, SIDE and FILE are as in `prrr-api-add-comment'.  The
+anchor has the keys and order `prrr-state-anchor' gives the Review
+Buffer's comments, so both queue the same write for the same line."
+  (let* ((side (prrr-api--normalize-side side))
+         (anchor (if file
+                     (prrr-state-file-anchor path)
+                   (unless (natnump line) (user-error "A line comment needs a line number"))
+                   (append (list :path path :line line :side side)
+                           (and start-line (/= start-line line)
+                                (list :start-line start-line :start-side side))
+                           (list :subject-type 'line)))))
+    (when-let* ((problem (prrr-state-anchor-problem (prrr-range-create :kind 'default) anchor)))
+      (user-error "%s" problem))
+    (let ((hunks (prrr-api--hunks context path side)))
+      (unless hunks
+        (user-error "%s is not changed by this pull request" path))
+      (unless file
+        (let ((first (or start-line line)))
+          (unless (seq-find (lambda (hunk) (and (<= (car hunk) (min first line))
+                                                (<= (max first line) (cdr hunk))))
+                            hunks)
+            (user-error "%s:%d is not in the diff; %s lines in the diff: %s"
+                        path line (if (eq side 'left) "old" "new")
+                        (mapconcat (lambda (hunk) (format "%d-%d" (car hunk) (cdr hunk)))
+                                   hunks ", "))))))
+    anchor))
+
+(defun prrr-api--sync-write (context kind payload)
+  "Queue the write KIND with PAYLOAD for CONTEXT's pull request.
+Run in CONTEXT's worktree, where `prrr-github-viewer' finds the login.
+Return what `prrr-sync-write' returns."
+  (prrr-api--in context
+    (prrr-sync-write (prrr-api--context-repo context) (prrr-api--context-pullreq context)
+                     kind payload)))
+
+(defun prrr-api--write (context kind payload)
+  "Queue the agent's write KIND with PAYLOAD for CONTEXT.
+Return the local id of the comment it creates.
+KIND is `thread' or `reply'.  The body gets `prrr-agent-comment-prefix'
+and the write the agent flag; in `proposed' mode it is queued as a
+proposal (`prrr-agent-comment-mode')."
+  (let* ((payload (append (list :body (concat prrr-agent-comment-prefix (plist-get payload :body))
+                                :agent t)
+                          payload))
+         (row (if (eq prrr-agent-comment-mode 'proposed)
+                  (prrr-api--sync-write context 'proposed (append (list :as kind) payload))
+                (prrr-api--sync-write context kind payload))))
+    (plist-get (prrr-outbox-payload row) :comment)))
+
+(defun prrr-api--check-commit (context data)
+  "Signal a `user-error' when DATA's Pending Review is not on CONTEXT's head.
+DATA is CONTEXT's review data."
+  (when-let* ((problem (prrr-state-review-commit-problem (prrr-state-review-commit data)
+                                                         (prrr-api--context-head context))))
+    (user-error "%s" problem)))
+
+;;;###autoload
+(cl-defun prrr-api-add-comment (pr path line body &key start-line side file)
+  "Add BODY as a new Thread on PATH at LINE of PR, as an agent comment.
+PR is a pull request designator.  START-LINE makes it a multi-line
+comment ending at LINE; SIDE is \"new\" (default) or \"old\", or the
+symbols `right' and `left'.  With FILE non-nil it is a File Comment
+and LINE is ignored.  Lines must lie in the pull request's diff.
+Return the comment's local id; GitHub's id replaces it once sent."
+  (let* ((context (prrr-api--context pr))
+         (anchor (prrr-api--anchor context path line :start-line start-line :side side :file file)))
+    (prrr-api--check-commit context (prrr-api--review-data context))
+    (prrr-api--write context 'thread (list :anchor anchor :body body
+                                           :commit (prrr-api--context-head context)))))
+
+;;;###autoload
+(defun prrr-api-reply (pr thread-id body)
+  "Reply BODY to the Thread THREAD-ID of PR, as an agent comment.
+Return the reply's local id."
+  (let* ((context (prrr-api--context pr))
+         (data (prrr-api--review-data context)))
+    (unless (seq-find (lambda (thread) (equal (prrr-thread-thread-id thread) thread-id))
+                      (plist-get data :threads))
+      (user-error "PR has no Thread %s" thread-id))
+    (prrr-api--write context 'reply (list :thread-id thread-id :body body
+                                          :commit (prrr-api--context-head context)))))
+
+;;;###autoload
+(defun prrr-api-delete-pending-comment (pr comment-id)
+  "Delete the comment COMMENT-ID from PR's Pending Review.
+Only the viewer's pending comments, queued or sent, can be deleted.
+Return t."
+  (let* ((context (prrr-api--context pr))
+         (comment (seq-find (lambda (c) (equal (prrr-comment-comment-id c) comment-id))
+                            (plist-get (prrr-api--review-data context) :comments))))
+    (unless (and comment (eq (prrr-comment-state comment) 'pending)
+                 (equal (prrr-comment-author comment) (prrr-api--in context (prrr-github-viewer))))
+      (user-error "No pending comment %s of yours" comment-id))
+    (prrr-api--sync-write context 'delete (list :comment-id comment-id))
+    t))
+
+(defun prrr-api--verdict (verdict)
+  "Return VERDICT, a symbol or string, as a Verdict symbol.
+That is `approve', `request-changes' or `comment'."
+  (pcase verdict
+    ((or 'approve "approve") 'approve)
+    ((or 'request-changes "request-changes" "request_changes") 'request-changes)
+    ((or 'comment "comment") 'comment)
+    (_ (user-error "Not a Verdict: %S (approve, request-changes or comment)" verdict))))
+
+;;;###autoload
+(defun prrr-api-submit (pr verdict &optional body)
+  "Submit PR's Pending Review with VERDICT and BODY.
+VERDICT is `approve', `request-changes' or `comment' (or a string).
+Unless `prrr-api-confirm-submit' is nil, ask the user first, showing
+the counts of pending and agent comments.  Return t when queued, nil
+when the user declined."
+  (let* ((context (prrr-api--context pr))
+         (verdict (prrr-api--verdict verdict))
+         (body (or body ""))
+         (pending (seq-filter (lambda (c) (eq (prrr-comment-state c) 'pending))
+                              (plist-get (prrr-api--review-data context) :comments)))
+         (agents (seq-count #'prrr-comment-agent-p pending)))
+    (when-let* ((problem (prrr-state-submit-problem verdict body (length pending))))
+      (user-error "%s" problem))
+    (when (or (not prrr-api-confirm-submit)
+              (yes-or-no-p (format "An agent asks to Submit #%d (%s) with %d pending comment(s)%s. Submit? "
+                                   (oref (prrr-api--context-pullreq context) number) verdict
+                                   (length pending)
+                                   (if (> agents 0) (format ", %d by an agent" agents) ""))))
+      (prrr-api--sync-write context 'submit (list :verdict verdict :body body
+                                                  :commit (prrr-api--context-head context)))
+      (condition-case err
+          (prrr-api--in context
+            (prrr-sync-record-bookmark (prrr-api--context-pullreq context)
+                                       (prrr-api--context-head context)))
+        (error (message "prrr: could not record the Bookmark: %s" (error-message-string err))))
+      t)))
+
 (provide 'prrr-api)
 ;;; prrr-api.el ends here
