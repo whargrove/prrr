@@ -69,6 +69,7 @@
 (autoload 'prrr-accept-comment "prrr-review" "Accept the agent's proposed comment at point." t)
 (autoload 'prrr-discussion-comment "prrr-review" "Write a Discussion Comment on the pull request." t)
 (autoload 'prrr-toggle-resolved "prrr-review" "Resolve the Thread at point, or unresolve it." t)
+(autoload 'prrr-withdraw "prrr-review" "Withdraw from the current pull request: you will not review it." t)
 (autoload 'prrr-submit "prrr-transient" "Submit your Pending Review with a Verdict, or discard it." t)
 (autoload 'prrr-outbox "prrr-transient" "Act on this pull request's unsent writes." t)
 (autoload 'prrr-range "prrr-transient" "Choose the Range the Review Buffer shows." t)

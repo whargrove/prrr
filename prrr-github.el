@@ -686,6 +686,26 @@ classified by `prrr-github-error'."
     :callback (prrr-github--callback #'prrr-github--rest-comment callback errorback)
     :errorback (prrr-github--errorback errorback)))
 
+(defun prrr-github-remove-review-request (host owner name number login callback errorback)
+  "Remove the review request of LOGIN from OWNER/NAME#NUMBER on HOST.
+GitHub's REST endpoint; GraphQL has no removal of one reviewer.
+CALLBACK is called with no argument; ERRORBACK receives a failure
+classified by `prrr-github-error'."
+  (forge-rest host "DELETE"
+    (format "/repos/%s/%s/pulls/%s/requested_reviewers" owner name number)
+    ((reviewers (vector login)))
+    :callback (prrr-github--ignore-answer callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github-remove-assignee (host owner name number login callback errorback)
+  "Unassign LOGIN from OWNER/NAME#NUMBER on HOST.
+A pull request's assignees are its issue's.  CALLBACK is called with no
+argument; ERRORBACK receives a failure classified by `prrr-github-error'."
+  (forge-rest host "DELETE" (format "/repos/%s/%s/issues/%s/assignees" owner name number)
+    ((assignees (vector login)))
+    :callback (prrr-github--ignore-answer callback errorback)
+    :errorback (prrr-github--errorback errorback)))
+
 (defun prrr-github--ignore-answer (callback errorback)
   "Return a ghub callback that calls CALLBACK with no argument.
 ERRORBACK receives a failure if CALLBACK's caller signals."

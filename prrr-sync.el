@@ -901,8 +901,33 @@ commit than the one its lines were numbered at
                                  done fail token)
             (funcall done)))
         fail token))
+      ('withdraw (prrr-sync--withdraw target payload done fail token))
       (kind (funcall fail (list :kind 'error :message (format "Unknown write %s" kind)
                                 :reset-at nil))))))
+
+(defun prrr-sync--withdraw (target payload done fail token)
+  "Send the Withdraw with PAYLOAD to TARGET's PR, as the send TOKEN.
+The review request goes first, then the assignment, each only when
+PAYLOAD asks; one mutation at a time.  DONE is called once both are
+gone, FAIL with the first failure.  Both removals are harmless to
+repeat, so a retry after a partial failure sends both again."
+  (let* ((host (plist-get target :host))
+         (args (list (plist-get target :owner) (plist-get target :name)
+                     (plist-get target :number) (plist-get target :me)))
+         (unassign (lambda (&optional _)
+                     (if (plist-get payload :assignee)
+                         (prrr-sync--mutate (lambda (callback errorback)
+                                              (apply #'prrr-github-remove-assignee host
+                                                     (append args (list callback errorback))))
+                                            (lambda (&optional _) (funcall done))
+                                            fail token)
+                       (funcall done)))))
+    (if (plist-get payload :review-request)
+        (prrr-sync--mutate (lambda (callback errorback)
+                             (apply #'prrr-github-remove-review-request host
+                                    (append args (list callback errorback))))
+                           unassign fail token)
+      (funcall unassign))))
 
 (defun prrr-sync--outbox-outcome (row result)
   "Return how the database changes once GitHub accepted the write ROW.
@@ -954,6 +979,9 @@ RESULT is GitHub's answer.  A plist of `prrr-db-outbox-done''s keys."
                                     (prrr-sync--timestamp)
                                     (plist-get payload :commit)))
                         (list meta)))))
+      ('withdraw
+       (when-let* ((meta (prrr-db-get 'pullreq-meta pr-id)))
+         (list :insert (list (prrr-state-withdrawn-meta meta (list row))))))
       ('discard
        (let ((pending (prrr-db-select 'review-comment :pr-id pr-id :state 'pending)))
          (list :delete (append

@@ -109,6 +109,7 @@ offline or rate-limited, otherwise the next day, or when you run
 | `B`   | `prrr-checkout`   | Check out the PR's branch                           |
 | `>`   | `prrr-stack-up`   | Move to the PR above in the Stack                   |
 | `<`   | `prrr-stack-down` | Move to the PR below in the Stack                   |
+| `x`   | `prrr-withdraw`   | Withdraw: drop your review request and assignment   |
 | `G`   | `prrr-pull`       | Pull PRs (`forge-pull`) and the queue's data now    |
 | `C-o` | `prrr-queue-menu` | Menu with the same keys, plus `-d` drafts, `-s` Served |
 
@@ -209,6 +210,7 @@ rules, so a changed `treesit-font-lock-level` applies.
 | `s`       | `prrr-comment-suggest`                              | Suggest a change to the line or region     |
 | `S`       | `prrr-submit`                                       | Submit your review, or discard it          |
 | `O`       | `prrr-outbox`                                       | Retry or drop what has not reached GitHub  |
+| `x`       | `prrr-withdraw`                                     | Drop your review request and assignment    |
 | `D`       | `prrr-range`                                        | Choose the Range: what the diff shows      |
 | `.`       | `prrr-goto-default-range`                           | Back to the default Range, same line       |
 | `m`       | `prrr-mark-seen`                                    | Remember this head as seen                 |

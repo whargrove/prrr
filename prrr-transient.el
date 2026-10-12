@@ -70,7 +70,8 @@
     ("RET" "review" prrr-review)
     ("o" "open topic" prrr-open-topic)
     ("b" "browse on GitHub" prrr-browse)
-    ("B" "checkout" prrr-checkout)]
+    ("B" "checkout" prrr-checkout)
+    ("x" "withdraw" prrr-withdraw)]
    ["Stack"
     (">" "up" prrr-stack-up)
     ("<" "down" prrr-stack-down)]
@@ -119,7 +120,8 @@
     ("s" "suggest a change" prrr-comment-suggest)]
    ["Review"
     ("S" "submit or discard…" prrr-submit)
-    ("O" "outbox…" prrr-outbox)]
+    ("O" "outbox…" prrr-outbox)
+    ("x" "withdraw" prrr-withdraw)]
    ["Agent"
     ("@" "send to agent" prrr-send-to-agent)
     ("a" "accept proposed comment" prrr-accept-comment)]]

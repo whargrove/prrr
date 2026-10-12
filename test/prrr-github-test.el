@@ -655,5 +655,32 @@ instead of sending it again."
         (should (equal (list mutation (list (cons 'input input)))
                        (list (car (cadr (car captured))) (cadr captured))))))))
 
+(ert-deftest prrr-github-test-remove-review-request ()
+  (prrr-test-with-rest-stub '((number . 1)) captured
+    (let ((called nil))
+      (prrr-github-remove-review-request "api.github.com" "o" "n" 1 "example-me"
+                                         (lambda () (setq called t)) #'ert-fail)
+      (should called)
+      (should (equal '("DELETE" "/repos/o/n/pulls/1/requested_reviewers"
+                       ((reviewers . ["example-me"])))
+                     captured)))))
+
+(ert-deftest prrr-github-test-remove-assignee ()
+  (prrr-test-with-rest-stub '((number . 1)) captured
+    (let ((called nil))
+      (prrr-github-remove-assignee "api.github.com" "o" "n" 1 "example-me"
+                                   (lambda () (setq called t)) #'ert-fail)
+      (should called)
+      (should (equal '("DELETE" "/repos/o/n/issues/1/assignees" ((assignees . ["example-me"])))
+                     captured)))))
+
+(ert-deftest prrr-github-test-remove-review-request-refused ()
+  (prrr-test-with-rest-stub '(:error (error http 403 ((message . "Must have admin rights")))) captured
+    (let ((failure nil))
+      (prrr-github-remove-review-request "api.github.com" "o" "n" 1 "example-me"
+                                         #'ert-fail (lambda (f) (setq failure f)))
+      (should (equal "GitHub denied access (HTTP 403): Must have admin rights" (plist-get failure :message)))
+      (should (equal "DELETE" (car captured))))))
+
 (provide 'prrr-github-test)
 ;;; prrr-github-test.el ends here

@@ -64,7 +64,7 @@ depends only on the files above it.
 | `prrr-diff.el`      | The Review Buffer major mode: lazy file sections, the hunk washer with Thread children, folding, Viewed, refresh.            | magit-diff, magit-section, prrr-state, prrr-thread, prrr-sync (loads prrr-treesit when a Review Buffer starts) |
 | `prrr-thread.el`    | Rendering Threads, Review Comments, File Comments, unsent and failed writes and suggestions; the comment capture buffer. | magit-section, magit-diff, prrr-db, prrr-state |
 | `prrr-range.el`     | Range commands, switching with point kept, since-review and since-opened starts, fetching a missing start, `prrr-mark-seen`. | prrr-state, prrr-sync, prrr-diff       |
-| `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
+| `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Withdraw, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
 | `prrr-stack.el`     | Stack navigation in the Review Queue and the Review Buffer.                                                                  | prrr-state, prrr-queue, prrr-diff      |
 | `prrr-treesit.el`   | Deferred per-file tree-sitter highlighting.                                                                                  | prrr-diff, treesit                     |
 | `prrr-api.el`       | The public `prrr-api-*` functions, JSON export and import. (The hooks are defined where they fire, in `prrr-sync.el` and `prrr-diff.el`.) | prrr-db, prrr-sync, prrr-diff, prrr-queue, prrr-state, prrr-github, magit, forge |
@@ -164,6 +164,7 @@ comments page through `node(id:)`.
 | Discard Pending Review                  | `deletePullRequestReview`                                                                                                                          |
 | Resolve / unresolve Thread              | `resolveReviewThread` / `unresolveReviewThread`                                                                                                    |
 | Viewed                                  | `markFileAsViewed` / `unmarkFileAsViewed` (`pullRequestId, path`)                                                                                  |
+| Withdraw                                | REST `DELETE /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `reviewers: [me]`, then REST `DELETE /repos/{o}/{r}/issues/{n}/assignees` with `assignees: [me]`; each only when it applies |
 
 **Answers prrr reads.** `forge-mutate` selects only `clientMutationId`,
 so creating the Pending Review, a Thread and a reply goes through
@@ -430,7 +431,9 @@ was queued, that starts a Thread on its path (or is in its Thread) and
 was not stored before the refetch; an edit when the comment has its body
 (or is gone); a delete when the comment is gone; a resolve, Viewed
 change or discard when the Thread's flag, the file's flag or the absent
-Pending Review shows it. A write that landed is recorded as if GitHub
+Pending Review shows it. Review data holds no review requests or
+assignees, so an unconfirmed Withdraw is sent again: GitHub ignores a
+removal of what is already gone. A write that landed is recorded as if GitHub
 had answered, renames included; one that did not is sent again.
 Discussion Comments and Submit are not in the review data, so an
 unconfirmed one fails with a message asking the user to check the PR,
@@ -454,6 +457,15 @@ head the buffer shows; otherwise the comment is refused before it is
 queued, its text kept, and the user submits or discards the review
 first, or publishes the comment at once. The Outbox makes the same check
 when it sends (bead prrr-836).
+
+**Withdraw.** `prrr-withdraw` (`x`, on a Review Queue row or in the Review
+Buffer) removes my direct review request and my assignment, whichever I
+have, after asking. It is refused, naming the Team, when I am requested
+only through one of my Teams (removing the Team would remove its other
+members), and when I am neither requested nor assigned. It goes through
+the Outbox as a `withdraw` write; until GitHub has it, the Review Queue
+applies it to the PR's `pullreq-meta`, so the row leaves For Me at once and
+a queue pull cannot bring it back. Success stores the changed row.
 
 **Immediate Publish.** A prefix argument (`C-u`) on any comment or reply
 command, or the capture-buffer toggle, publishes that one comment now
@@ -546,6 +558,7 @@ menu key inside the magit-status section, where `?` belongs to magit.
 | `k`         | `prrr-delete-comment`                               | own comment at point                                                                  |
 | `d`         | `prrr-discussion-comment`                           | always immediate                                                                      |
 | `R`         | `prrr-toggle-resolved`                              | Thread at point                                                                       |
+| `x`         | `prrr-withdraw`                                     | Withdraw: remove my review request and assignment, after asking                      |
 | `s`         | `prrr-comment-suggest`                              | suggestion block from region                                                          |
 | `]` / `[`   | `prrr-next-thread` / `prrr-previous-thread`         |                                                                                       |
 | `}` / `{`   | `prrr-next-unresolved` / `prrr-previous-unresolved` |                                                                                       |
@@ -576,7 +589,7 @@ revert, log, and refresh-all, none of which belong in a review buffer.
 
 **Main transient** `prrr-menu`, groups: Comment (`c C r e k d R s`),
 Navigate (`] [ } { J K j`), View (`v z Z L`), Range (`D . m`), Stack
-(`> <`), Review (`S O`), Open (`o b B`), Sync (`g G`), Agent (`@ a`). The
+(`> <`), Review (`S O x`), Open (`o b B`), Sync (`g G`), Agent (`@ a`). The
 transient has one switch, `-i` immediate, equivalent to `C-u`.
 
 **Review Queue section** (`prrr-queue-section-map`, active on a queue row):
@@ -588,6 +601,7 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 | `b`       | `prrr-browse`                                                       |
 | `B`       | `prrr-checkout`                                                     |
 | `>` / `<` | `prrr-stack-up` / `prrr-stack-down`                                 |
+| `x`       | `prrr-withdraw`                                                     |
 | `G`       | `prrr-pull`                                                         |
 | `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served) |
 

@@ -167,6 +167,60 @@ draft is `draft' whatever the reviews say."
             (states 'reviewed)
             (t 'awaiting-review)))))
 
+;;;; Withdraw
+
+(defun prrr-state-withdraw-scope (meta me)
+  "Return what a Withdraw of ME from the PR of META removes, or nil.
+A plist (:review-request :assignee), each non-nil when ME is directly
+requested or assigned.  A request to one of ME's Teams is not ME's to
+remove: dropping the Team would drop its other members too."
+  (let ((review-request (and (member (list 'user me) (prrr-pr-meta-review-requests meta)) t))
+        (assignee (and (member me (prrr-pr-meta-assignees meta)) t)))
+    (and (or review-request assignee)
+         (list :review-request review-request :assignee assignee))))
+
+(defun prrr-state-withdraw-label (scope)
+  "Name what the Withdraw SCOPE removes, as \"review request and assignment\".
+SCOPE is a plist like `prrr-state-withdraw-scope' returns."
+  (string-join (append (and (plist-get scope :review-request) '("review request"))
+                       (and (plist-get scope :assignee) '("assignment")))
+               " and "))
+
+(defun prrr-state-withdraw-problem (meta me teams)
+  "Return why ME cannot withdraw from the PR of META, or nil when ME can.
+TEAMS are the combined slugs of ME's Teams.  META is nil when prrr has
+not pulled the PR."
+  (cond ((null meta) "prrr has not pulled this pull request yet: press G")
+        ((prrr-state-withdraw-scope meta me) nil)
+        ((prrr-state--team-requests meta teams)
+         (format "Requested only through %s; withdrawing would drop the whole Team"
+                 (string-join (prrr-state--team-requests meta teams) ", ")))
+        (t "You are neither requested nor assigned here")))
+
+(defun prrr-state-withdrawn-meta (meta rows)
+  "Return META as the user sees it with the queued Withdraws among ROWS applied.
+ROWS are `prrr-outbox' rows of any PRs; only META's PR's Withdraws
+count.  Each removes the viewer's direct review request, with GitHub's
+flag that the viewer was asked to review, or the viewer's assignment,
+as its payload says.  META is returned unchanged when no Withdraw
+applies, else a copy; nil stays nil."
+  (let ((withdraws (and meta
+                        (seq-filter (lambda (row)
+                                      (and (eq (prrr-outbox-kind row) 'withdraw)
+                                           (equal (prrr-outbox-pr-id row) (prrr-pr-meta-pr-id meta))))
+                                    rows))))
+    (dolist (row withdraws meta)
+      (let* ((payload (prrr-outbox-payload row))
+             (me (plist-get (plist-get payload :target) :me)))
+        (when (plist-get payload :review-request)
+          (setq meta (prrr-state--copy meta
+                                       :review-requests (remove (list 'user me)
+                                                                (prrr-pr-meta-review-requests meta))
+                                       :viewer-latest-review-request nil)))
+        (when (plist-get payload :assignee)
+          (setq meta (prrr-state--copy meta
+                                       :assignees (remove me (prrr-pr-meta-assignees meta)))))))))
+
 ;;;; Membership and partition
 
 (defun prrr-state--direct-p (pr meta me)
@@ -452,7 +506,7 @@ GitHub sent no side.  A range Thread is shown after its last line."
 
 (defconst prrr-state-outbox-kinds
   '(thread publish reply publish-reply edit delete resolve viewed discussion
-    submit discard proposed)
+    submit discard withdraw proposed)
   "Kinds of write the Outbox holds, and the payload of each.
 Every payload has :target, the PR as the Outbox reaches it:
 \(:host :owner :name :number :pr-id :me), :me being the viewer's login.
@@ -472,6 +526,9 @@ Every payload has :target, the PR as the Outbox reaches it:
   submit         :verdict (`approve', `request-changes' or `comment'),
                  :body, :commit.
   discard        nothing more.
+  withdraw       :review-request and :assignee, each non-nil to remove
+                 the viewer's direct review request or assignment
+                 (`prrr-state-withdraw-scope').
   proposed       an agent's comment kept until the user accepts it: :as,
                  `thread' or `reply', and the payload of that kind.  Never
                  sent (`prrr-state-outbox-held-p').
@@ -891,7 +948,8 @@ ROW's body, and a delete when the comment is gone; an edit of a comment
 that is gone landed too, since nothing is left to do.  A resolve landed
 when the Thread's resolved flag matches (or the Thread is gone), a
 Viewed change when the path's flag matches, and a discard when there
-is no Pending Review."
+is no Pending Review.  A Withdraw is always `missing': review data
+cannot tell, and GitHub ignores a removal of what is already gone."
   (let* ((payload (prrr-outbox-payload row))
          (comment-id (plist-get payload :comment-id))
          (comment (seq-find (lambda (comment)
@@ -927,6 +985,9 @@ is no Pending Review."
                (eq (and flag (eq (prrr-viewed-state flag) 'viewed))
                    (and (plist-get payload :viewed) t))))
             ('discard (null (plist-get data :pending-review)))
+            ;; Review data holds neither review requests nor assignees,
+            ;; and removing them again is harmless: send it again.
+            ('withdraw nil)
             (_ 'unknown))))
     (cond ((eq landed 'unknown) 'unknown)
           ((null landed) 'missing)
@@ -1057,6 +1118,7 @@ GitHub's answer."
               ('discussion "Discussion Comment")
               ('submit (format "submit (%s)" (plist-get payload :verdict)))
               ('discard "discard the Pending Review")
+              ('withdraw (format "withdraw (%s)" (prrr-state-withdraw-label payload)))
               ('proposed "proposed comment")
               (kind (symbol-name kind)))
             (and (not (string-empty-p body)) (format ": %s" (truncate-string-to-width body 40 nil nil "…")))

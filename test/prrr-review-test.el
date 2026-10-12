@@ -444,5 +444,66 @@ fails every Thread the Outbox sends, so an accepted one stays queued."
       (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))
                                      :command))))))
 
+;;;; Withdraw
+
+(defmacro prrr-review-test--with-withdraw (meta answer prompts requests &rest body)
+  "Run BODY with META stored, PR_1 at point, and `y-or-n-p' answering ANSWER.
+PROMPTS is bound to the prompts asked, REQUESTS to the last REST request."
+  (declare (indent 4))
+  `(prrr-db-with-test-db
+     (prrr-test-with-outbox
+       (when ,meta (prrr-db-insert ,meta))
+       (let ((,prompts nil))
+         (cl-letf (((symbol-function 'forge-current-pullreq)
+                    (lambda (&rest _) (forge-pullreq :id "forge-1" :number 1 :their-id "PR_1")))
+                   ((symbol-function 'forge-get-repository)
+                    (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
+                                                               :name "example-repo"
+                                                               :apihost "api.github.com")))
+                   ((symbol-function 'y-or-n-p) (lambda (prompt) (push prompt ,prompts) ,answer)))
+           (prrr-test-with-rest-stub '((number . 1)) ,requests
+             ,@body))))))
+
+(ert-deftest prrr-review-test-withdraw-removes-request-and-assignment ()
+  "SPEC section 7: Withdraw asks, then removes my review request and my assignment."
+  (prrr-review-test--with-withdraw
+      (prrr-test-meta :review-requests '((user "example-me")) :assignees '("example-me"))
+      t prompts last
+    (prrr-withdraw)
+    (should (equal '("Withdraw from #1 (review request and assignment)? ") prompts))
+    (should (equal '("DELETE" "/repos/example-org/example-repo/issues/1/assignees"
+                     ((assignees . ["example-me"])))
+                   last))
+    (let ((meta (prrr-db-get 'pullreq-meta "PR_1")))
+      (should-not (prrr-pr-meta-review-requests meta))
+      (should-not (prrr-pr-meta-assignees meta)))))
+
+(ert-deftest prrr-review-test-withdraw-declined-sends-nothing ()
+  (prrr-review-test--with-withdraw
+      (prrr-test-meta :review-requests '((user "example-me")))
+      nil prompts last
+    (prrr-withdraw)
+    (should prompts)
+    (should-not last)
+    (should-not (prrr-db-outbox-rows "PR_1"))))
+
+(ert-deftest prrr-review-test-withdraw-refuses-team-only-request ()
+  "A Team's request is not mine to drop: nothing is asked or sent."
+  (prrr-review-test--with-withdraw
+      (prrr-test-meta :review-requests '((team "example-org/reviewers")))
+      t prompts last
+    (prrr-db-insert (prrr-team-create :combined-slug "example-org/reviewers" :org "example-org"
+                                      :slug "reviewers" :fetched-at "2026-10-10T12:00:00Z"))
+    (should (equal "Requested only through example-org/reviewers; withdrawing would drop the whole Team"
+                   (cadr (should-error (prrr-withdraw) :type 'user-error))))
+    (should-not prompts)
+    (should-not last)))
+
+(ert-deftest prrr-review-test-withdraw-refuses-unpulled-pr ()
+  (prrr-review-test--with-withdraw nil t prompts last
+    (should-error (prrr-withdraw) :type 'user-error)
+    (should-not prompts)
+    (should-not last)))
+
 (provide 'prrr-review-test)
 ;;; prrr-review-test.el ends here

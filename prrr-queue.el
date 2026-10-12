@@ -111,7 +111,8 @@
   "b" #'prrr-browse
   "B" #'prrr-checkout
   ">" #'prrr-stack-up
-  "<" #'prrr-stack-down)
+  "<" #'prrr-stack-down
+  "x" #'prrr-withdraw)
 
 (defvar prrr-queue-row-map
   (make-composed-keymap (list prrr-queue-section-map) forge-pullreq-section-map)
@@ -303,9 +304,12 @@ navigation in the Review Buffer uses it too."
     80))
 
 (defun prrr-queue--inputs (repo)
-  "Gather the `prrr-queue-insert' INPUTS of REPO from forge and the database."
+  "Gather the `prrr-queue-insert' INPUTS of REPO from forge and the database.
+The meta rows show queued Withdraws already (`prrr-state-withdrawn-meta')."
   (let* ((id (oref repo id))
-         (metas (prrr-db-select 'pullreq-meta :forge-repo-id id))
+         (outbox (prrr-db-outbox-rows))
+         (metas (mapcar (lambda (meta) (prrr-state-withdrawn-meta meta outbox))
+                        (prrr-db-select 'pullreq-meta :forge-repo-id id)))
          (by-number (make-hash-table))
          (pairs (progn
                   (dolist (meta metas)

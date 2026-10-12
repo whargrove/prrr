@@ -30,6 +30,9 @@ the package deals with. No implementation details live here.
 - **Stack**: a chain of PRs where each PR's base branch is the head branch of
   the PR below it. The bottom PR targets the repository's default branch. A
   reviewer moves up and down a Stack without leaving prrr.
+- **Withdraw**: the user stepping away from a PR they will not review:
+  their own review request and assignment are removed. A request to one of
+  their Teams stays, since it belongs to the whole Team.
 - **Team**: a GitHub organization team the user belongs to. Used only to
   evaluate the "review requested from my team" filter.
 - **Review Buffer**: the buffer in which one PR is reviewed: its diff, its
@@ -53,7 +56,7 @@ the package deals with. No implementation details live here.
   request changes, or comment.
 - **Submit**: sending the Pending Review to GitHub with a Verdict and an
   optional summary body.
-- **Outbox**: the user's comments and Viewed changes that prrr has written
+- **Outbox**: the user's comments, Viewed changes and Withdraws that prrr has written
   locally but GitHub has not yet accepted. Shown distinctly until they are
   sent; can be retried or discarded. A change whose sending got no answer
   waits for GitHub's answer until a refetch shows whether it arrived.

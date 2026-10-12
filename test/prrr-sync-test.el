@@ -2005,5 +2005,75 @@ is refused and queues nothing; a proposed reply to it is fine."
     (should (seq-find (lambda (m) (string-match-p "prrr-sync-test--signalling-hook.*Boom" m))
                       messages))))
 
+;;;; Withdraw
+
+(defmacro prrr-sync-test--with-rest (answers requests &rest body)
+  "Run BODY with `ghub-request' answering from ANSWERS, one per request.
+Each answer is the decoded JSON value, or (:error ERR) to fail the
+request as ghub does.  REQUESTS is bound to the (METHOD RESOURCE PARAMS)
+of every request, oldest first.  Answers come synchronously."
+  (declare (indent 2))
+  `(let ((,requests nil)
+         (answers ,answers))
+     (cl-letf (((symbol-function 'ghub-request)
+                (lambda (method resource params &rest args)
+                  (setq ,requests (append ,requests (list (list method resource params))))
+                  (let ((answer (pop answers)))
+                    (if (eq (car-safe answer) :error)
+                        (funcall (plist-get args :errorback) (cadr answer) nil nil nil)
+                      (funcall (plist-get args :callback) answer nil nil nil))))))
+       ,@body)))
+
+(defun prrr-sync-test--store-requested-meta ()
+  "Store the fixture PR's meta: the viewer is requested and assigned."
+  (prrr-db-insert (prrr-test-meta :pr-id prrr-sync-test--pr
+                                  :review-requests '((user "example-me") (user "example-bob"))
+                                  :assignees '("example-me")
+                                  :viewer-latest-review-request "RR_1")))
+
+(ert-deftest prrr-sync-test-withdraw-sends-both-and-stores-meta ()
+  "SPEC section 7: a Withdraw removes the review request, then the assignment."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-requested-meta)
+      (prrr-sync-test--with-rest '(((number . 1)) ((number . 1))) requests
+        (prrr-sync-test--write 'withdraw '(:review-request t :assignee t))
+        (should (equal '(("DELETE" "/repos/example-org/example-repo/pulls/1/requested_reviewers"
+                          ((reviewers . ["example-me"])))
+                         ("DELETE" "/repos/example-org/example-repo/issues/1/assignees"
+                          ((assignees . ["example-me"]))))
+                       requests)))
+      (should-not (prrr-db-outbox-rows prrr-sync-test--pr))
+      (let ((meta (prrr-db-get 'pullreq-meta prrr-sync-test--pr)))
+        (should (equal '((user "example-bob")) (prrr-pr-meta-review-requests meta)))
+        (should-not (prrr-pr-meta-assignees meta))
+        (should-not (prrr-pr-meta-viewer-latest-review-request meta))))))
+
+(ert-deftest prrr-sync-test-withdraw-only-what-it-removes ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-requested-meta)
+      (prrr-sync-test--with-rest '(((number . 1))) requests
+        (prrr-sync-test--write 'withdraw '(:review-request nil :assignee t))
+        (should (equal '("/repos/example-org/example-repo/issues/1/assignees")
+                       (mapcar #'cadr requests))))
+      (should (equal '((user "example-me") (user "example-bob"))
+                     (prrr-pr-meta-review-requests (prrr-db-get 'pullreq-meta prrr-sync-test--pr)))))))
+
+(ert-deftest prrr-sync-test-withdraw-failure-stays-queued ()
+  "A refused Withdraw keeps its error, and the stored meta keeps what GitHub has."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-requested-meta)
+      (prrr-sync-test--with-rest '(((number . 1))
+                                   (:error (error http 403 ((message . "Forbidden")))))
+          requests
+        (prrr-sync-test--write 'withdraw '(:review-request t :assignee t))
+        (should (= 2 (length requests))))
+      (let ((row (car (prrr-db-outbox-rows prrr-sync-test--pr))))
+        (should (eq 'withdraw (prrr-outbox-kind row)))
+        (should (equal "GitHub denied access (HTTP 403): Forbidden" (prrr-outbox-last-error row))))
+      (should (prrr-pr-meta-assignees (prrr-db-get 'pullreq-meta prrr-sync-test--pr))))))
+
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

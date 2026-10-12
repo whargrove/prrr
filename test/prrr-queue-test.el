@@ -292,6 +292,27 @@ for the repository's whole history."
             (goto-char (point-min))
             (should-not (re-search-forward "^#6 " nil t))))))))
 
+(ert-deftest prrr-queue-test-inputs-apply-queued-withdraws ()
+  "SPEC section 7: a queued Withdraw shows at once, before GitHub has it."
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-test-meta :pr-id "OPEN" :number 5
+                                    :review-requests '((user "example-me"))
+                                    :assignees '("example-me")))
+    (prrr-db-insert (prrr-outbox-create :id "1" :pr-id "OPEN" :kind 'withdraw
+                                        :payload '(:target (:me "example-me")
+                                                   :review-request t :assignee t)
+                                        :created-at "2026-10-10T12:00:00Z" :attempts 0))
+    (let ((prrr-github-user "example-me"))
+      (cl-letf (((symbol-function 'forge-get-pullreq)
+                 (lambda (_repo number)
+                   (and (= number 5) (prrr-queue-test--forge-pullreq 5 "OPEN" 'open)))))
+        (let* ((inputs (prrr-queue--inputs (prrr-queue-test--repo)))
+               (pr (cdr (car (plist-get inputs :pairs)))))
+          (should-not (prrr-pr-assignees pr))
+          (should-not (prrr-pr-meta-review-requests (car (plist-get inputs :metas))))
+          (prrr-queue-test--with-render inputs
+            (should-not (re-search-forward "^#5 .*\\(requested\\|assigned\\)" nil t))))))))
+
 (defmacro prrr-queue-test--with-hook-env (repo &rest body)
   "Run BODY with forge's repository lookup answering REPO."
   (declare (indent 1))

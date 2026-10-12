@@ -209,6 +209,30 @@ still flagged as the agent's (SPEC section 10)."
     (prrr-review--write pullreq 'resolve (list :thread-id (prrr-thread-thread-id thread)
                                                :resolved (not resolved)))))
 
+;;;; Withdraw
+
+;;;###autoload
+(defun prrr-withdraw ()
+  "Withdraw from the current pull request: you will not review it.
+Removes your direct review request and your assignment, whichever you
+have, after asking.  A request to one of your Teams stays: removing
+the Team would remove its other members too.  The Review Queue shows
+the change at once, and the Outbox sends it (SPEC section 7)."
+  (interactive)
+  (let* ((pullreq (prrr-current-pullreq))
+         (pr-id (oref pullreq their-id))
+         (me (or (prrr-github-viewer)
+                 (user-error "No GitHub login: set github.user or `prrr-github-user'")))
+         (meta (prrr-state-withdrawn-meta (prrr-db-get 'pullreq-meta pr-id)
+                                          (prrr-db-outbox-rows pr-id))))
+    (when-let* ((problem (prrr-state-withdraw-problem
+                          meta me (mapcar #'prrr-team-combined-slug (prrr-db-select 'team)))))
+      (user-error "%s" problem))
+    (let ((scope (prrr-state-withdraw-scope meta me)))
+      (when (y-or-n-p (format "Withdraw from #%s (%s)? "
+                              (oref pullreq number) (prrr-state-withdraw-label scope)))
+        (prrr-review--write pullreq 'withdraw scope)))))
+
 ;;;; Submit and the Outbox
 
 (defun prrr-review--pending (data)

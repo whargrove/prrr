@@ -1327,6 +1327,91 @@ One line rewritten at 12, two lines added after 20, three removed at 30."
     (should-not (prrr-state-stack-step fork prs "main" 'down))
     (should-error (prrr-state-stack-step bottom prs "main" 'sideways))))
 
+;;;; Withdraw
+
+(ert-deftest prrr-state-test-withdraw-scope ()
+  "A Withdraw removes my direct review request and my assignment, whichever I have."
+  (should (equal '(:review-request t :assignee t)
+                 (prrr-state-withdraw-scope
+                  (prrr-test-meta :review-requests '((user "example-me") (user "example-bob"))
+                                  :assignees '("example-me" "example-bob"))
+                  prrr-test-me)))
+  (should (equal '(:review-request t :assignee nil)
+                 (prrr-state-withdraw-scope
+                  (prrr-test-meta :review-requests '((user "example-me")))
+                  prrr-test-me)))
+  (should (equal '(:review-request nil :assignee t)
+                 (prrr-state-withdraw-scope
+                  (prrr-test-meta :review-requests '((team "example-org/reviewers"))
+                                  :assignees '("example-me"))
+                  prrr-test-me)))
+  (should-not (prrr-state-withdraw-scope
+               (prrr-test-meta :review-requests '((team "example-org/reviewers")))
+               prrr-test-me)))
+
+(ert-deftest prrr-state-test-withdraw-problem ()
+  "A Withdraw is refused when it has nothing of mine to remove, naming my requested Teams."
+  (should-not (prrr-state-withdraw-problem
+               (prrr-test-meta :review-requests '((user "example-me"))) prrr-test-me prrr-test-teams))
+  (should (equal "Requested only through example-org/reviewers; withdrawing would drop the whole Team"
+                 (prrr-state-withdraw-problem
+                  (prrr-test-meta :review-requests '((team "example-org/reviewers")
+                                                     (team "example-org/other")))
+                  prrr-test-me prrr-test-teams)))
+  (should (equal "You are neither requested nor assigned here"
+                 (prrr-state-withdraw-problem
+                  (prrr-test-meta :review-requests '((user "example-bob")))
+                  prrr-test-me prrr-test-teams)))
+  (should (equal "prrr has not pulled this pull request yet: press G"
+                 (prrr-state-withdraw-problem nil prrr-test-me prrr-test-teams))))
+
+(ert-deftest prrr-state-test-withdrawn-meta ()
+  "A queued Withdraw shows at once: my request, my assignment and GitHub's flag are gone."
+  (let* ((meta (prrr-test-meta :review-requests '((user "example-me") (team "example-org/reviewers"))
+                               :assignees '("example-me" "example-bob")
+                               :viewer-latest-review-request "RR_1"))
+         (row (prrr-state-test--write "1" "PR_1" 'withdraw '(:review-request t :assignee t)))
+         (shown (prrr-state-withdrawn-meta meta (list row))))
+    (should (equal '((team "example-org/reviewers")) (prrr-pr-meta-review-requests shown)))
+    (should (equal '("example-bob") (prrr-pr-meta-assignees shown)))
+    (should-not (prrr-pr-meta-viewer-latest-review-request shown))
+    ;; META itself is not changed.
+    (should (equal '("example-me" "example-bob") (prrr-pr-meta-assignees meta)))))
+
+(ert-deftest prrr-state-test-withdrawn-meta-partial-and-other-prs ()
+  "Only what the Withdraw removes goes, and only another PR's Withdraw leaves META alone."
+  (let ((meta (prrr-test-meta :review-requests '((user "example-me"))
+                              :assignees '("example-me")
+                              :viewer-latest-review-request "RR_1")))
+    (let ((shown (prrr-state-withdrawn-meta
+                  meta (list (prrr-state-test--write "1" "PR_1" 'withdraw
+                                                     '(:review-request nil :assignee t))))))
+      (should (equal '((user "example-me")) (prrr-pr-meta-review-requests shown)))
+      (should (equal "RR_1" (prrr-pr-meta-viewer-latest-review-request shown)))
+      (should-not (prrr-pr-meta-assignees shown)))
+    (should (eq meta (prrr-state-withdrawn-meta
+                      meta (list (prrr-state-test--write "1" "PR_2" 'withdraw
+                                                         '(:review-request t :assignee t))
+                                 (prrr-state-test--write "2" "PR_1" 'viewed '(:path "a")))))))
+  (should-not (prrr-state-withdrawn-meta nil nil)))
+
+(ert-deftest prrr-state-test-outbox-landed-withdraw ()
+  "Review data cannot tell whether a Withdraw landed, and sending it again is harmless."
+  (should (eq 'missing (prrr-state-outbox-landed
+                        (prrr-state-test--unconfirmed "1" 'withdraw '(:review-request t :assignee t))
+                        (prrr-state-test--fresh) nil))))
+
+(ert-deftest prrr-state-test-outbox-describe-withdraw ()
+  (should (equal "withdraw (review request and assignment)"
+                 (prrr-state-outbox-describe
+                  (prrr-state-test--write "1" "PR_1" 'withdraw '(:review-request t :assignee t)))))
+  (should (equal "withdraw (review request)"
+                 (prrr-state-outbox-describe
+                  (prrr-state-test--write "1" "PR_1" 'withdraw '(:review-request t :assignee nil)))))
+  (should (equal "withdraw (assignment)"
+                 (prrr-state-outbox-describe
+                  (prrr-state-test--write "1" "PR_1" 'withdraw '(:review-request nil :assignee t))))))
+
 (provide 'prrr-state-test)
 ;;; prrr-state-test.el ends here
 

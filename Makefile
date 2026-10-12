@@ -4,7 +4,11 @@ SRC      := prrr-db.el prrr-github.el prrr-state.el prrr-sync.el prrr-queue.el p
 TESTS    ?= test/prrr-db-test.el test/prrr-github-test.el test/prrr-state-test.el test/prrr-sync-test.el test/prrr-queue-test.el test/prrr-diff-test.el test/prrr-thread-test.el test/prrr-review-test.el test/prrr-range-test.el test/prrr-stack-test.el test/prrr-treesit-test.el test/prrr-api-test.el test/prrr-agent-test.el test/prrr-test.el
 SELECTOR ?= t
 
+# load-prefer-newer: an editor may leave .elc files in the tree (Emacs 31's
+# user-lisp-directory compiles a symlinked checkout in place), and a stale
+# one must not shadow its newer source.
 BATCH := $(EMACS) -Q --batch \
+  --eval '(setq load-prefer-newer t)' \
   --eval '(setq package-user-dir "$(DEPS_DIR)")' \
   --eval '(package-initialize)' \
   -L . -L test
