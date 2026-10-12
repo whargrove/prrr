@@ -77,6 +77,11 @@
                    (prrr-pr-meta-viewer-latest-review (nth 1 metas))))
     (should (null (prrr-pr-meta-viewer-latest-review-request (nth 1 metas))))))
 
+(ert-deftest prrr-github-test-decode-queue-assignees ()
+  (let ((metas (prrr-github-decode-queue (prrr-test-fixture "queue") nil)))
+    (should (equal '("example-me" "example-bob") (prrr-pr-meta-assignees (nth 0 metas))))
+    (should (null (prrr-pr-meta-assignees (nth 1 metas))))))
+
 (ert-deftest prrr-github-test-decode-queue-empty-repository ()
   (should (null (prrr-github-decode-queue '(data (repository (pullRequests))) nil))))
 
@@ -289,15 +294,36 @@
 (ert-deftest prrr-github-test-error-http-403-without-limit-headers-is-auth ()
   (should (eq 'auth (plist-get (prrr-github-error '(error http 403) nil) :kind))))
 
-(ert-deftest prrr-github-test-error-http-403-with-quota-left-is-secondary-limit ()
-  "M5: GitHub's secondary limit is a 403 with quota left; wait a minute.
+(ert-deftest prrr-github-test-error-http-403-naming-a-rate-limit-is-secondary-limit ()
+  "GitHub's secondary limit is a 403 whose message names it; wait a minute.
 x-ratelimit-reset belongs to the primary limit and must not set the wait."
   (should (equal '(:kind rate-limited :message "GitHub secondary rate limit (HTTP 403)"
                    :reset-at "2026-10-10T12:01:00Z")
-                 (prrr-github-error '(error http 403)
-                                    '(("x-ratelimit-remaining" . "12")
-                                      ("x-ratelimit-reset" . "1791633600"))
-                                    prrr-github-test--now))))
+                 (prrr-github-error
+                  '(error http 403 ((message . "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.")))
+                  '(("x-ratelimit-remaining" . "12")
+                    ("x-ratelimit-reset" . "1791633600"))
+                  prrr-github-test--now))))
+
+(ert-deftest prrr-github-test-error-http-403-with-quota-left-is-a-denial ()
+  "A permission or SSO 403 carries quota headers too; it is no limit."
+  (should (equal '(:kind auth
+                   :message "GitHub denied access (HTTP 403): Resource protected by organization SAML enforcement."
+                   :reset-at nil)
+                 (prrr-github-error
+                  '(error http 403 ((message . "Resource protected by organization SAML enforcement.")))
+                  '(("x-ratelimit-remaining" . "4990")
+                    ("x-ratelimit-reset" . "1791633600"))
+                  prrr-github-test--now))))
+
+(ert-deftest prrr-github-test-error-http-403-without-body-is-a-denial ()
+  (should (equal '(:kind auth :message "GitHub denied access (HTTP 403)" :reset-at nil)
+                 (prrr-github-error '(error http 403) '(("x-ratelimit-remaining" . "12"))))))
+
+(ert-deftest prrr-github-test-error-http-429-without-headers-waits-a-minute ()
+  (should (equal '(:kind rate-limited :message "GitHub secondary rate limit (HTTP 429)"
+                   :reset-at "2026-10-10T12:01:00Z")
+                 (prrr-github-error '(error http 429) nil prrr-github-test--now))))
 
 (ert-deftest prrr-github-test-error-http-403-secondary-limit-uses-retry-after ()
   (should (equal '(:kind rate-limited :message "GitHub rate limit (HTTP 403)"

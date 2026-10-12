@@ -263,21 +263,19 @@ empty.  Sets `prrr-queue--rows'."
 
 ;;;; From forge
 
-(defun prrr-queue--assignees (pullreq)
-  "Return the logins assigned to forge's PULLREQ."
-  (mapcar #'cadr (oref pullreq assignees)))
-
-(defun prrr-queue-pr (pullreq)
+(defun prrr-queue-pr (pullreq &optional meta)
   "Return the `prrr-pr' the Review Queue rules see for forge's PULLREQ.
-HEAD-OID is forge's head-rev; the Review State prefers the head stored
-with the PR's meta row (`prrr-state--head-oid'), so forge's matters only
-for a PR prrr has not pulled yet."
+META is the PR's `prrr-pr-meta' row, or nil.  ASSIGNEES come from META,
+which prrr's queue query fills: reading them from forge costs a join per
+PR (SPEC section 12).  HEAD-OID is forge's head-rev; the Review State
+prefers the head stored with the PR's meta row (`prrr-state--head-oid'),
+so forge's matters only for a PR prrr has not pulled yet."
   (prrr-pr-create :id (oref pullreq their-id)
                   :number (oref pullreq number)
                   :title (oref pullreq title)
                   :author (oref pullreq author)
                   :draft-p (and (oref pullreq draft-p) t)
-                  :assignees (prrr-queue--assignees pullreq)
+                  :assignees (and meta (prrr-pr-meta-assignees meta))
                   :created-at (oref pullreq created)
                   :updated-at (oref pullreq updated)
                   :head-oid (oref pullreq head-rev)
@@ -308,8 +306,14 @@ navigation in the Review Buffer uses it too."
   "Gather the `prrr-queue-insert' INPUTS of REPO from forge and the database."
   (let* ((id (oref repo id))
          (metas (prrr-db-select 'pullreq-meta :forge-repo-id id))
-         (pairs (mapcar (lambda (pullreq) (cons pullreq (prrr-queue-pr pullreq)))
-                        (prrr-queue-open-pullreqs repo metas))))
+         (by-number (make-hash-table))
+         (pairs (progn
+                  (dolist (meta metas)
+                    (puthash (prrr-pr-meta-number meta) meta by-number))
+                  (mapcar (lambda (pullreq)
+                            (cons pullreq
+                                  (prrr-queue-pr pullreq (gethash (oref pullreq number) by-number))))
+                          (prrr-queue-open-pullreqs repo metas)))))
     (list :pairs pairs
           :metas metas
           :teams (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))

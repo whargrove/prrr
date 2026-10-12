@@ -125,11 +125,13 @@ headRefOid createdAt isDraft author { login } reviewRequests(first: 50) {
 requestedReviewer { ... on User { login } ... on Team { combinedSlug } } }
 latestReviews(first: 50) { author { login } state submittedAt commit { oid }
 onBehalfOf(first: 10) { nodes { combinedSlug } } } viewerLatestReview { state
-submittedAt commit { oid } } viewerLatestReviewRequest { login }`. Stored in
-`pullreq-meta`. Draft, author, assignees, base-ref, head-ref, head-rev, and
-cross-repo-p come from forge's `forge-pullreq` object (research 04, section
-1); forge drops Team requests and forgets satisfied ones, which is why
-prrr fetches requests itself.
+submittedAt commit { oid } } viewerLatestReviewRequest { login }
+assignees(first: 100) { login }`. Stored in `pullreq-meta`. Draft, author,
+base-ref, head-ref, head-rev, and cross-repo-p come from forge's
+`forge-pullreq` object (research 04, section 1); forge drops Team requests
+and forgets satisfied ones, which is why prrr fetches requests itself.
+Assignees come from prrr's query because reading them from forge costs a
+database join per PR, a quarter of the queue's section 12 budget.
 
 **Teams.** `viewer { organizations(first: 100) { nodes { login
 teams(first: 100, userLogins: [$me]) { nodes { slug combinedSlug } } } } }`
@@ -636,19 +638,24 @@ bodies; nothing else is added.
 
 ## 11. Errors, auth, and offline
 
-- Authentication failures (HTTP 401, or 403 without rate-limit headers)
-  show prrr's classified message, "GitHub rejected the token (HTTP N)",
-  and leave the buffer usable for reading local diffs. A missing token that
+- Authentication failures show prrr's classified message: "GitHub rejected
+  the token (HTTP 401)", or "GitHub denied access (HTTP 403): " followed by
+  GitHub's own message for a permission, SSO or IP allow-list denial. They
+  leave the buffer usable for reading local diffs. A missing token that
   forge reports before sending shows forge's own message.
 - Rate-limit responses (primary or secondary) pause the Outbox and the
-  background refetch until the reset time and say so in the header. An HTTP
-  403 with quota left is GitHub's secondary limit and waits one minute.
+  background refetch until the reset time and say so in the header. A 403
+  or 429 with retry-after or no quota left waits for those headers; a 429,
+  or a 403 whose message names a rate limit, is otherwise GitHub's
+  secondary limit and waits one minute. Every other 403 is a denial, since
+  GitHub sends quota headers on those too.
 - A pull that gets no answer within `prrr-sync-timeout` (default 60
   seconds), as when the connection fails, ends as offline; a later answer
   is ignored.
 - A failed Teams fetch does not stop the queue pull: the stored Teams stay,
-  Teams are not retried before their daily cadence, and the header says
-  "Teams unavailable: ...".
+  and the header says "Teams unavailable: ..." until a Teams fetch
+  succeeds. An offline or rate-limited failure is retried on the next pull;
+  any other waits for the daily cadence.
 - Network failures on refetch keep the database copy and show "offline" in
   the header; writes go to the Outbox.
 - A missing PR ref (`refs/pullreqs/N` absent) prompts to run `forge-pull`.

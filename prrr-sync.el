@@ -66,13 +66,27 @@ This also spaces retries after a failed pull."
 Keeps a `prrr-queue-stale-after' of 0 from retrying a failing pull on
 every refresh.")
 
+(defconst prrr-sync-min-timeout 10
+  "The fewest seconds `prrr-sync-timeout' can make a request wait.
+A smaller value would end every pull before GitHub could answer.")
+
 (defcustom prrr-sync-timeout 60
-  "Seconds a pull may wait for GitHub before it ends as offline.
+  "Seconds a pull, refetch or change may wait for GitHub before it ends.
 Some failures, such as a refused connection, never reach prrr; the
-pull then ends this many seconds after it started, and any answer
-that arrives later is ignored."
-  :type 'natnum
+request then ends as offline this many seconds after it started, and
+any answer that arrives later is ignored.  Raise it when the Review
+Queue of a large repository over a slow connection keeps ending as
+offline: the queue query pages through every open pull request.
+Values below `prrr-sync-min-timeout' count as that minimum."
+  :type '(restricted-sexp :tag "Seconds"
+                          :match-alternatives
+                          ((lambda (value)
+                             (and (natnump value) (>= value prrr-sync-min-timeout)))))
   :group 'prrr)
+
+(defun prrr-sync--timeout ()
+  "Return `prrr-sync-timeout', raised to `prrr-sync-min-timeout' if lower."
+  (max prrr-sync-timeout prrr-sync-min-timeout))
 
 (defconst prrr-sync-teams-max-age (* 24 60 60)
   "Seconds after which the viewer's Teams are fetched again (SPEC section 4).")
@@ -87,6 +101,11 @@ cons (review . PR-ID) for per-PR refetches.")
 Remembers a fetch that found no Team, which leaves no row behind, and
 a fetch that failed, so neither is repeated before
 `prrr-sync-teams-max-age'.")
+
+(defvar prrr-sync--teams-failure nil
+  "Why the last Teams fetch this session failed, or nil after a success.
+Pulls show it until a Teams fetch succeeds, since the stored Teams
+stay stale that long.")
 
 (defvar prrr-sync--last-token 0
   "The token of the most recently started pull; tokens count up.")
@@ -117,7 +136,7 @@ should have ended it, so it must never block a new pull."
        (let ((attempted-at (plist-get status :attempted-at)))
          (and attempted-at
               (string< (prrr-sync--timestamp
-                        (time-subtract (or now (current-time)) prrr-sync-timeout))
+                        (time-subtract (or now (current-time)) (prrr-sync--timeout)))
                        attempted-at)))))
 
 (defun prrr-sync-queue-due-p (repo-id metas &optional now)
@@ -219,8 +238,8 @@ instead and must end the job with `prrr-sync--finish'."
     (puthash key (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
              prrr-sync--status)
     (if fail
-        (run-at-time prrr-sync-timeout nil fail prrr-sync--no-answer)
-      (run-at-time prrr-sync-timeout nil #'prrr-sync--finish key token prrr-sync--no-answer
+        (run-at-time (prrr-sync--timeout) nil fail prrr-sync--no-answer)
+      (run-at-time (prrr-sync--timeout) nil #'prrr-sync--finish key token prrr-sync--no-answer
                    buffer))
     token))
 
@@ -228,15 +247,26 @@ instead and must end the job with `prrr-sync--finish'."
   "Fetch and store the viewer ME's Teams on HOST, then call THEN.
 Call FAIL with the classified failure instead when the fetch or the
 store fails.  THEN runs outside that guard, so exactly one of THEN and
-FAIL runs; THEN must not signal."
-  (prrr-github-fetch-teams
-   host me
-   (lambda (teams)
-     (when (prrr-sync--guarded fail
-             (prrr-db-replace-teams teams)
-             (setq prrr-sync--teams-tried-at (prrr-sync--timestamp)))
-       (funcall then)))
-   fail))
+FAIL runs; THEN must not signal.  Records the outcome in
+`prrr-sync--teams-failure'.  A failure that retrying soon cannot fix,
+such as a rejected token or a missing resource, is not tried again before
+`prrr-sync-teams-max-age'; an `offline' or `rate-limited' one is
+tried on the next pull."
+  (let ((fail (lambda (failure)
+                (setq prrr-sync--teams-failure (plist-get failure :message))
+                (unless (memq (plist-get failure :kind) '(offline rate-limited))
+                  (setq prrr-sync--teams-tried-at (prrr-sync--timestamp)))
+                (funcall fail failure))))
+    (prrr-github-fetch-teams
+     host me
+     (lambda (teams)
+       (when (prrr-sync--guarded fail
+               (prrr-db-replace-teams teams)
+               (setq prrr-sync--teams-failure nil
+                     prrr-sync--teams-tried-at (prrr-sync--timestamp))
+               t)
+         (funcall then)))
+     fail)))
 
 (defun prrr-sync--prune-pins-after-pull (repo metas)
   "Prune the pins of REPO's closed PRs, given METAS, its open ones.
@@ -257,9 +287,9 @@ and must not fail a pull whose rows are stored."
 REPO is a `forge-github-repository'.  Fetches the viewer's Teams first
 when they are due, then the queue query, and stores both.  Teams only
 refine the Review State, so a failed Teams fetch keeps the stored
-Teams, is not tried again before `prrr-sync-teams-max-age', and the
-pull goes on; the status is then `ok' with a :message that starts
-\"Teams unavailable\".  Records the
+Teams and the pull goes on (`prrr-sync--fetch-teams' says when it is
+tried again).  Until a Teams fetch succeeds, the status is `ok' with
+a :message that starts \"Teams unavailable\".  Records the
 outcome in `prrr-sync-status' and refreshes BUFFER, when live, after
 the pull ends either way.  A pull without an answer ends as `offline'
 after `prrr-sync-timeout' seconds.  Return non-nil when a pull
@@ -271,8 +301,7 @@ Never signals: every failure becomes the status."
              (host (oref repo apihost))
              (fail (lambda (failure) (prrr-sync--finish id token failure buffer)))
              (fetch-queue
-              ;; NOTE, when non-nil, is the message of an `ok' outcome.
-              (lambda (&optional note)
+              (lambda (&rest _)
                 (when (prrr-sync--current-p id token)
                   (prrr-sync--guarded fail
                     (prrr-github-fetch-queue
@@ -282,20 +311,20 @@ Never signals: every failure becomes the status."
                          (prrr-sync--guarded fail
                            (prrr-db-replace-pr-metas id metas)
                            (prrr-sync--prune-pins-after-pull repo metas)
-                           (prrr-sync--finish id token (list :kind 'ok :message note)
-                                              buffer))))
-                     fail id)))))
-             (teams-failed
-              (lambda (failure)
-                (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
-                (funcall fetch-queue
-                         (format "Teams unavailable: %s" (plist-get failure :message))))))
+                           (prrr-sync--finish
+                            id token
+                            (list :kind 'ok
+                                  :message (and prrr-sync--teams-failure
+                                                (format "Teams unavailable: %s"
+                                                        prrr-sync--teams-failure)))
+                            buffer))))
+                     fail id))))))
         (prrr-sync--guarded fail
           (let ((me (prrr-github-viewer)))
             (cond ((null me)
                    (funcall fail (list :kind 'error :message prrr-sync-no-login :reset-at nil)))
                   ((prrr-sync--teams-due-p)
-                   (prrr-sync--fetch-teams host me fetch-queue teams-failed))
+                   (prrr-sync--fetch-teams host me fetch-queue fetch-queue))
                   (t (funcall fetch-queue)))))
         t))))
 
@@ -654,7 +683,7 @@ seconds without an answer (`prrr-sync--outbox-timed-out')."
                                                :sent-at (prrr-sync--timestamp)))
     (prrr-db-insert row)
     (setq prrr-sync--outbox-sending row)
-    (run-at-time prrr-sync-timeout nil #'prrr-sync--outbox-timed-out row token)
+    (run-at-time (prrr-sync--timeout) nil #'prrr-sync--outbox-timed-out row token)
     (prrr-sync--guarded fail
       (prrr-sync--outbox-run row token done fail))))
 

@@ -234,25 +234,27 @@ Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
     repo))
 
 (ert-deftest prrr-queue-test-pr-from-forge ()
-  (let ((pullreq (forge-pullreq :id "forge-1" :number 12 :title "Add parser" :state 'open
-                                :author "example-alice" :draft-p t :their-id "PR_12"
-                                :created "2026-09-01T00:00:00Z" :updated "2026-09-03T00:00:00Z"
-                                :head-rev "abc" :base-ref "main" :head-ref "parser"
-                                :cross-repo-p nil)))
-    (cl-letf (((symbol-function 'prrr-queue--assignees) (lambda (_) '("example-me"))))
-      (let ((pr (prrr-queue-pr pullreq)))
-        (should (equal "PR_12" (prrr-pr-id pr)))
-        (should (= 12 (prrr-pr-number pr)))
-        (should (equal "Add parser" (prrr-pr-title pr)))
-        (should (equal "example-alice" (prrr-pr-author pr)))
-        (should (eq t (prrr-pr-draft-p pr)))
-        (should (equal '("example-me") (prrr-pr-assignees pr)))
-        (should (equal "2026-09-01T00:00:00Z" (prrr-pr-created-at pr)))
-        (should (equal "2026-09-03T00:00:00Z" (prrr-pr-updated-at pr)))
-        (should (equal "abc" (prrr-pr-head-oid pr)))
-        (should (equal "main" (prrr-pr-base-ref pr)))
-        (should (equal "parser" (prrr-pr-head-ref pr)))
-        (should (null (prrr-pr-cross-repo-p pr)))))))
+  "Forge supplies the PR; its meta row supplies the assignees."
+  (let* ((pullreq (forge-pullreq :id "forge-1" :number 12 :title "Add parser" :state 'open
+                                 :author "example-alice" :draft-p t :their-id "PR_12"
+                                 :created "2026-09-01T00:00:00Z" :updated "2026-09-03T00:00:00Z"
+                                 :head-rev "abc" :base-ref "main" :head-ref "parser"
+                                 :cross-repo-p nil))
+         (meta (prrr-pr-meta-create :pr-id "PR_12" :number 12 :assignees '("example-me")))
+         (pr (prrr-queue-pr pullreq meta)))
+    (should (equal "PR_12" (prrr-pr-id pr)))
+    (should (= 12 (prrr-pr-number pr)))
+    (should (equal "Add parser" (prrr-pr-title pr)))
+    (should (equal "example-alice" (prrr-pr-author pr)))
+    (should (eq t (prrr-pr-draft-p pr)))
+    (should (equal '("example-me") (prrr-pr-assignees pr)))
+    (should (equal "2026-09-01T00:00:00Z" (prrr-pr-created-at pr)))
+    (should (equal "2026-09-03T00:00:00Z" (prrr-pr-updated-at pr)))
+    (should (equal "abc" (prrr-pr-head-oid pr)))
+    (should (equal "main" (prrr-pr-base-ref pr)))
+    (should (equal "parser" (prrr-pr-head-ref pr)))
+    (should (null (prrr-pr-cross-repo-p pr)))
+    (should (null (prrr-pr-assignees (prrr-queue-pr pullreq))))))
 
 (defun prrr-queue-test--forge-pullreq (number their-id state)
   "A `forge-pullreq' NUMBER with id THEIR-ID in STATE, every read slot bound."
@@ -271,7 +273,8 @@ for the repository's whole history."
   (prrr-db-with-test-db
     (dolist (meta (list (prrr-test-meta :pr-id "CLOSED-IN-FORGE" :number 3)
                         (prrr-test-meta :pr-id "UNKNOWN-TO-FORGE" :number 4)
-                        (prrr-test-meta :pr-id "OPEN" :number 5)))
+                        (prrr-test-meta :pr-id "OPEN" :number 5
+                                        :assignees '("example-me"))))
       (prrr-db-insert meta))
     (let* ((forge (list (cons 3 (prrr-queue-test--forge-pullreq 3 "CLOSED-IN-FORGE" 'merged))
                         (cons 5 (prrr-queue-test--forge-pullreq 5 "OPEN" 'open))
@@ -279,8 +282,7 @@ for the repository's whole history."
            (asked nil)
            (prrr-github-user "example-me"))
       (cl-letf (((symbol-function 'forge-get-pullreq)
-                 (lambda (_repo number) (push number asked) (alist-get number forge)))
-                ((symbol-function 'prrr-queue--assignees) (lambda (_) '("example-me"))))
+                 (lambda (_repo number) (push number asked) (alist-get number forge))))
         (let ((inputs (prrr-queue--inputs (prrr-queue-test--repo))))
           (should (equal '(3 4 5) (sort asked #'<)))
           (should (equal '("OPEN") (mapcar (lambda (pair) (prrr-pr-id (cdr pair)))

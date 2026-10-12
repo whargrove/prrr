@@ -65,7 +65,6 @@ The fixture PR's base is main, its head branch feature."
                       (apply get-repository args))))
                  ((symbol-function 'prrr-queue-open-pullreqs)
                   (lambda (_repo _metas) (list top bottom)))
-                 ((symbol-function 'prrr-queue--assignees) #'ignore)
                  ((symbol-function 'prrr-sync-refetch) #'ignore))
          (setq prrr-diff--pullreq bottom)
          (unwind-protect (progn ,@body)
