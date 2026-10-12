@@ -71,6 +71,17 @@
                                    (list (prrr-sync-test--meta "2026-10-10T11:50:00Z"))
                                    prrr-sync-test--now))))
 
+
+(ert-deftest prrr-sync-test-timeout-has-a-floor ()
+  "A timeout of 0 would end every pull before GitHub answers (prrr-knu.10)."
+  (let ((prrr-sync-timeout 0))
+    (should (= prrr-sync-min-timeout (prrr-sync--timeout))))
+  (let ((prrr-sync-timeout 300))
+    (should (= 300 (prrr-sync--timeout))))
+  (should-not (widget-apply (widget-convert (get 'prrr-sync-timeout 'custom-type))
+                            :match 0))
+  (should (widget-apply (widget-convert (get 'prrr-sync-timeout 'custom-type))
+                        :match 120)))
 (ert-deftest prrr-sync-test-due-p-not-while-pulling ()
   "Within `prrr-sync-timeout' a pull is running; the attempt rule alone would allow one."
   (prrr-sync-test--with-clean-status

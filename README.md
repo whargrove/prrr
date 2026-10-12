@@ -82,7 +82,9 @@ its data is older than `prrr-queue-stale-after` seconds (default 300). The
 heading shows `pulling…`, `offline`, `rate limited until 14:05`, or the
 error. A pull that gets no answer within `prrr-sync-timeout` seconds
 (default 60), as when the network is down, ends as `offline` and is retried
-later; `G` pulls again at once.
+later; `G` pulls again at once. If the queue of a large repository over a
+slow connection keeps ending as `offline`, raise the timeout; it is never
+less than 10 seconds.
 
 A PR joins the queue once prrr has pulled it, so a PR opened since the last
 pull can appear in forge's list a few minutes before it appears here. Press

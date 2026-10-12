@@ -66,13 +66,27 @@ This also spaces retries after a failed pull."
 Keeps a `prrr-queue-stale-after' of 0 from retrying a failing pull on
 every refresh.")
 
+(defconst prrr-sync-min-timeout 10
+  "The fewest seconds `prrr-sync-timeout' can make a request wait.
+A smaller value would end every pull before GitHub could answer.")
+
 (defcustom prrr-sync-timeout 60
-  "Seconds a pull may wait for GitHub before it ends as offline.
+  "Seconds a pull, refetch or change may wait for GitHub before it ends.
 Some failures, such as a refused connection, never reach prrr; the
-pull then ends this many seconds after it started, and any answer
-that arrives later is ignored."
-  :type 'natnum
+request then ends as offline this many seconds after it started, and
+any answer that arrives later is ignored.  Raise it when the Review
+Queue of a large repository over a slow connection keeps ending as
+offline: the queue query pages through every open pull request.
+Values below `prrr-sync-min-timeout' count as that minimum."
+  :type '(restricted-sexp :tag "Seconds"
+                          :match-alternatives
+                          ((lambda (value)
+                             (and (natnump value) (>= value prrr-sync-min-timeout)))))
   :group 'prrr)
+
+(defun prrr-sync--timeout ()
+  "Return `prrr-sync-timeout', raised to `prrr-sync-min-timeout' if lower."
+  (max prrr-sync-timeout prrr-sync-min-timeout))
 
 (defconst prrr-sync-teams-max-age (* 24 60 60)
   "Seconds after which the viewer's Teams are fetched again (SPEC section 4).")
@@ -122,7 +136,7 @@ should have ended it, so it must never block a new pull."
        (let ((attempted-at (plist-get status :attempted-at)))
          (and attempted-at
               (string< (prrr-sync--timestamp
-                        (time-subtract (or now (current-time)) prrr-sync-timeout))
+                        (time-subtract (or now (current-time)) (prrr-sync--timeout)))
                        attempted-at)))))
 
 (defun prrr-sync-queue-due-p (repo-id metas &optional now)
@@ -224,8 +238,8 @@ instead and must end the job with `prrr-sync--finish'."
     (puthash key (list :state 'pulling :attempted-at (prrr-sync--timestamp) :token token)
              prrr-sync--status)
     (if fail
-        (run-at-time prrr-sync-timeout nil fail prrr-sync--no-answer)
-      (run-at-time prrr-sync-timeout nil #'prrr-sync--finish key token prrr-sync--no-answer
+        (run-at-time (prrr-sync--timeout) nil fail prrr-sync--no-answer)
+      (run-at-time (prrr-sync--timeout) nil #'prrr-sync--finish key token prrr-sync--no-answer
                    buffer))
     token))
 
@@ -669,7 +683,7 @@ seconds without an answer (`prrr-sync--outbox-timed-out')."
                                                :sent-at (prrr-sync--timestamp)))
     (prrr-db-insert row)
     (setq prrr-sync--outbox-sending row)
-    (run-at-time prrr-sync-timeout nil #'prrr-sync--outbox-timed-out row token)
+    (run-at-time (prrr-sync--timeout) nil #'prrr-sync--outbox-timed-out row token)
     (prrr-sync--guarded fail
       (prrr-sync--outbox-run row token done fail))))
 
