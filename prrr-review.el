@@ -130,26 +130,59 @@ The reply joins your Pending Review; IMMEDIATE is as for `prrr-comment'."
 
 ;;;###autoload
 (defun prrr-edit-comment ()
-  "Edit your comment at point, pending or submitted."
+  "Edit your comment at point, pending or submitted.
+On an agent's proposed comment, accept it as edited instead
+\(`prrr-accept-comment')."
   (interactive)
   (let ((pullreq (prrr-diff-pullreq))
         (comment (prrr-review--own-comment)))
-    (prrr-comment-capture
-     "Edit your comment"
-     (lambda (text _now)
-       (prrr-review--write pullreq 'edit (list :comment-id (prrr-comment-comment-id comment)
-                                               :body text)))
-     :body (prrr-comment-body comment) :immediate-allowed nil)))
+    (if (prrr-review--proposal comment)
+        (prrr-accept-comment)
+      (prrr-comment-capture
+       "Edit your comment"
+       (lambda (text _now)
+         (prrr-review--write pullreq 'edit (list :comment-id (prrr-comment-comment-id comment)
+                                                 :body text)))
+       :body (prrr-comment-body comment) :immediate-allowed nil))))
 
 ;;;###autoload
 (defun prrr-delete-comment ()
-  "Delete your comment at point, pending or submitted, after confirmation."
+  "Delete your comment at point, pending or submitted, after confirmation.
+On an agent's proposed comment, this rejects it: the proposal is
+dropped and nothing reaches GitHub."
   (interactive)
   (let ((pullreq (prrr-diff-pullreq))
         (comment (prrr-review--own-comment)))
     (when (y-or-n-p "Delete this comment? ")
       (prrr-review--write pullreq 'delete
                           (list :comment-id (prrr-comment-comment-id comment))))))
+
+;;;; Proposed comments
+
+(defun prrr-review--proposal (comment)
+  "Return the queued `proposed' Outbox row that creates COMMENT, or nil."
+  (seq-find (lambda (row)
+              (and (prrr-state-outbox-held-p row)
+                   (equal (plist-get (prrr-outbox-payload row) :comment)
+                          (prrr-comment-comment-id comment))))
+            (prrr-db-outbox-rows (prrr-comment-pr-id comment))))
+
+;;;###autoload
+(defun prrr-accept-comment ()
+  "Accept the agent's proposed comment at point into the Pending Review.
+Opens it for editing first;
+\\<prrr-comment-mode-map>\\[prrr-comment-confirm] accepts the text as edited.
+The comment then goes out as the Thread or reply the agent proposed,
+still flagged as the agent's (SPEC section 10)."
+  (interactive)
+  (let* ((comment (or (prrr-diff-comment-at-point) (user-error "No comment at point")))
+         (row (or (prrr-review--proposal comment) (user-error "Not a proposed comment")))
+         (buffer (current-buffer)))
+    (prrr-comment-capture
+     "Accept the agent's comment"
+     (lambda (text _immediate)
+       (prrr-sync-accept (prrr-outbox-id row) text buffer))
+     :body (prrr-comment-body comment) :immediate-allowed nil)))
 
 ;;;###autoload
 (defun prrr-discussion-comment ()
@@ -180,27 +213,30 @@ The reply joins your Pending Review; IMMEDIATE is as for `prrr-comment'."
 
 (defun prrr-review--pending (data)
   "Return the pending comments of the review DATA."
-  (seq-filter (lambda (comment) (eq (prrr-comment-state comment) 'pending))
-              (plist-get data :comments)))
+  (seq-filter #'prrr-state-comment-pending-p (plist-get data :comments)))
 
 (defun prrr-review--submit (verdict)
   "Capture a summary and submit the Pending Review with VERDICT.
 VERDICT is `approve', `request-changes' or `comment'.  The header
-counts the pending comments and those an agent wrote; Submit asks
-again when there are agent comments (SPEC section 7).  Submitting
-records the head shown as the Bookmark (SPEC section 8)."
+counts the pending comments and those an agent wrote, and the agent's
+proposals, which are not submitted; Submit asks again when there are
+agent comments (SPEC section 7).  Submitting records the head shown as
+the Bookmark (SPEC section 8)."
   (let* ((pullreq (prrr-diff-pullreq))
          (head (prrr-diff-head))
-         (pending (prrr-review--pending (prrr-sync-review-data (oref pullreq their-id))))
-         (agents (seq-count #'prrr-comment-agent-p pending)))
+         (data (prrr-sync-review-data (oref pullreq their-id)))
+         (pending (prrr-review--pending data))
+         (agents (seq-count #'prrr-comment-agent-p pending))
+         (proposed (seq-count #'prrr-state-outbox-held-p (plist-get data :outbox))))
     (prrr-comment-capture
-     (format "Submit, %s: %d pending comment%s%s"
+     (format "Submit, %s: %d pending comment%s%s%s"
              (pcase verdict
                ('approve "approve")
                ('request-changes "request changes")
                ('comment "comment"))
              (length pending) (if (= (length pending) 1) "" "s")
-             (if (> agents 0) (format ", %d by an agent" agents) ""))
+             (if (> agents 0) (format ", %d by an agent" agents) "")
+             (if (> proposed 0) (format ", %d proposed not included" proposed) ""))
      (lambda (text _now)
        (when-let* ((problem (prrr-state-submit-problem verdict text (length pending))))
          (user-error "%s" problem))

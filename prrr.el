@@ -66,6 +66,7 @@
 (autoload 'prrr-reply "prrr-review" "Reply to the Thread at point." t)
 (autoload 'prrr-edit-comment "prrr-review" "Edit your comment at point." t)
 (autoload 'prrr-delete-comment "prrr-review" "Delete your comment at point." t)
+(autoload 'prrr-accept-comment "prrr-review" "Accept the agent's proposed comment at point." t)
 (autoload 'prrr-discussion-comment "prrr-review" "Write a Discussion Comment on the pull request." t)
 (autoload 'prrr-toggle-resolved "prrr-review" "Resolve the Thread at point, or unresolve it." t)
 (autoload 'prrr-submit "prrr-transient" "Submit your Pending Review with a Verdict, or discard it." t)

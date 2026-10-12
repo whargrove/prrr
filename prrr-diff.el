@@ -408,7 +408,7 @@ Buffer that child may be a File Comment."
 
 (defconst prrr-diff--review-keys
   '(("c" . prrr-comment) ("C" . prrr-comment-file) ("r" . prrr-reply)
-    ("e" . prrr-edit-comment) ("k" . prrr-delete-comment)
+    ("e" . prrr-edit-comment) ("k" . prrr-delete-comment) ("a" . prrr-accept-comment)
     ("d" . prrr-discussion-comment) ("R" . prrr-toggle-resolved)
     ("s" . prrr-comment-suggest)
     ("S" . prrr-submit) ("O" . prrr-outbox)
@@ -580,14 +580,19 @@ the diff."
   (oref pullreq posts))
 
 (defun prrr-diff--outbox-status (data)
-  "Describe the Outbox of the review DATA for the header, or return nil."
+  "Describe the Outbox of the review DATA for the header, or return nil.
+An agent's proposals (`prrr-state-outbox-held-p') are counted apart:
+they are never sent."
   (let* ((outbox (plist-get data :outbox))
+         (proposed (seq-count #'prrr-state-outbox-held-p outbox))
          (failed (seq-count #'prrr-outbox-last-error outbox))
-         (unsent (- (length outbox) failed)))
+         (unsent (- (length outbox) failed proposed)))
     (when outbox
       (concat "Outbox: "
               (string-join (delq nil (list (and (> unsent 0) (format "%d unsent" unsent))
-                                           (and (> failed 0) (format "%d failed, O to act" failed))))
+                                           (and (> failed 0) (format "%d failed, O to act" failed))
+                                           (and (> proposed 0)
+                                                (format "%d proposed, a to accept" proposed))))
                            ", ")))))
 
 (defun prrr-diff--range-status (view)
@@ -611,8 +616,7 @@ queued Submit, what the last refetch said, and whether the head moved
 away from the one shown (`prrr-state-head-notice')."
   (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
          (submit (plist-get data :submit))
-         (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
-                             (plist-get data :comments))))
+         (pending (seq-count #'prrr-state-comment-pending-p (plist-get data :comments))))
     (string-join
      (delq nil
            (list (prrr-diff--range-status view)

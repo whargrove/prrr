@@ -1351,3 +1351,102 @@ One line rewritten at 12, two lines added after 20, three removed at 30."
     (should-not (prrr-comment-agent-p
                  (car (plist-get (prrr-state-outbox-view (list :threads nil :comments nil) (list row))
                                  :comments))))))
+
+;;;; Proposed comments
+
+(defun prrr-state-test--proposal (id as)
+  "A `proposed' write ID made as the kind AS."
+  (prrr-outbox-create :id id :pr-id "PR_1" :kind 'proposed :attempts 0
+                      :payload (append (list :target (list :me "example-me") :as as
+                                             :comment (concat "local:c" id) :agent t
+                                             :body "Maybe" :commit prrr-test-head)
+                                       (if (eq as 'thread)
+                                           (list :thread (concat "local:t" id)
+                                                 :anchor '(:path "a.el" :line 3 :side right
+                                                           :subject-type line))
+                                         (list :thread-id "T_1")))))
+
+(ert-deftest prrr-state-test-proposed-rows-never-send-nor-block ()
+  "Review Focus 5: a proposal ahead of a PR's other writes does not hold them back."
+  (let* ((target (list :me "example-me"))
+         (proposal (prrr-outbox-create :id "1" :pr-id "PR_1" :kind 'proposed :attempts 0
+                                       :payload (list :target target :as 'thread :thread "local:t"
+                                                      :comment "local:c" :agent t :body "Maybe"
+                                                      :anchor '(:path "a.el" :line 3 :side right :subject-type line)
+                                                      :commit prrr-test-head)))
+         (reply (prrr-outbox-create :id "2" :pr-id "PR_1" :kind 'reply :attempts 0
+                                    :payload (list :target target :comment "local:r"
+                                                   :thread-id "T_1" :body "Yes"))))
+    (should (prrr-state-outbox-held-p proposal))
+    (should (equal "2" (prrr-outbox-id (car (prrr-state-outbox-next (list proposal reply) nil 0.0)))))
+    (should (equal '("PR_1") (prrr-state-outbox-busy-prs (list proposal reply))))
+    (should-not (prrr-state-outbox-next (list proposal) nil 0.0))))
+
+(ert-deftest prrr-state-test-proposed-row-shows-as-proposed-agent-comment ()
+  (let* ((row (prrr-outbox-create :id "1" :pr-id "PR_1" :kind 'proposed :attempts 0
+                                  :payload (list :target (list :me "example-me") :as 'thread
+                                                 :thread "local:t" :comment "local:c" :agent t
+                                                 :body "Maybe"
+                                                 :anchor '(:path "a.el" :line 3 :side right :subject-type line)
+                                                 :commit prrr-test-head)))
+         (view (prrr-state-outbox-view (list :threads nil :comments nil) (list row)))
+         (comment (car (plist-get view :comments))))
+    (should (eq 'proposed (prrr-comment-local-state comment)))
+    (should (eq 'pending (prrr-comment-state comment)))
+    (should (prrr-comment-agent-p comment))
+    (should (equal "local:t" (prrr-thread-thread-id (car (plist-get view :threads)))))))
+
+(ert-deftest prrr-state-test-proposed-reply-shows-in-its-thread ()
+  (let* ((view (prrr-state-outbox-view (list :threads nil :comments nil)
+                                       (list (prrr-state-test--proposal "1" 'reply))))
+         (comment (car (plist-get view :comments))))
+    (should (equal "T_1" (prrr-comment-thread-id comment)))
+    (should (equal "local:c1" (prrr-comment-comment-id comment)))
+    (should (eq 'proposed (prrr-comment-local-state comment)))
+    (should (eq 'pending (prrr-comment-state comment)))
+    (should-not (plist-get view :threads))))
+
+(ert-deftest prrr-state-test-proposed-survives-a-discard-in-view ()
+  "A discard drops the Pending Review, which proposals are not part of."
+  (let ((view (prrr-state-outbox-view
+               (list :threads nil :comments nil)
+               (list (prrr-state-test--proposal "1" 'thread)
+                     (prrr-state-test--write "2" "PR_1" 'discard nil)))))
+    (should (equal '("local:c1") (mapcar #'prrr-comment-comment-id (plist-get view :comments))))
+    (should (equal '("local:t1") (mapcar #'prrr-thread-thread-id (plist-get view :threads))))))
+
+(ert-deftest prrr-state-test-proposed-describe ()
+  (should (equal "proposed comment: Maybe"
+                 (prrr-state-outbox-describe (prrr-state-test--proposal "1" 'thread)))))
+
+(ert-deftest prrr-state-test-proposed-reply-depends-on-its-thread ()
+  "Dropping a queued Thread takes the proposed replies to it along."
+  (let ((reply (prrr-state-test--proposal "2" 'reply)))
+    (setf (prrr-outbox-payload reply) (plist-put (prrr-outbox-payload reply) :thread-id "local:t1"))
+    (should (equal (list reply)
+                   (prrr-state-outbox-dependents (list (prrr-state-test--proposal "1" 'thread) reply)
+                                                 '("local:t1"))))))
+
+(ert-deftest prrr-state-test-proposal-is-not-in-the-pending-review ()
+  (let ((view (prrr-state-outbox-view (list :threads nil :comments nil)
+                                      (list (prrr-state-test--proposal "1" 'thread)))))
+    (should-not (seq-filter #'prrr-state-comment-pending-p (plist-get view :comments))))
+  (should (prrr-state-comment-pending-p
+           (prrr-comment-create :comment-id "C" :state 'pending :local-state 'unsent)))
+  (should-not (prrr-state-comment-pending-p
+               (prrr-comment-create :comment-id "C" :state 'submitted :local-state 'sent))))
+
+(ert-deftest prrr-state-test-proposal-accepted ()
+  "Accepting keeps the proposal's id and local ids, so what needs them still finds them."
+  (let* ((proposal (prrr-state-test--proposal "1" 'thread))
+         (accepted (prrr-state-outbox-accepted proposal "Surely")))
+    (should (eq 'thread (prrr-outbox-kind accepted)))
+    (should (equal "1" (prrr-outbox-id accepted)))
+    (should (equal "Surely" (plist-get (prrr-outbox-payload accepted) :body)))
+    (should (plist-get (prrr-outbox-payload accepted) :agent))
+    (should-not (plist-member (prrr-outbox-payload accepted) :as))
+    (should (equal (prrr-state-outbox-created-ids proposal)
+                   (prrr-state-outbox-created-ids accepted)))
+    ;; The proposal itself is unchanged.
+    (should (eq 'proposed (prrr-outbox-kind proposal)))
+    (should (equal "Maybe" (plist-get (prrr-outbox-payload proposal) :body)))))

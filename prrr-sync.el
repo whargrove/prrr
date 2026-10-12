@@ -464,12 +464,14 @@ restart without forge's objects."
   (concat prrr-state-local-prefix (prrr-sync--new-id)))
 
 (defun prrr-sync--outbox-payload (kind payload target)
-  "Return PAYLOAD of a write KIND completed with TARGET and its local ids."
-  (append (list :target target)
-          (and (memq kind '(thread publish)) (list :thread (prrr-sync--local-id)))
-          (and (memq kind '(thread publish reply publish-reply discussion))
-               (list :comment (prrr-sync--local-id)))
-          payload))
+  "Return PAYLOAD of a write KIND completed with TARGET and its local ids.
+A proposal gets the local ids of the kind it would become, its :as."
+  (let ((kind (if (eq kind 'proposed) (plist-get payload :as) kind)))
+    (append (list :target target)
+            (and (memq kind '(thread publish)) (list :thread (prrr-sync--local-id)))
+            (and (memq kind '(thread publish reply publish-reply discussion))
+                 (list :comment (prrr-sync--local-id)))
+            payload)))
 
 (defun prrr-sync--outbox-add (pr-id kind payload)
   "Queue the write KIND with PAYLOAD for PR-ID and return its row."
@@ -531,7 +533,8 @@ unconfirmed too (`prrr-state-outbox-unconfirmed-p')."
   "Drop PR-ID's queued writes that a discard of its Pending Review makes moot.
 Those are new Threads and replies of the Pending Review, and every
 queued write that needs one of them or a stored pending comment,
-unless it is being sent."
+unless it is being sent.  An agent's proposals are not part of the
+Pending Review and stay, unless they need what is dropped."
   (let* ((rows (prrr-db-outbox-rows pr-id))
          (pending (seq-filter (lambda (row) (memq (prrr-outbox-kind row) '(thread reply)))
                               rows))
@@ -622,6 +625,18 @@ GitHub all the same, so its PR is refetched to show what GitHub has."
           (prrr-sync--outbox-pump)
           (length drop)))
     0))
+
+(defun prrr-sync-accept (id body &optional buffer)
+  "Accept the queued proposal ID with BODY as its text.
+It becomes the Thread or reply it proposed, in its place in the
+Outbox, and goes out like any write (`prrr-state-outbox-accepted').
+BUFFER, when live, refreshes whenever the PR's writes change.  Signal
+a `user-error' when ID is no longer a queued proposal."
+  (let ((row (prrr-db-get 'outbox id)))
+    (unless (and row (prrr-state-outbox-held-p row))
+      (user-error "That proposal is no longer queued"))
+    (prrr-db-insert (prrr-state-outbox-accepted row body))
+    (prrr-sync-retry (prrr-outbox-pr-id row) buffer)))
 
 (defun prrr-sync-review-data (pr-id)
   "Return the review data of PR-ID as the user should see it.

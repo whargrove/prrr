@@ -83,8 +83,8 @@ it when it is resolved."
 STATE is `pending' or `submitted' (GitHub's).  LOCAL-STATE is `sent' for
 a row GitHub sent or accepted, `unsent' for one the Outbox has not sent
 yet (only in `prrr-state-outbox-view', never stored) and `proposed' for
-an agent's proposal (milestone 7).  AGENT-P marks comments added through
-the API.  DATABASE-ID is GitHub's numeric id as a string, which its
+an agent's proposal, likewise (`prrr-state-outbox-held-p').  AGENT-P
+marks comments added through the API.  DATABASE-ID is GitHub's numeric id as a string, which its
 REST endpoints take."
   comment-id thread-id pr-id author body created-at updated-at reply-to
   review-id state local-state agent-p database-id)

@@ -1756,6 +1756,49 @@ the comment records it once."
       (should (prrr-db-get 'thread "T2"))
       (should (prrr-db-get 'review-comment "C2")))))
 
+(ert-deftest prrr-sync-test-outbox-discard-keeps-proposals ()
+  "A discard drops the Pending Review's writes; proposals are not part of it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch
+          '((addPullRequestReviewThread . (:error (error http 502)))
+            (deletePullRequestReview . ((data (deletePullRequestReview (clientMutationId))))))
+        (let ((proposal (prrr-sync-test--write
+                         'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                         :body "Maybe." :commit "1111" :agent t))))
+          (should (string-prefix-p "local:" (plist-get (prrr-outbox-payload proposal) :thread)))
+          (should (string-prefix-p "local:" (plist-get (prrr-outbox-payload proposal) :comment)))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit "1111"))
+          (prrr-sync-test--write 'discard nil)
+          (should (equal '(addPullRequestReviewThread deletePullRequestReview) prrr-test-requests))
+          (should (equal (list (prrr-outbox-id proposal))
+                         (mapcar #'prrr-outbox-id (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-accept-keeps-what-needs-the-proposal ()
+  "Accepting a proposed Thread sends it and keeps a proposed reply to it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch '((addPullRequestReviewThread . (:error (error http 502))))
+        (let* ((thread (prrr-sync-test--write
+                        'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                        :body "Maybe." :commit "1111" :agent t)))
+               (reply (prrr-sync-test--write
+                       'proposed (list :as 'reply :body "And this." :agent t :commit "1111"
+                                       :thread-id (plist-get (prrr-outbox-payload thread)
+                                                             :thread)))))
+          (should-not prrr-test-requests)
+          (prrr-sync-accept (prrr-outbox-id thread) "Surely.")
+          (should (equal '(addPullRequestReviewThread) prrr-test-requests))
+          (should (equal (list 'thread 'proposed)
+                         (mapcar #'prrr-outbox-kind (prrr-db-outbox-rows))))
+          (should (equal (prrr-outbox-id reply)
+                         (prrr-outbox-id (cadr (prrr-db-outbox-rows)))))
+          (should-error (prrr-sync-accept (prrr-outbox-id thread) "Again")
+                        :type 'user-error))))))
+
 ;;;; Bookmark and pinned commits
 
 (ert-deftest prrr-sync-test-pin-keeps-a-commit ()

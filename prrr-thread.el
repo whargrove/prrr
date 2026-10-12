@@ -105,13 +105,17 @@ is not part of the diff."
   "Return the note on the queued write ROW.
 \"  failed: \" and the error for a failed write; \"  waiting for
 GitHub's answer\" for an unconfirmed one, which is unsent too
-\(`prrr-state-outbox-unconfirmed-p'); else \"  unsent\"."
-  (if-let* ((error (prrr-outbox-last-error row)))
-      (propertize (concat "  failed: " error) 'font-lock-face 'prrr-failed)
+\(`prrr-state-outbox-unconfirmed-p'); nil for a proposal, which is
+never sent (`prrr-state-outbox-held-p'); else \"  unsent\"."
+  (cond
+   ((prrr-state-outbox-held-p row) nil)
+   ((prrr-outbox-last-error row)
+    (propertize (concat "  failed: " (prrr-outbox-last-error row)) 'font-lock-face 'prrr-failed))
+   (t
     (propertize (if (prrr-state-outbox-unconfirmed-p row)
                     "  waiting for GitHub's answer"
                   "  unsent")
-                'font-lock-face 'prrr-unsent)))
+                'font-lock-face 'prrr-unsent))))
 
 (defun prrr-thread--write-note (id writes)
   "Return the note on the queued write of ID in WRITES, or nil.
@@ -150,8 +154,7 @@ WITH-PATH non-nil puts the file before the location; WRITES is as for
 `prrr-thread--write-note'."
   (let* ((resolved (prrr-thread-resolved-p thread))
          (count (length comments))
-         (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
-                             comments)))
+         (pending (seq-count #'prrr-state-comment-pending-p comments)))
     (concat (propertize
              (concat prrr-thread-indent
                      (if (eq (prrr-thread-subject-type thread) 'file) "File comment" "Thread")
@@ -202,10 +205,12 @@ WRITES is as for `prrr-thread--write-note'; LINES as for
       (propertize (prrr-thread--date (prrr-comment-created-at comment))
                   'font-lock-face 'prrr-comment-date)
       (and (prrr-comment-updated-at comment) "  edited")
-      (and (eq (prrr-comment-state comment) 'pending)
+      (and (prrr-state-comment-pending-p comment)
            (propertize "  pending" 'font-lock-face 'prrr-comment-pending))
       (and (prrr-comment-agent-p comment)
            (propertize "  agent" 'font-lock-face 'prrr-agent))
+      (and (eq (prrr-comment-local-state comment) 'proposed)
+           (propertize "  proposed" 'font-lock-face 'prrr-agent))
       (prrr-thread--write-note (prrr-comment-comment-id comment) writes)
       "\n")
     (prrr-thread--insert-body (prrr-comment-body comment) lines)))

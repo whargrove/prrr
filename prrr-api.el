@@ -266,8 +266,7 @@ unresolved the Threads not resolved."
          (pr-id (prrr-api--pr-id context))
          (meta (prrr-db-get 'pullreq-meta pr-id))
          (data (prrr-api--review-data context))
-         (pending (seq-filter (lambda (c) (eq (prrr-comment-state c) 'pending))
-                              (plist-get data :comments)))
+         (pending (seq-filter #'prrr-state-comment-pending-p (plist-get data :comments)))
          (me (prrr-api--in context (prrr-github-viewer)))
          (state (and me (prrr-state-review-state
                          (prrr-queue-pr pullreq meta) meta me
@@ -457,7 +456,7 @@ when the user declined."
   (let* ((context (prrr-api--context pr))
          (verdict (prrr-api--verdict verdict))
          (body (or body ""))
-         (pending (seq-filter (lambda (c) (eq (prrr-comment-state c) 'pending))
+         (pending (seq-filter #'prrr-state-comment-pending-p
                               (plist-get (prrr-api--review-data context) :comments)))
          (agents (seq-count #'prrr-comment-agent-p pending)))
     (when-let* ((problem (prrr-state-submit-problem verdict body (length pending))))

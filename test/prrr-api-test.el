@@ -203,5 +203,26 @@ each stays queued for BODY to inspect and none reaches the network."
                       (prrr-db-outbox-rows (oref pullreq their-id))))
     (should-error (prrr-api-submit pullreq 'shrug) :type 'user-error)))
 
+(ert-deftest prrr-api-test-proposed-mode-queues-a-proposal ()
+  "SPEC section 10: in `proposed' mode the agent's comment waits for the user."
+  (prrr-api-test--with-pr
+    (let* ((prrr-agent-comment-mode 'proposed)
+           (id (prrr-api-add-comment pullreq "src/example.el" 12 "Consider a guard."))
+           (row (car (last (prrr-db-outbox-rows (oref pullreq their-id)))))
+           (listed (seq-find (lambda (comment) (equal id (alist-get 'comment_id comment)))
+                             (alist-get 'comments (prrr-api-pending pullreq)))))
+      (should (prrr-state-local-id-p id))
+      (should (eq 'proposed (prrr-outbox-kind row)))
+      (should (eq 'thread (plist-get (prrr-outbox-payload row) :as)))
+      (should (plist-get (prrr-outbox-payload row) :agent))
+      (should (equal "proposed" (alist-get 'local_state listed)))
+      (should (alist-get 'agent listed))
+      ;; Nothing is sent, and the summary does not count it as pending.
+      (should-not prrr-test-requests)
+      (should (equal (length (seq-filter #'prrr-state-comment-pending-p
+                                         (prrr-db-select 'review-comment
+                                                         :pr-id (oref pullreq their-id))))
+                     (alist-get 'pending (prrr-api-pullreq pullreq)))))))
+
 (provide 'prrr-api-test)
 ;;; prrr-api-test.el ends here
