@@ -68,6 +68,27 @@
            (buffer-string))))
     (should (equal "nil" (string-trim output)))))
 
+(ert-deftest prrr-test-require-prrr-autoloads-every-api-function ()
+  "`(require \\='prrr)' alone makes the Agent API callable (Review Focus 2).
+An agent's `emacsclient -e' may be the first thing to call it."
+  (let ((output
+         (with-temp-buffer
+           (call-process (expand-file-name invocation-name invocation-directory)
+                         nil '(t nil) nil
+                         "-Q" "--batch"
+                         "--eval" (format "(progn (setq package-user-dir %S) (package-initialize))"
+                                          package-user-dir)
+                         "-L" prrr-test-root
+                         "--eval" (concat "(progn (require 'prrr) (let (missing)"
+                                         " (dolist (function '(prrr-api-pullreq prrr-api-threads"
+                                         " prrr-api-diff prrr-api-pending))"
+                                         " (unless (and (fboundp function)"
+                                         " (autoloadp (symbol-function function)))"
+                                         " (push function missing)))"
+                                         " (prin1 missing)))"))
+           (buffer-string))))
+    (should (equal "nil" (string-trim output)))))
+
 (ert-deftest prrr-test-current-pullreq-signals-without-one ()
   (cl-letf (((symbol-function 'forge-current-pullreq) #'ignore))
     (should-error (prrr-current-pullreq) :type 'user-error)))

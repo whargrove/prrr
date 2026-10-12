@@ -75,6 +75,11 @@
 (autoload 'prrr-show-since-opened "prrr-range" "Show what changed since you last saw this pull request." t)
 (autoload 'prrr-show-commit "prrr-range" "Show one commit of the pull request." t)
 (autoload 'prrr-show-between "prrr-range" "Show the diff between two commits of the pull request." t)
+;; The Agent API (SPEC section 10): functions, not commands.
+(autoload 'prrr-api-pullreq "prrr-api" "Return a summary of a pull request as an alist.")
+(autoload 'prrr-api-threads "prrr-api" "Return the Threads of a pull request as alists.")
+(autoload 'prrr-api-diff "prrr-api" "Return the unified diff of a pull request as a string.")
+(autoload 'prrr-api-pending "prrr-api" "Return the Pending Review of a pull request as an alist.")
 
 (declare-function forge-current-pullreq "forge-pullreq" (&optional demand))
 (declare-function forge-visit-topic "forge-commands" (topic))
