@@ -230,8 +230,9 @@ first, within a rank, so the PRs needing the author's own action come first.
 
 **Stacks.** Rule: same repository, both open, A's `base-ref` equals B's
 `head-ref`, B not `cross-repo-p`; the bottom PR's base is the default branch.
-A Stack renders bottom-up as an indented chain under its bottom PR with a
-`⟰ k/n` marker. A Stack is listed if any member qualifies; non-qualifying
+A Stack renders bottom-up: its first visible row, with its other visible
+members one level under it as child sections (`TAB` folds them; magit
+remembers the fold), each with a `⟰ k/n` marker giving its true place. A Stack is listed if any member qualifies; non-qualifying
 members are dimmed. A Stack sorts by its highest-ranked member and stays
 together.
 

@@ -76,7 +76,8 @@ has two groups:
 
 Each row reads `#number  state  title  author  ⟰ k/n  N unresolved  age`.
 A Stack (each PR based on the branch of the one below) stays together,
-bottom first, with `⟰ k/n` marking each PR's place in it.
+bottom first, with `⟰ k/n` marking each PR's place in it. Its other PRs
+sit one level under its first row; `TAB` on that row folds them away.
 
 The queue renders from a local database. It pulls in the background when
 its data is older than `prrr-queue-stale-after` seconds (default 300). The

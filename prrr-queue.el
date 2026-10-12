@@ -195,26 +195,39 @@ row's true position, which may skip hidden rows (prrr-knu.5)."
   "Return how many ENTRIES qualify (have a state)."
   (seq-count #'prrr-queue-entry-state entries))
 
+(defun prrr-queue--stack-runs (entries)
+  "Split ENTRIES into runs of consecutive entries of the same Stack."
+  (let ((runs nil))
+    (dolist (entry entries)
+      (if (and runs (equal (prrr-queue-entry-stack-id entry)
+                           (prrr-queue-entry-stack-id (caar runs))))
+          (push entry (car runs))
+        (push (list entry) runs)))
+    (nreverse (mapcar #'reverse runs))))
+
 (defun prrr-queue--insert-rows (entries pullreqs inputs number-width)
   "Insert one row section per entry of ENTRIES.
+The visible rows of a Stack after its first are child sections of the
+first, one level in, so TAB on the first row folds them away.
 PULLREQS maps PR ids to forge objects; INPUTS and NUMBER-WIDTH are as
 in `prrr-queue-insert'."
-  (let ((stack-id nil) (depth 0)
-        (unresolved (plist-get inputs :unresolved)))
-    (dolist (entry entries)
-      (if (equal (prrr-queue-entry-stack-id entry) stack-id)
-          (cl-incf depth)
-        (setq stack-id (prrr-queue-entry-stack-id entry)
-              depth 0))
-      (let* ((id (prrr-pr-id (prrr-queue-entry-pr entry)))
-             (pullreq (gethash id pullreqs)))
-        (magit-insert-section row (pullreq pullreq)
-          (oset row keymap 'prrr-queue-row-map)
-          (insert (prrr-queue--line entry number-width depth
-                                    (or (and unresolved (gethash id unresolved)) 0)
-                                    (plist-get inputs :now) (plist-get inputs :width))
-                  "\n")
-          (push (cons row entry) prrr-queue--rows))))))
+  (let ((unresolved (plist-get inputs :unresolved)))
+    (cl-labels ((insert-row (entry depth members)
+                  (let* ((id (prrr-pr-id (prrr-queue-entry-pr entry)))
+                         (line (prrr-queue--line entry number-width depth
+                                                 (or (and unresolved (gethash id unresolved)) 0)
+                                                 (plist-get inputs :now)
+                                                 (plist-get inputs :width))))
+                    (magit-insert-section row (pullreq (gethash id pullreqs))
+                      (oset row keymap 'prrr-queue-row-map)
+                      (push (cons row entry) prrr-queue--rows)
+                      (if (null members)
+                          (insert line "\n")
+                        (magit-insert-heading line)
+                        (dolist (member members)
+                          (insert-row member 1 nil)))))))
+      (dolist (run (prrr-queue--stack-runs entries))
+        (insert-row (car run) 0 (cdr run))))))
 
 (defun prrr-queue-insert (inputs)
   "Insert the Review Queue section described by INPUTS at point.

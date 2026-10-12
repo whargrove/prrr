@@ -127,16 +127,49 @@ Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
       (should (string-prefix-p "#2  requested" line))
       (should (string-match-p "⟰ 2/2" line)))))
 
-(ert-deftest prrr-queue-test-stack-members-indent-by-visible-depth ()
-  (prrr-queue-test--with-render
-      (prrr-queue-test--inputs
-       (list (prrr-queue-test--pair :id "BOTTOM" :number 1 :head-ref "step-1")
-             (prrr-queue-test--pair :id "TOP" :number 2 :base-ref "step-1" :head-ref "step-2"))
-       (list (prrr-test-meta :pr-id "BOTTOM" :review-requests '((user "example-me")))
-             (prrr-test-meta :pr-id "TOP" :review-requests '((user "example-me")))))
+(defun prrr-queue-test--three-stack ()
+  "Inputs of a three-PR Stack, every member requested from me."
+  (prrr-queue-test--inputs
+   (list (prrr-queue-test--pair :id "BOTTOM" :number 1 :head-ref "step-1")
+         (prrr-queue-test--pair :id "MIDDLE" :number 2 :base-ref "step-1" :head-ref "step-2")
+         (prrr-queue-test--pair :id "TOP" :number 3 :base-ref "step-2" :head-ref "step-3"))
+   (list (prrr-test-meta :pr-id "BOTTOM" :review-requests '((user "example-me")))
+         (prrr-test-meta :pr-id "MIDDLE" :review-requests '((user "example-me")))
+         (prrr-test-meta :pr-id "TOP" :review-requests '((user "example-me"))))))
+
+(ert-deftest prrr-queue-test-stack-members-indent-one-level ()
+  "Every member above a Stack's first row sits one level under it, however high."
+  (prrr-queue-test--with-render (prrr-queue-test--three-stack)
     (should (string-prefix-p "#1  requested" (prrr-queue-test--line-of 1)))
     (should (string-prefix-p "#2    requested" (prrr-queue-test--line-of 2)))
-    (should (string-match-p "⟰ 1/2" (prrr-queue-test--line-of 1)))))
+    (should (string-prefix-p "#3    requested" (prrr-queue-test--line-of 3)))
+    (should (string-match-p "⟰ 1/3" (prrr-queue-test--line-of 1)))
+    (should (string-match-p "⟰ 3/3" (prrr-queue-test--line-of 3)))))
+
+(defun prrr-queue-test--row-section (number)
+  "Return the row section of PR NUMBER in the current buffer."
+  (car (seq-find (lambda (row) (= number (prrr-pr-number (prrr-queue-entry-pr (cdr row)))))
+                 prrr-queue--rows)))
+
+(ert-deftest prrr-queue-test-stack-folds-under-its-first-row ()
+  "TAB on a Stack's first row folds its other members away."
+  (prrr-queue-test--with-render (prrr-queue-test--three-stack)
+    (let ((first (prrr-queue-test--row-section 1)))
+      (should (equal (list (prrr-queue-test--row-section 2) (prrr-queue-test--row-section 3))
+                     (oref first children)))
+      (should-not (oref first hidden))
+      (magit-section-hide first)
+      (should (invisible-p (oref (prrr-queue-test--row-section 3) start)))
+      (should-not (invisible-p (oref first start)))
+      ;; Every row is still in display order, for n, p, > and <.
+      (should (equal '(1 2 3) (mapcar (lambda (row) (prrr-pr-number (prrr-queue-entry-pr (cdr row))))
+                                      prrr-queue--rows))))))
+
+(ert-deftest prrr-queue-test-lone-row-has-no-children ()
+  (prrr-queue-test--with-render
+      (prrr-queue-test--inputs (list (prrr-queue-test--pair :id "A" :number 1))
+                               (list (prrr-test-meta :pr-id "A" :review-requests '((user "example-me")))))
+    (should-not (oref (prrr-queue-test--row-section 1) children))))
 
 (ert-deftest prrr-queue-test-lone-pr-has-no-stack-marker ()
   (prrr-queue-test--with-render
