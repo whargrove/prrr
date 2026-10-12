@@ -275,11 +275,26 @@ Highlighting is on, with C rules from `c-ts-mode'."
                         messages)))))
 
 (ert-deftest prrr-treesit-test-hunk-inside-comment ()
-  "A hunk starting inside a block comment highlights without error."
+  "A hunk starting inside a block comment highlights without error, in its file only."
   (skip-unless (treesit-language-available-p 'c))
   (prrr-treesit-test--with-buffer
-    (magit-section-show (prrr-diff-test--file-section "src/comment.c"))
-    (should (text-property-not-all (point-min) (point-max) 'prrr-treesit-face nil))))
+    (let ((file (prrr-diff-test--file-section "src/comment.c")))
+      (magit-section-show file)
+      ;; The fragment starts inside the comment, so the grammar sees code, not
+      ;; a comment: the changed line gets no comment face (a known limit).
+      (should (text-property-not-all (oref file start) (oref file end) 'prrr-treesit-face nil))
+      (should-not (memq 'font-lock-comment-face
+                        (prrr-treesit-test--faces (prrr-treesit-test--find "comment line twelve")))))))
+
+(ert-deftest prrr-treesit-test-function-capture-and-no-face ()
+  "A capture that is a function colors too; the `face' property is never written."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (let ((file (prrr-diff-test--file-section "src/sample.c")))
+      (magit-section-show file)
+      (should (memq 'font-lock-function-name-face
+                    (prrr-treesit-test--faces (prrr-treesit-test--find "main"))))
+      (should-not (text-property-not-all (oref file start) (oref file end) 'face nil)))))
 
 (ert-deftest prrr-treesit-test-file-without-hunks ()
   "A renamed file with no hunks shows its note and gets no faces."

@@ -185,8 +185,9 @@ head and `prrr-test-repo-base' main's tip.  The copy is deleted afterwards."
        (unwind-protect
            (progn
              (unless (zerop (call-process "sh" nil nil nil
-                                          (expand-file-name (concat "test/fixtures/" prrr-test-repo-script)
-                                                            prrr-test-root)
+                                          (expand-file-name
+                                           (concat "test/fixtures/" prrr-test-repo-script)
+                                           prrr-test-root)
                                           ,dir))
                (error "Building the fixture repository failed"))
              (let* ((default-directory (file-name-as-directory ,dir))

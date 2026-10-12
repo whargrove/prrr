@@ -159,7 +159,9 @@ other side's lines and the Threads between them."
             ('t (put-text-property beg stop 'prrr-treesit-face face))
             ('append (font-lock-append-text-property beg stop 'prrr-treesit-face face))
             ('prepend (font-lock-prepend-text-property beg stop 'prrr-treesit-face face))
-            ('keep (font-lock-fillin-text-property beg stop 'prrr-treesit-face face)))))
+            ('keep (font-lock-fillin-text-property beg stop 'prrr-treesit-face face))
+            (_ (signal 'treesit-font-lock-error
+                       (list "Unrecognized value of :override option" override))))))
       (cl-incf index))))
 
 (defun prrr-treesit--fontify-side (rules parse paint)
