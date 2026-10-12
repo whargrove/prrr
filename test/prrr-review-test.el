@@ -505,5 +505,40 @@ PROMPTS is bound to the prompts asked, REQUESTS to the last REST request."
     (should-not prompts)
     (should-not last)))
 
+;;;; Refresh keeps point
+
+(defun prrr-review-test--queue-thread-on (text)
+  "Queue a new Thread on the diff line TEXT of src/example.el; keep point."
+  (save-excursion
+    (prrr-diff-test--goto-line "src/example.el" text)
+    (prrr-review--write (prrr-diff-pullreq) 'thread
+                        (list :anchor (prrr-diff-anchor) :body "Nit." :commit (prrr-diff-head)))))
+
+(defun prrr-review-test--line ()
+  "Return the text of the line at point."
+  (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+
+(ert-deftest prrr-review-test-refresh-keeps-diff-line-below-new-thread ()
+  "A Thread added above point in its hunk does not move point off its diff line."
+  (prrr-review-test--with-buffer nil
+    (prrr-diff-test--goto-line "src/example.el" " line 14")
+    (forward-char 3)
+    (prrr-review-test--queue-thread-on "+line twelve")
+    (magit-refresh-buffer)
+    (should (equal " line 14" (prrr-review-test--line)))
+    (should (= 3 (current-column)))))
+
+(ert-deftest prrr-review-test-refresh-keeps-point-row ()
+  "Text added above point leaves point on the same row of its window."
+  (prrr-review-test--with-buffer nil
+    (switch-to-buffer (current-buffer))
+    (delete-other-windows)
+    (prrr-diff-test--goto-line "src/example.el" " line 14")
+    (set-window-start nil (save-excursion (vertical-motion -2) (point)))
+    (prrr-review-test--queue-thread-on "+line twelve")
+    (magit-refresh-buffer)
+    (should (equal " line 14" (prrr-review-test--line)))
+    (should (= 2 (count-screen-lines (window-start) (point))))))
+
 (provide 'prrr-review-test)
 ;;; prrr-review-test.el ends here

@@ -360,6 +360,44 @@ child, starting on the line before the run.  HIGHLIGHT is passed on."
                                            (point)))))
           (oset section end end))))))
 
+(cl-defmethod magit-section-get-relative-position ((section magit-hunk-section)
+                                                   &context (major-mode prrr-diff-mode))
+  "Return where point is in SECTION in MAJOR-MODE `prrr-diff-mode'.
+As magit's method, but the line counts only SECTION's own lines, not
+those of its Threads: a refresh that adds or grows a Thread above
+point then leaves point on the same diff line."
+  (let* ((target (line-beginning-position))
+         (position (cl-call-next-method))
+         (line 0))
+    (save-excursion
+      (goto-char (oref section start))
+      (while (< (point) target)
+        (when (eq (magit-section-at) section)
+          (cl-incf line))
+        (forward-line)))
+    (cons line (cdr position))))
+
+(cl-defmethod magit-section-goto-successor ((section magit-hunk-section) line char
+                                            &context (major-mode prrr-diff-mode)
+                                            &optional arg)
+  "Go to LINE and CHAR of SECTION's successor in MAJOR-MODE `prrr-diff-mode'.
+LINE counts the hunk's own lines, as the `magit-section-get-relative-position'
+method of `prrr-diff-mode' returns it.  ARG is passed on when the hunk
+is gone."
+  (if-let* ((found (magit-get-section (magit-section-ident section))))
+      (progn
+        (goto-char (oref found start))
+        (let ((end (oref found end)))
+          (while (and (> line 0) (< (point) end))
+            (forward-line)
+            (when (eq (magit-section-at) found)
+              (cl-decf line))))
+        (if (eq (magit-section-at) found)
+            (ignore-errors (forward-char char))
+          (goto-char (oref found start)))
+        t)
+    (cl-call-next-method section line char arg)))
+
 (defun prrr-diff--hunk-line (orig section goto-from)
   "Call ORIG, `magit-diff-hunk-line', counting only SECTION's diff lines.
 In a Review Buffer a hunk's Thread children are not diff lines, and a
@@ -409,7 +447,30 @@ Buffer that child may be a File Comment."
                   (oref (oref section parent) children))
       section)))
 
+(defun prrr-diff--keep-window-rows (orig &optional created &rest args)
+  "Call ORIG, `magit-refresh-buffer', keeping point's row in each window.
+CREATED and ARGS are passed on.  magit keeps point on its line but
+restores a window's start by its old position, which text added or
+removed above it shifts; in a Review Buffer a refresh then leaves
+point on the same screen row of every window that shows it."
+  (if (or created (not (derived-mode-p 'prrr-diff-mode)))
+      (apply orig created args)
+    (let ((rows (mapcan (lambda (window)
+                          (with-selected-window window
+                            (let ((line (save-excursion (vertical-motion 0) (point))))
+                              (and (<= (window-start) line)
+                                   (list (cons window (count-screen-lines
+                                                       (window-start) line)))))))
+                        (get-buffer-window-list nil nil t))))
+      (prog1 (apply orig created args)
+        (pcase-dolist (`(,window . ,row) rows)
+          (when (and (window-live-p window) (eq (window-buffer window) (current-buffer)))
+            (with-selected-window window
+              (set-window-start window (save-excursion (vertical-motion (- row)) (point))
+                                t))))))))
+
 (advice-add 'magit-diff-hunk-line :around #'prrr-diff--hunk-line)
+(advice-add 'magit-refresh-buffer :around #'prrr-diff--keep-window-rows)
 (advice-add 'magit-diff--hunk-section :around #'prrr-diff--hunk-section)
 
 ;;;; Mode and refresh
