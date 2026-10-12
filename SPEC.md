@@ -125,11 +125,13 @@ headRefOid createdAt isDraft author { login } reviewRequests(first: 50) {
 requestedReviewer { ... on User { login } ... on Team { combinedSlug } } }
 latestReviews(first: 50) { author { login } state submittedAt commit { oid }
 onBehalfOf(first: 10) { nodes { combinedSlug } } } viewerLatestReview { state
-submittedAt commit { oid } } viewerLatestReviewRequest { login }`. Stored in
-`pullreq-meta`. Draft, author, assignees, base-ref, head-ref, head-rev, and
-cross-repo-p come from forge's `forge-pullreq` object (research 04, section
-1); forge drops Team requests and forgets satisfied ones, which is why
-prrr fetches requests itself.
+submittedAt commit { oid } } viewerLatestReviewRequest { login }
+assignees(first: 100) { login }`. Stored in `pullreq-meta`. Draft, author,
+base-ref, head-ref, head-rev, and cross-repo-p come from forge's
+`forge-pullreq` object (research 04, section 1); forge drops Team requests
+and forgets satisfied ones, which is why prrr fetches requests itself.
+Assignees come from prrr's query because reading them from forge costs a
+database join per PR, a quarter of the queue's section 12 budget.
 
 **Teams.** `viewer { organizations(first: 100) { nodes { login
 teams(first: 100, userLogins: [$me]) { nodes { slug combinedSlug } } } } }`

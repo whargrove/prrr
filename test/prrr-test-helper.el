@@ -114,16 +114,17 @@ CREATED-AT, UPDATED-AT, HEAD-OID, BASE-REF, HEAD-REF and CROSS-REPO-P."
 (cl-defun prrr-test-meta (&key (pr-id "PR_1") (number 1) (head-oid prrr-test-head)
                                       review-requests latest-reviews
                                       viewer-latest-review viewer-latest-review-request
-                                      (created-at "2026-09-01T00:00:00Z"))
+                                      assignees (created-at "2026-09-01T00:00:00Z"))
   "Build a `prrr-pr-meta' with sensible defaults.
 Keyword arguments: PR-ID, NUMBER, HEAD-OID, REVIEW-REQUESTS, LATEST-REVIEWS,
-VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST and CREATED-AT."
+VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST, ASSIGNEES and
+CREATED-AT."
   (prrr-pr-meta-create :pr-id pr-id :forge-repo-id "example-repo-id" :number number
                        :head-oid head-oid :review-requests review-requests
                        :latest-reviews latest-reviews
                        :viewer-latest-review viewer-latest-review
                        :viewer-latest-review-request viewer-latest-review-request
-                       :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
+                       :assignees assignees :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
 
 (cl-defun prrr-test-thread (&key (id "T_1") (path "src/example.el") (line 12) start-line
                                  (side 'right) (subject-type 'line) outdated-p resolved-p)

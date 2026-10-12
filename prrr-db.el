@@ -50,7 +50,7 @@ One database serves every repository.  Created on first use."
   :type 'file
   :group 'prrr)
 
-(defconst prrr-db-schema-version 2
+(defconst prrr-db-schema-version 3
   "Version of the table layout in `prrr-db--tables'.
 Bump it whenever a table changes.  A stored version that differs makes
 `prrr-db--init' call `prrr-db-reset'.")
@@ -64,9 +64,10 @@ LATEST-REVIEWS is a list of (LOGIN STATE SUBMITTED-AT COMMIT-OID
 ON-BEHALF-OF-SLUGS), one per reviewer, pending reviews excluded.
 VIEWER-LATEST-REVIEW is (STATE SUBMITTED-AT COMMIT-OID) or nil.
 VIEWER-LATEST-REVIEW-REQUEST is the login of whoever requested the
-viewer's review, or nil.  STATE values are GitHub's strings."
+viewer's review, or nil.  ASSIGNEES is a list of the assigned logins.
+STATE values are GitHub's strings."
   pr-id forge-repo-id number head-oid review-requests latest-reviews
-  viewer-latest-review viewer-latest-review-request created-at fetched-at)
+  viewer-latest-review viewer-latest-review-request assignees created-at fetched-at)
 
 (cl-defstruct (prrr-thread (:constructor prrr-thread-create) (:copier nil))
   "A Thread (table `thread').
@@ -119,7 +120,7 @@ when the write is waiting to be sent."
 (defconst prrr-db--tables
   '((pullreq-meta prrr-pr-meta
      ([(pr-id :primary-key) forge-repo-id number head-oid review-requests
-       latest-reviews viewer-latest-review viewer-latest-review-request
+       latest-reviews viewer-latest-review viewer-latest-review-request assignees
        created-at fetched-at]))
     (thread prrr-thread
      ([(thread-id :primary-key) pr-id path line start-line side start-side

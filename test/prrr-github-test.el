@@ -77,6 +77,11 @@
                    (prrr-pr-meta-viewer-latest-review (nth 1 metas))))
     (should (null (prrr-pr-meta-viewer-latest-review-request (nth 1 metas))))))
 
+(ert-deftest prrr-github-test-decode-queue-assignees ()
+  (let ((metas (prrr-github-decode-queue (prrr-test-fixture "queue") nil)))
+    (should (equal '("example-me" "example-bob") (prrr-pr-meta-assignees (nth 0 metas))))
+    (should (null (prrr-pr-meta-assignees (nth 1 metas))))))
+
 (ert-deftest prrr-github-test-decode-queue-empty-repository ()
   (should (null (prrr-github-decode-queue '(data (repository (pullRequests))) nil))))
 
