@@ -489,7 +489,11 @@ here and in the section keymaps.")
   ;; Leaving the buffer, by killing it or quitting its window, ends a
   ;; visit: since-opened starts from what the visit showed.
   (add-hook 'kill-buffer-hook #'prrr-diff-record-bookmark nil t)
-  (add-hook 'quit-window-hook #'prrr-diff-record-bookmark nil t))
+  (add-hook 'quit-window-hook #'prrr-diff-record-bookmark nil t)
+  ;; Syntax highlighting hooks into hunk painting.  Every way into a
+  ;; Review Buffer runs this body, and prrr-treesit requires this file,
+  ;; so it is loaded here rather than at the top.
+  (require 'prrr-treesit))
 
 (defun prrr-diff-record-bookmark ()
   "Record the head this Review Buffer shows as its pull request's Bookmark.
@@ -853,7 +857,7 @@ Comments are made on that head; the Range may end elsewhere."
     (setq section (oref section parent)))
   section)
 
-(defun prrr-diff--walk-hunk (hunk function)
+(defun prrr-diff-walk-hunk (hunk function)
   "Call FUNCTION at the start of each diff line of HUNK, in order.
 FUNCTION receives the line's KIND, OLD and NEW, as `prrr-diff--line-at'
 describes them, with point at the line's start.  The lines of the
@@ -895,7 +899,7 @@ line the Thread follows.  nil off a hunk and on a hunk's heading."
         (when (>= (point) (oref hunk content))
           (let ((target (point)))
             (catch 'found
-              (prrr-diff--walk-hunk
+              (prrr-diff-walk-hunk
                hunk (lambda (kind old new)
                       (when (= (point) target)
                         (throw 'found
@@ -1032,7 +1036,7 @@ diff or LINE is not in its hunks."
       (when-let* ((pos (catch 'found
                          (dolist (hunk (oref file children))
                            (when (eq (oref hunk type) 'hunk)
-                             (prrr-diff--walk-hunk
+                             (prrr-diff-walk-hunk
                               hunk (lambda (_kind old new)
                                      (when (eql line (if (eq side 'left) old new))
                                        (throw 'found (point)))))))

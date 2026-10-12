@@ -120,5 +120,166 @@ and cached as offering none."
         (puthash mode rules prrr-treesit--languages))
       (unless (eq rules 'none) rules))))
 
+
+;;;; Highlighting a file section
+
+(defvar prrr-treesit--paint nil
+  "While one side of a file is colored: a vector of the (BEG . END) it may color.
+In order and not overlapping.")
+
+(defun prrr-treesit--first-range (pos)
+  "Return the index of the first range of `prrr-treesit--paint' ending after POS."
+  (let ((low 0)
+        (high (length prrr-treesit--paint)))
+    (while (< low high)
+      (let ((middle (/ (+ low high) 2)))
+        (if (<= (cdr (aref prrr-treesit--paint middle)) pos)
+            (setq low (1+ middle))
+          (setq high middle))))
+    low))
+
+(defun prrr-treesit--fontify (start end face override &optional bound-start bound-end)
+  "Apply FACE from START to END as `treesit-fontify-with-override' does.
+OVERRIDE, BOUND-START and BOUND-END are as for that function.  The face
+goes on `prrr-treesit-face', not `face', and only within the ranges of
+`prrr-treesit--paint': a node spanning several lines also spans the
+other side's lines and the Threads between them."
+  (when (and bound-start bound-end)
+    (setq start (max start bound-start)
+          end (min end bound-end)))
+  (let ((index (prrr-treesit--first-range start)))
+    (while (and (< index (length prrr-treesit--paint))
+                (< (car (aref prrr-treesit--paint index)) end))
+      (let ((beg (max start (car (aref prrr-treesit--paint index))))
+            (stop (min end (cdr (aref prrr-treesit--paint index)))))
+        (when (< beg stop)
+          (pcase override
+            ('nil (unless (text-property-not-all beg stop 'prrr-treesit-face nil)
+                    (put-text-property beg stop 'prrr-treesit-face face)))
+            ('t (put-text-property beg stop 'prrr-treesit-face face))
+            ('append (font-lock-append-text-property beg stop 'prrr-treesit-face face))
+            ('prepend (font-lock-prepend-text-property beg stop 'prrr-treesit-face face))
+            ('keep (font-lock-fillin-text-property beg stop 'prrr-treesit-face face)))))
+      (cl-incf index))))
+
+(defun prrr-treesit--fontify-side (rules parse paint)
+  "Parse the ranges PARSE with RULES' language and color those of PAINT.
+RULES is (LANGUAGE . SETTINGS) from `prrr-treesit-rules'.  PARSE and
+PAINT are lists of (BEG . END) in order, PAINT a subset of PARSE.  The
+parser lives only for this call.  Settings whose capture is a function
+call `treesit-fontify-with-override' themselves, so that is
+`prrr-treesit--fontify' meanwhile."
+  (when paint
+    (let ((language (car rules))
+          (start (car (car parse)))
+          (end (cdr (car (last parse))))
+          (parser (treesit-parser-create (car rules) nil t)))
+      (unwind-protect
+          (let ((prrr-treesit--paint (vconcat paint)))
+            (treesit-parser-set-included-ranges parser parse)
+            (cl-letf (((symbol-function 'treesit-fontify-with-override)
+                       #'prrr-treesit--fontify))
+              (dolist (setting (cdr rules))
+                (let ((query (nth 0 setting))
+                      (override (nth 3 setting)))
+                  (when (and (eq (nth 1 setting) t)
+                             (eq (treesit-query-language query) language))
+                    (pcase-dolist (`(,face . ,node)
+                                   (treesit-query-capture (treesit-parser-root-node parser)
+                                                          query start end))
+                      (cond ((facep face)
+                             (prrr-treesit--fontify (treesit-node-start node)
+                                                    (treesit-node-end node)
+                                                    face override))
+                            ((functionp face)
+                             (funcall face node override start end)))))))))
+        (treesit-parser-delete parser)))))
+
+(defun prrr-treesit--lines (file)
+  "Return the diff lines of FILE, a `file' section, as (KIND BEG . END).
+In order.  KIND is the line's first character, BEG..END its text after
+it through the newline.  Threads, \"No newline\" markers and the
+hunks of combined diffs are left out."
+  (let ((lines nil))
+    (dolist (hunk (oref file children))
+      (when (and (eq (oref hunk type) 'hunk) (not (oref hunk combined)))
+        (prrr-diff-walk-hunk
+         hunk (lambda (kind _old _new)
+                (when (memq kind '(?\s ?+ ?-))
+                  (push (cons kind (cons (1+ (point))
+                                         (min (point-max) (1+ (line-end-position)))))
+                        lines))))))
+    (nreverse lines)))
+
+(defun prrr-treesit-highlight (file)
+  "Highlight the syntax of the diff lines of FILE, a Review Buffer `file' section.
+The new side (context and added lines) and the old side (context and
+removed lines) are parsed apart, each as one text; context lines take
+the new side's faces.  Faces go on `prrr-treesit-face' and are merged
+into `font-lock-face' (`prrr-treesit--merge').  Does nothing when no
+rules highlight the file (`prrr-treesit-rules'), it has no diff lines,
+or the buffer is too large for tree-sitter."
+  (when-let* ((rules (prrr-treesit-rules (oref file value)))
+              ((treesit-ready-p (car rules) t))
+              (lines (prrr-treesit--lines file)))
+    (let ((new nil) (old nil) (removed nil))
+      (pcase-dolist (`(,kind . ,range) lines)
+        (unless (eq kind ?-) (push range new))
+        (unless (eq kind ?+) (push range old))
+        (when (eq kind ?-) (push range removed)))
+      (setq new (nreverse new) old (nreverse old) removed (nreverse removed))
+      (with-silent-modifications
+        (prrr-treesit--fontify-side rules new new)
+        (prrr-treesit--fontify-side rules old removed))
+      (prrr-treesit--merge (cadr (car lines)) (cddr (car (last lines)))))))
+
+(defun prrr-treesit--merge (start end)
+  "Put the faces of `prrr-treesit-face' in front of `font-lock-face', START to END.
+magit paints a diff line by setting its `font-lock-face' to the line's
+face, so this runs after every paint.  Running it twice changes nothing."
+  (with-silent-modifications
+    (let ((pos start))
+      (while (< pos end)
+        (let ((next (next-single-property-change pos 'prrr-treesit-face nil end))
+              (tokens (ensure-list (get-text-property pos 'prrr-treesit-face))))
+          (when tokens
+            (let ((at pos))
+              (while (< at next)
+                (let ((stop (next-single-property-change at 'font-lock-face nil next))
+                      (line (ensure-list (get-text-property at 'font-lock-face))))
+                  (put-text-property at stop 'font-lock-face
+                                     (append tokens (seq-difference line tokens)))
+                  (setq at stop)))))
+          (setq pos next))))))
+
+(defvar-local prrr-treesit--done nil
+  "Weak table of the `file' sections highlighted, or on their way, here.
+Each refresh makes new sections, so it starts them all afresh.")
+
+(defun prrr-treesit--highlight-reporting (file)
+  "Run `prrr-treesit-highlight' on FILE; report a failure rather than raise it.
+It runs while magit paints, where an error would break the whole redraw."
+  (condition-case err
+      (prrr-treesit-highlight file)
+    (error (message "prrr: highlighting %s failed: %s"
+                    (oref file value) (error-message-string err)))))
+
+(defun prrr-treesit--request (file)
+  "Highlight FILE, a `file' section, unless it was already or highlighting is off."
+  (when (and prrr-highlight (eq (oref file type) 'file))
+    (unless prrr-treesit--done
+      (setq prrr-treesit--done (make-hash-table :test #'eq :weakness 'key)))
+    (unless (gethash file prrr-treesit--done)
+      (puthash file t prrr-treesit--done)
+      (prrr-treesit--highlight-reporting file))))
+
+(cl-defmethod magit-section-paint :after ((section magit-hunk-section) _highlight
+                                          &context (major-mode prrr-diff-mode))
+  "Highlight the file of SECTION once, and put its syntax faces back.
+magit paints a hunk when it is first shown, and again whenever point
+enters or leaves it, each time resetting `font-lock-face'."
+  (prrr-treesit--request (oref section parent))
+  (prrr-treesit--merge (oref section start) (oref section end)))
+
 (provide 'prrr-treesit)
 ;;; prrr-treesit.el ends here

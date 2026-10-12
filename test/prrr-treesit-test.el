@@ -28,6 +28,7 @@
 (require 'cl-lib)
 (require 'prrr-test-helper)
 (require 'prrr-treesit)
+(require 'prrr-diff-test)
 
 ;;;; Languages
 
@@ -131,6 +132,164 @@
     (cl-letf (((symbol-function 'treesit-available-p) #'ignore))
       (should-not (prrr-treesit-rules "a.br"))
       (should (zerop (hash-table-count prrr-treesit--languages))))))
+
+
+;;;; Highlighting
+
+(defmacro prrr-treesit-test--with-buffer (&rest body)
+  "Open the C fixture's Review Buffer, every file collapsed, and run BODY.
+Highlighting is on, with C rules from `c-ts-mode'."
+  (declare (indent 0))
+  `(let ((prrr-test-repo-script "make-c-repo.sh")
+         (prrr-eager-files 0)
+         (prrr-highlight t)
+         (auto-mode-alist (cons '("\\.c\\'" . c-mode) auto-mode-alist))
+         (prrr-treesit--languages (make-hash-table :test #'eq)))
+     (prrr-diff-test--with-buffer nil
+       ,@body)))
+
+(defun prrr-treesit-test--find (text)
+  "Return the position of the first TEXT in the buffer, after its line's prefix."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward text)
+    (match-beginning 0)))
+
+(defun prrr-treesit-test--faces (pos)
+  "Return the syntax faces at POS, as a list."
+  (ensure-list (get-text-property pos 'prrr-treesit-face)))
+
+(ert-deftest prrr-treesit-test-nothing-before-shown ()
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (should-not (text-property-not-all (point-min) (point-max) 'prrr-treesit-face nil))))
+
+(ert-deftest prrr-treesit-test-expanding-highlights-both-sides ()
+  "Added, context and removed lines get their faces; prefixes and headings none."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (magit-section-show (prrr-diff-test--file-section "src/sample.c"))
+    (let ((added (prrr-treesit-test--find "int answer = 42"))
+          (removed (prrr-treesit-test--find "int answer = 41"))
+          (context (prrr-treesit-test--find "\"%d\\n\""))
+          (comment (prrr-treesit-test--find "/* print the answer */")))
+      (should (memq 'font-lock-type-face (prrr-treesit-test--faces added)))
+      (should (memq 'font-lock-type-face (prrr-treesit-test--faces removed)))
+      (should (memq 'font-lock-string-face (prrr-treesit-test--faces context)))
+      (should (memq 'font-lock-comment-face (prrr-treesit-test--faces comment)))
+      (should-not (prrr-treesit-test--faces (1- added)))
+      (should-not (prrr-treesit-test--faces (1- removed)))
+      (let ((hunk (car (prrr-diff-test--hunks "src/sample.c"))))
+        (should-not (text-property-not-all (oref hunk start) (oref hunk content)
+                                           'prrr-treesit-face nil))))))
+
+(ert-deftest prrr-treesit-test-line-face-kept-behind-tokens ()
+  "The token face comes first in `font-lock-face'; the diff line's face stays."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (magit-section-show (prrr-diff-test--file-section "src/sample.c"))
+    (let ((faces (ensure-list (get-text-property (prrr-treesit-test--find "int answer = 42")
+                                                 'font-lock-face))))
+      (should (eq 'font-lock-type-face (car faces)))
+      (should (seq-some (lambda (face) (memq face '(magit-diff-added magit-diff-added-highlight)))
+                        faces)))))
+
+(ert-deftest prrr-treesit-test-repaint-keeps-faces ()
+  "Magit resets `font-lock-face' on every paint; the syntax faces come back."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (let ((hunk (car (prrr-diff-test--hunks "src/sample.c")))
+          (pos (prrr-treesit-test--find "int answer = 42")))
+      (dolist (highlight '(t nil t))
+        (save-excursion
+          (goto-char (oref hunk start))
+          (let ((inhibit-read-only t))
+            (magit-section-paint hunk highlight)))
+        (let ((faces (ensure-list (get-text-property pos 'font-lock-face))))
+          (should (eq 'font-lock-type-face (car faces)))
+          (should (= 1 (seq-count (lambda (face) (eq face 'font-lock-type-face)) faces)))
+          (should (memq (if highlight 'magit-diff-added-highlight 'magit-diff-added) faces)))))))
+
+(ert-deftest prrr-treesit-test-threads-not-colored ()
+  "A Thread inside a hunk gets no syntax faces; the lines after it still do."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (prrr-db-insert (prrr-thread-create :thread-id "T_C" :pr-id prrr-diff-test--pr
+                                        :path "src/sample.c" :line 3 :side 'right
+                                        :subject-type 'line))
+    (magit-refresh-buffer)
+    (let* ((hunk (car (prrr-diff-test--hunks "src/sample.c")))
+           (thread (car (oref hunk children))))
+      (should (eq 'thread (oref thread type)))
+      (should-not (text-property-not-all (oref thread start) (oref thread end)
+                                         'prrr-treesit-face nil))
+      (should (memq 'font-lock-type-face
+                    (prrr-treesit-test--faces (prrr-treesit-test--find "int main")))))))
+
+(ert-deftest prrr-treesit-test-no-grammar-no-faces ()
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (let ((file (prrr-diff-test--file-section "notes.txt")))
+      (magit-section-show file)
+      (should-not (text-property-not-all (oref file start) (oref file end)
+                                         'prrr-treesit-face nil)))))
+
+(ert-deftest prrr-treesit-test-off-means-no-faces ()
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (setq-local prrr-highlight nil)
+    (magit-section-show (prrr-diff-test--file-section "src/sample.c"))
+    (should-not (text-property-not-all (point-min) (point-max) 'prrr-treesit-face nil))))
+
+(ert-deftest prrr-treesit-test-highlighted-once ()
+  "Showing, hiding, showing and repainting highlight a file once."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (let ((calls 0)
+          (highlight (symbol-function 'prrr-treesit-highlight))
+          (file (prrr-diff-test--file-section "src/sample.c")))
+      (cl-letf (((symbol-function 'prrr-treesit-highlight)
+                 (lambda (section) (cl-incf calls) (funcall highlight section))))
+        (magit-section-show file)
+        (magit-section-hide file)
+        (magit-section-show file)
+        (let ((hunk (car (prrr-diff-test--hunks "src/sample.c"))))
+          (save-excursion (goto-char (oref hunk start))
+                         (let ((inhibit-read-only t))
+                           (magit-section-paint hunk t)))))
+      (should (= 1 calls)))))
+
+(ert-deftest prrr-treesit-test-failure-reported-not-raised ()
+  "A failing highlight is a message; the file still shows."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (let ((messages nil)
+          (file (prrr-diff-test--file-section "src/sample.c")))
+      (cl-letf (((symbol-function 'prrr-treesit-highlight)
+                 (lambda (_section) (error "Parser exploded")))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (magit-section-show file))
+      (should-not (oref file hidden))
+      (should (seq-some (lambda (text) (string-match-p "src/sample.c.*Parser exploded" text))
+                        messages)))))
+
+(ert-deftest prrr-treesit-test-hunk-inside-comment ()
+  "A hunk starting inside a block comment highlights without error."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (magit-section-show (prrr-diff-test--file-section "src/comment.c"))
+    (should (text-property-not-all (point-min) (point-max) 'prrr-treesit-face nil))))
+
+(ert-deftest prrr-treesit-test-file-without-hunks ()
+  "A renamed file with no hunks shows its note and gets no faces."
+  (skip-unless (treesit-language-available-p 'c))
+  (prrr-treesit-test--with-buffer
+    (let ((file (prrr-diff-test--file-section "src/renamed.c")))
+      (prrr-treesit-highlight file)
+      (magit-section-show file)
+      (should-not (text-property-not-all (oref file start) (oref file end)
+                                         'prrr-treesit-face nil)))))
 
 (provide 'prrr-treesit-test)
 ;;; prrr-treesit-test.el ends here
