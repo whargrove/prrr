@@ -71,7 +71,7 @@
 (ert-deftest prrr-github-test-decode-queue-viewer-fields ()
   (let ((metas (prrr-github-decode-queue (prrr-test-fixture "queue") nil)))
     (should (null (prrr-pr-meta-viewer-latest-review (nth 0 metas))))
-    (should (equal "example-alice" (prrr-pr-meta-viewer-latest-review-request (nth 0 metas))))
+    (should (equal "RR_kwDOexample0000001" (prrr-pr-meta-viewer-latest-review-request (nth 0 metas))))
     (should (equal '("COMMENTED" "2026-09-04T08:00:00Z"
                      "2222222222222222222222222222222222222200")
                    (prrr-pr-meta-viewer-latest-review (nth 1 metas))))

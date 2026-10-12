@@ -22,7 +22,7 @@
       (commit (oid . "1111111111111111111111111111111111111111"))
       (onBehalfOf ((combinedSlug . "example-org/reviewers")))))
     (viewerLatestReview)
-    (viewerLatestReviewRequest (login . "example-alice"))
+    (viewerLatestReviewRequest (id . "RR_kwDOexample0000001"))
     (assignees ((login . "example-me")) ((login . "example-bob"))))
    ((id . "PR_kwDOexample0000002")
     (number . 2)

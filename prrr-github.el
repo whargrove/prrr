@@ -73,7 +73,7 @@ the current repository, which is where forge reads it."
            (author login) state submittedAt (commit oid)
            (onBehalfOf [(:edges t)] combinedSlug))
          (viewerLatestReview state submittedAt (commit oid))
-         (viewerLatestReviewRequest login)
+         (viewerLatestReviewRequest id)
          (assignees [(:edges t)] login)))
     "Review Queue inputs of one repository (SPEC section 4).
 Variables: $owner and $name.  Pages every open PR."))
@@ -165,7 +165,7 @@ record, nil when the caller stamps rows itself."
                  :review-requests (prrr-github--review-requests .reviewRequests)
                  :latest-reviews (prrr-github--latest-reviews .latestReviews)
                  :viewer-latest-review (prrr-github--viewer-review .viewerLatestReview)
-                 :viewer-latest-review-request .viewerLatestReviewRequest.login
+                 :viewer-latest-review-request .viewerLatestReviewRequest.id
                  :assignees (mapcar (lambda (user) (alist-get 'login user)) .assignees)
                  :created-at .createdAt
                  :fetched-at fetched-at)))

@@ -125,7 +125,7 @@ headRefOid createdAt isDraft author { login } reviewRequests(first: 50) {
 requestedReviewer { ... on User { login } ... on Team { combinedSlug } } }
 latestReviews(first: 50) { author { login } state submittedAt commit { oid }
 onBehalfOf(first: 10) { nodes { combinedSlug } } } viewerLatestReview { state
-submittedAt commit { oid } } viewerLatestReviewRequest { login }
+submittedAt commit { oid } } viewerLatestReviewRequest { id }
 assignees(first: 100) { login }`. Stored in `pullreq-meta`. Draft, author,
 base-ref, head-ref, head-rev, and cross-repo-p come from forge's
 `forge-pullreq` object (research 04, section 1); forge drops Team requests
