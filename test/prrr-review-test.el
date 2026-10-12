@@ -29,6 +29,7 @@
 (require 'prrr-test-helper)
 (require 'prrr-diff-test)
 (require 'prrr-review)
+(require 'prrr-api)
 (require 'prrr-transient)
 
 (defmacro prrr-review-test--with-buffer (answers &rest body)
@@ -335,6 +336,92 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
       (goto-char (point-min))
       (call-interactively #'prrr-outbox-discard))
     (should-not (prrr-db-outbox-rows prrr-diff-test--pr))))
+
+(defmacro prrr-review-test--with-proposal (&rest body)
+  "Run BODY in the Review Buffer, point on an agent's proposed comment.
+The agent proposed \"Consider a guard.\" on src/example.el line 12
+through the API with `prrr-agent-comment-mode' `proposed'.  GitHub
+fails every Thread the Outbox sends, so an accepted one stays queued."
+  (declare (indent 0))
+  `(prrr-review-test--with-buffer '((addPullRequestReviewThread . (:error (error http 502))))
+     (let ((worktree default-directory))
+       (cl-letf (((symbol-function 'forge-get-worktree) (lambda (_) worktree)))
+         (let ((prrr-agent-comment-mode 'proposed)
+               (prrr-agent-comment-prefix ""))
+           (prrr-api-add-comment (prrr-diff-pullreq) "src/example.el" 12 "Consider a guard."))
+         (magit-refresh-buffer)
+         (prrr-diff-test--hunks "src/example.el")
+         (goto-char (point-min))
+         (re-search-forward "^    example-me  [0-9-]+  agent  proposed$")
+         (goto-char (line-beginning-position))
+         ,@body))))
+
+(defun prrr-review-test--proposals ()
+  "Return the fixture PR's queued proposals."
+  (seq-filter #'prrr-state-outbox-held-p (prrr-db-outbox-rows prrr-diff-test--pr)))
+
+(ert-deftest prrr-review-test-accept-proposed-comment ()
+  "SPEC section 10: a accepts the agent's proposal, as edited, into the Pending Review."
+  (prrr-review-test--with-proposal
+    (should (prrr-review-test--proposals))
+    (should-not prrr-test-requests)
+    (prrr-accept-comment)
+    (with-current-buffer (seq-find (lambda (buffer)
+                                     (string-prefix-p "*prrr comment*" (buffer-name buffer)))
+                                   (buffer-list))
+      (should (equal "Consider a guard." (buffer-string)))
+      (erase-buffer))
+    (prrr-review-test--send "Consider a nil guard.")
+    (should-not (prrr-review-test--proposals))
+    (let ((row (car (prrr-db-outbox-rows prrr-diff-test--pr))))
+      (should (eq 'thread (prrr-outbox-kind row)))
+      (should (equal "Consider a nil guard." (plist-get (prrr-outbox-payload row) :body)))
+      (should (plist-get (prrr-outbox-payload row) :agent))
+      (should (equal "src/example.el"
+                     (plist-get (plist-get (prrr-outbox-payload row) :anchor) :path))))
+    (should (equal '(addPullRequestReviewThread) prrr-test-requests))))
+
+(ert-deftest prrr-review-test-edit-on-a-proposal-accepts-it ()
+  "SPEC section 10: e on a proposal is accepting it after an edit."
+  (prrr-review-test--with-proposal
+    (prrr-edit-comment)
+    (should (string-match-p "Accept the agent's comment" (prrr-review-test--capture-header)))
+    (prrr-review-test--send " Please.")
+    (should-not (prrr-review-test--proposals))
+    (should (equal "Consider a guard. Please."
+                   (plist-get (prrr-outbox-payload (car (prrr-db-outbox-rows prrr-diff-test--pr)))
+                              :body)))))
+
+(ert-deftest prrr-review-test-reject-proposed-comment ()
+  "SPEC section 10: k rejects the agent's proposal; nothing reaches GitHub."
+  (prrr-review-test--with-proposal
+    (cl-letf (((symbol-function 'y-or-n-p) #'ignore))
+      (prrr-delete-comment))
+    (should (prrr-review-test--proposals))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+      (prrr-delete-comment))
+    (should-not (prrr-db-outbox-rows prrr-diff-test--pr))
+    (should-not prrr-test-requests)))
+
+(ert-deftest prrr-review-test-reply-to-a-proposed-thread-is-refused ()
+  "Review Focus 5: r on a proposed Thread would wait on the proposal."
+  (prrr-review-test--with-proposal
+    (let ((rows (prrr-db-outbox-rows prrr-diff-test--pr)))
+      (should-error (progn (prrr-reply nil) (prrr-review-test--send "Yes"))
+                    :type 'user-error)
+      (should (equal rows (prrr-db-outbox-rows prrr-diff-test--pr))))))
+
+(ert-deftest prrr-review-test-submit-names-proposals-left-out ()
+  (prrr-review-test--with-proposal
+    (prrr-submit-approve)
+    (should (string-match-p "Submit, approve: 1 pending comment, 1 proposed not included"
+                            (prrr-review-test--capture-header)))))
+
+(ert-deftest prrr-review-test-accept-needs-a-proposal ()
+  (prrr-review-test--with-buffer nil
+    (let ((thread (car (oref (car (prrr-diff-test--hunks "src/example.el")) children))))
+      (goto-char (oref (cadr (oref thread children)) start))
+      (should-error (prrr-accept-comment) :type 'user-error))))
 
 (ert-deftest prrr-review-test-keys-and-menus-agree ()
   "SPEC section 9: milestone 4's keys, in the buffer and the menus."

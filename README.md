@@ -12,11 +12,12 @@ files, reply, suggest changes, and submit your pending review with a
 verdict; what you write shows at once and is never lost to a dropped
 connection. Look at what changed since your last review, since you last
 opened the PR, or in one commit, and step up and down a Stack without
-leaving the Review Buffer.
+leaving the Review Buffer. Hand a review to a coding agent with `@`, and
+let it read the pull request and add comments to your pending review
+through a small Emacs Lisp API.
 
-> **Status:** early development. The Review Queue, the Review Buffer,
-> commenting and submitting, Ranges, Stacks and syntax highlighting work.
-> The agent API is next. See the milestones in [`SPEC.md`](SPEC.md#15-milestones).
+> **Status:** Milestones 1–7 are done. Release is next. See the
+> milestones in [`SPEC.md`](SPEC.md#15-milestones).
 
 ## Requirements
 
@@ -217,13 +218,14 @@ rules, so a changed `treesit-font-lock-level` applies.
 | `b`       | `prrr-browse`                                       | Open the PR on GitHub                      |
 | `B`       | `prrr-checkout`                                     | Check out the PR's branch                  |
 | `L`       | `prrr-toggle-highlight`                             | Toggle syntax highlighting in this buffer  |
+| `@`       | `prrr-send-to-agent`                                | Send the review to an agent                |
+| `a`       | `prrr-accept-comment`                               | Accept an agent's proposed comment         |
 | `g`       | `prrr-refresh`                                      | Redraw, at the PR's current head           |
 | `G`       | `prrr-refetch`                                      | Refetch threads and Viewed flags now       |
 | `?`, `C-o`| `prrr-menu`                                         | Menu with the same keys                    |
 
 magit's `TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`, `1`-`4`, `E` (ediff), `h`
-and `q` work as in any magit diff. Keys that later milestones use
-(`@`) do nothing yet.
+and `q` work as in any magit diff.
 
 ### Review Buffer options
 
@@ -345,6 +347,128 @@ first, or publish the comment at once.
 `>` and `<` open the pull request above or below in its Stack, in the
 same window, at its own default Range: each PR shows its diff against
 its own base.
+
+## Agents
+
+prrr lets a coding agent read a pull request's review and write to it,
+as you, through plain Emacs Lisp functions. An agent outside Emacs calls
+them with `emacsclient -e`; nothing needs a Review Buffer open, only
+`(require 'prrr)` and a repository forge tracks. Each function takes the
+pull request as `("OWNER/NAME" . NUMBER)` for a repository on github.com,
+as a `forge-repository` and a number, or as forge's pull request object.
+
+### Send a review to an agent
+
+`@` in the Review Buffer asks for your instructions, then hands the agent
+a Markdown summary: the pull request, the Range shown and its diff, the
+threads, your pending review with any agent comments, and the
+`emacsclient -e` calls to answer with. A diff longer than
+`prrr-agent-max-diff-lines` is cut, with the changed files listed for
+the agent to read one at a time.
+
+When [agent-shell](https://github.com/xenodium/agent-shell) is loaded
+and has a buffer open, the summary goes to the one running in the
+repository, or to any when none does; prrr asks when several fit. It is
+queued as the next prompt while the agent is busy and sent at once
+otherwise. Without agent-shell, or without one of its buffers, the
+summary goes to the kill ring, to paste into any agent.
+To hand it to another agent, set `prrr-agent-invoke-function`.
+
+### The API
+
+| Function                          | Does                                                         |
+|-----------------------------------|--------------------------------------------------------------|
+| `prrr-api-pullreq`                | The PR's summary: title, commits, Review State, counts       |
+| `prrr-api-threads`                | Its threads with their comments, optionally of a Range only  |
+| `prrr-api-diff`                   | Its diff, for a Range and optionally one file                |
+| `prrr-api-pending`                | Your pending review and its comments                         |
+| `prrr-api-add-comment`            | A new thread on a line, lines or a file                      |
+| `prrr-api-reply`                  | A reply to a thread                                          |
+| `prrr-api-delete-pending-comment` | Delete an agent comment or proposal of your pending review   |
+| `prrr-api-submit`                 | Submit your pending review, after asking you                 |
+| `prrr-api-export`                 | Write the review as JSON                                     |
+| `prrr-api-import`                 | Add the new comments and replies of a JSON file              |
+
+Reads return alists whose keys are the JSON keys `prrr-api-export`
+writes. A Range is `nil` for the default, or `(since-review)`,
+`(since-opened)`, `(commit OID)` or `(between FROM TO)`. The API never
+fetches: a Range whose commits you do not have asks you to show it in
+the Review Buffer once.
+
+```sh
+emacsclient -e '(prrr-api-pullreq (quote ("example-org/example-repo" . 42)))'
+emacsclient -e '(prrr-api-threads (quote ("example-org/example-repo" . 42)) (quote (since-review)))'
+emacsclient -e '(prrr-api-diff (quote ("example-org/example-repo" . 42)) nil "src/main.el")'
+emacsclient -e '(prrr-api-pending (quote ("example-org/example-repo" . 42)))'
+emacsclient -e '(prrr-api-add-comment (quote ("example-org/example-repo" . 42)) "src/main.el" 12 "Guard against nil." :start-line 10)'
+emacsclient -e '(prrr-api-add-comment (quote ("example-org/example-repo" . 42)) "src/main.el" nil "Split this file." :file t)'
+emacsclient -e '(prrr-api-reply (quote ("example-org/example-repo" . 42)) "PRRT_kwDOexample" "Agreed.")'
+emacsclient -e '(prrr-api-delete-pending-comment (quote ("example-org/example-repo" . 42)) "PRRC_kwDOexample")'
+emacsclient -e '(prrr-api-submit (quote ("example-org/example-repo" . 42)) (quote comment) "Two nits.")'
+emacsclient -e '(prrr-api-export (quote ("example-org/example-repo" . 42)))'
+emacsclient -e '(prrr-api-import (quote ("example-org/example-repo" . 42)) "/tmp/review.json")'
+```
+
+A new comment must sit on lines of the pull request's diff, on the new
+side unless it passes `:side "old"`; anything else is refused at once,
+with the line ranges the diff has, before it is queued, as is any
+comment while the pull request's base commit is not in your repository.
+Writes go through the same queue as yours and never wait on the network.
+An agent can delete only its own comments and proposals; yours are
+yours to delete.
+
+### Agent comments
+
+Everything is posted under your account. Comments an agent adds show
+with an `agent` badge, and `prrr-agent-comment-prefix` goes before their
+text. They are in your pending review, to edit or delete like your own,
+and submitting asks once more when an agent wrote some of them.
+`prrr-api-submit` asks you too, with the counts and the body (its first
+200 characters), unless `prrr-api-confirm-submit` is nil.
+
+With `prrr-agent-comment-mode` set to `proposed`, an agent's comments
+stay in Emacs, marked `proposed`, until you decide: `a` (or `e`) opens
+one to edit and accept into your pending review, `k` rejects it.
+Proposals are not part of the pending review: its counts and Submit
+leave them out, and the header shows `N proposed, a to accept`. A reply
+to a proposed thread, yours or an agent's, is refused until you accept
+the thread, unless the reply is a proposal itself. A proposed thread
+written at another commit than your pending review's is refused too,
+as your own would be.
+
+### Export and import
+
+`prrr-api-export` writes the review as JSON, by default to
+`prrr/review-N.json` inside the repository's git directory, out of the
+worktree. The shape is crit-review's handoff extended with GitHub's ids,
+so a tool that reads crit-review's file can read this one.
+`prrr-api-import` reads the same shape and adds, as agent comments, each
+entry without a `comment_id` as a new thread and each reply without one
+as a reply to its entry's existing thread; entries of type `review` are
+skipped. A reply under a new thread has no thread to go to yet, and is
+refused. It checks every entry first: one it cannot add adds nothing.
+
+### Hooks
+
+| Hook                              | Runs with                                                 |
+|-----------------------------------|-----------------------------------------------------------|
+| `prrr-comment-created-hook`       | The new thread's first comment, once GitHub has it        |
+| `prrr-reply-created-hook`         | The reply, once GitHub has it                             |
+| `prrr-review-submitted-hook`      | A plist `(:pr-id :verdict :body :commit)` once submitted  |
+| `prrr-review-buffer-opened-hook`  | forge's pull request, in the Review Buffer just opened    |
+
+A hook function that signals shows the error, with its name, as a
+message and stops nothing: the hook's other functions still run.
+
+### Agent options
+
+| Option                        | Default                     | Meaning                                                       |
+|-------------------------------|-----------------------------|---------------------------------------------------------------|
+| `prrr-agent-comment-mode`     | `pending`                   | `pending`: to your pending review; `proposed`: wait for you   |
+| `prrr-agent-comment-prefix`   | `""`                        | Text put before every agent comment                           |
+| `prrr-api-confirm-submit`     | `t`                         | `prrr-api-submit` asks you first                              |
+| `prrr-agent-invoke-function`  | `prrr-agent-invoke-default` | Hands the `@` summary to an agent                             |
+| `prrr-agent-max-diff-lines`   | `2000`                      | Longest diff `@` sends                                        |
 
 ## Development
 

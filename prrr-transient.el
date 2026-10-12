@@ -36,6 +36,7 @@
 (require 'prrr-review)
 (require 'prrr-range)
 (require 'prrr-treesit)
+(require 'prrr-agent)
 
 (defun prrr-transient--shown (what value)
   "Describe a toggle for WHAT that is on when VALUE is non-nil."
@@ -105,8 +106,7 @@
 
 ;;;###autoload (autoload 'prrr-menu "prrr-transient" nil t)
 (transient-define-prefix prrr-menu ()
-  "Act on the Review Buffer (SPEC section 9).
-Milestone 7 adds the Agent group."
+  "Act on the Review Buffer (SPEC section 9)."
   [["Comment"
     ("-i" "publish immediately" "--immediate")
     ("c" "on line or region" prrr-comment)
@@ -119,7 +119,10 @@ Milestone 7 adds the Agent group."
     ("s" "suggest a change" prrr-comment-suggest)]
    ["Review"
     ("S" "submit or discard…" prrr-submit)
-    ("O" "outbox…" prrr-outbox)]]
+    ("O" "outbox…" prrr-outbox)]
+   ["Agent"
+    ("@" "send to agent" prrr-send-to-agent)
+    ("a" "accept proposed comment" prrr-accept-comment)]]
   [["Navigate"
     ("]" "next Thread" prrr-next-thread)
     ("[" "previous Thread" prrr-previous-thread)

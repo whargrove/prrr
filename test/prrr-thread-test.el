@@ -167,6 +167,23 @@ BODY sees `section', the first child of the root."
       (forward-line)
       (should (looking-at "    example-bob  2026-09-02  agent$")))))
 
+(ert-deftest prrr-thread-test-proposed-comment ()
+  "An agent's proposal says so, and is not called unsent: it is never sent."
+  (let ((comment (prrr-thread-test--comment))
+        (writes (make-hash-table :test #'equal))
+        (row (prrr-thread-test--row "1")))
+    (setf (prrr-comment-agent-p comment) t
+          (prrr-comment-state comment) 'pending
+          (prrr-comment-local-state comment) 'proposed
+          (prrr-outbox-kind row) 'proposed)
+    (puthash "C_1" row writes)
+    (prrr-thread-test--with-render
+        (prrr-thread-insert (prrr-test-thread) (list comment) :writes writes)
+      (should (eq 'thread (oref section type)))
+      (forward-line)
+      (should (looking-at "    example-bob  2026-09-02  agent  proposed$"))
+      (should (eq 'prrr-agent (get-text-property (- (line-end-position) 2) 'font-lock-face))))))
+
 (ert-deftest prrr-thread-test-suggestion-as-mini-diff ()
   (prrr-thread-test--with-render
       (prrr-thread-insert (prrr-test-thread)

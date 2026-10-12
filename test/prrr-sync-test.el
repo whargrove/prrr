@@ -663,6 +663,30 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
                                              :commit "1111"))
         (should (= 1 (length prrr-sync--outbox-creations)))))))
 
+(ert-deftest prrr-sync-test-agent-flag-survives-send-and-refetch ()
+  "An agent's Thread is flagged once sent, and stays so when a refetch replaces the comments."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch
+          `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+        (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                             :commit "1111" :agent t)))
+      (let ((id "PRRC_kwDOexampleNew01")
+            (data (prrr-github-decode-review-data (prrr-test-fixture "review-data")
+                                                  prrr-sync-test--pr "2026-10-10T12:00:00Z")))
+        (should (prrr-comment-agent-p (prrr-db-get 'review-comment id)))
+        (prrr-db-replace-review-data
+         prrr-sync-test--pr
+         (plist-put data :comments
+                    (cons (prrr-comment-create :comment-id id :pr-id prrr-sync-test--pr
+                                               :thread-id "PRRT_kwDOexampleNew01" :body "Nit."
+                                               :state 'pending :local-state 'sent)
+                          (plist-get data :comments))))
+        (should (prrr-comment-agent-p
+                 (seq-find (lambda (comment) (equal id (prrr-comment-comment-id comment)))
+                           (plist-get (prrr-sync-review-data prrr-sync-test--pr) :comments))))))))
+
 (ert-deftest prrr-sync-test-outbox-reply-creates-the-pending-review-on-its-commit ()
   "A reply with no Pending Review creates one on the head the reply was written at."
   (prrr-db-with-test-db
@@ -1732,6 +1756,74 @@ the comment records it once."
       (should (prrr-db-get 'thread "T2"))
       (should (prrr-db-get 'review-comment "C2")))))
 
+(ert-deftest prrr-sync-test-outbox-discard-keeps-proposals ()
+  "A discard drops the Pending Review's writes; proposals are not part of it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch
+          '((addPullRequestReviewThread . (:error (error http 502)))
+            (deletePullRequestReview . ((data (deletePullRequestReview (clientMutationId))))))
+        (let ((proposal (prrr-sync-test--write
+                         'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                         :body "Maybe." :commit "1111" :agent t))))
+          (should (string-prefix-p "local:" (plist-get (prrr-outbox-payload proposal) :thread)))
+          (should (string-prefix-p "local:" (plist-get (prrr-outbox-payload proposal) :comment)))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
+                                               :commit "1111"))
+          (prrr-sync-test--write 'discard nil)
+          (should (equal '(addPullRequestReviewThread deletePullRequestReview) prrr-test-requests))
+          (should (equal (list (prrr-outbox-id proposal))
+                         (mapcar #'prrr-outbox-id (prrr-db-outbox-rows)))))))))
+
+(ert-deftest prrr-sync-test-accept-keeps-what-needs-the-proposal ()
+  "Accepting a proposed Thread sends it and keeps a proposed reply to it."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch '((addPullRequestReviewThread . (:error (error http 502))))
+        (let* ((thread (prrr-sync-test--write
+                        'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                        :body "Maybe." :commit "1111" :agent t)))
+               (reply (prrr-sync-test--write
+                       'proposed (list :as 'reply :body "And this." :agent t :commit "1111"
+                                       :thread-id (plist-get (prrr-outbox-payload thread)
+                                                             :thread)))))
+          (should-not prrr-test-requests)
+          (prrr-sync-accept (prrr-outbox-id thread) "Surely.")
+          (should (equal '(addPullRequestReviewThread) prrr-test-requests))
+          (should (equal (list 'thread 'proposed)
+                         (mapcar #'prrr-outbox-kind (prrr-db-outbox-rows))))
+          (should (equal (prrr-outbox-id reply)
+                         (prrr-outbox-id (cadr (prrr-db-outbox-rows)))))
+          (should-error (prrr-sync-accept (prrr-outbox-id thread) "Again")
+                        :type 'user-error))))))
+
+(ert-deftest prrr-sync-test-writes-on-a-proposed-thread-are-refused ()
+  "Review Focus 5: nothing the user queues may wait on a proposal.
+A reply to a proposed Thread, or accepting a proposed reply to one,
+is refused and queues nothing; a proposed reply to it is fine."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (let* ((thread (prrr-sync-test--write
+                        'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                        :body "Maybe." :commit "1111" :agent t)))
+               (thread-id (plist-get (prrr-outbox-payload thread) :thread))
+               (reply (prrr-sync-test--write
+                       'proposed (list :as 'reply :body "And this." :agent t :commit "1111"
+                                       :thread-id thread-id)))
+               (rows (prrr-db-outbox-rows)))
+          (should (string-match-p "Accept the proposed Thread first"
+                                  (cadr (should-error (prrr-sync-test--write
+                                                       'reply (list :thread-id thread-id
+                                                                    :body "Yes" :commit "1111"))
+                                                      :type 'user-error))))
+          (should-error (prrr-sync-accept (prrr-outbox-id reply) "Sure") :type 'user-error)
+          (should (equal rows (prrr-db-outbox-rows)))
+          (should-not prrr-test-requests))))))
+
 ;;;; Bookmark and pinned commits
 
 (ert-deftest prrr-sync-test-pin-keeps-a-commit ()
@@ -1827,6 +1919,91 @@ the comment records it once."
               (should (eq 'ok (plist-get (prrr-sync-status "example-repo-id") :state)))
               (should (equal (list (format "3/%s" head))
                              (prrr-sync-test--pin-refs))))))))))
+
+(ert-deftest prrr-sync-test-hooks-run-when-github-confirms ()
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-db-replace-review-data
+       prrr-sync-test--pr
+       (prrr-github-decode-review-data (prrr-test-fixture "review-data") prrr-sync-test--pr))
+      (prrr-sync-test--store-pending-review)
+      (prrr-db-insert (prrr-pr-meta-create :pr-id prrr-sync-test--pr
+                                           :forge-repo-id "example-repo-id" :number 1))
+      (let (seen)
+        (let ((prrr-comment-created-hook
+               (list (lambda (c) (push (list 'thread (prrr-comment-body c)) seen))))
+              (prrr-reply-created-hook
+               (list (lambda (c) (push (list 'reply (prrr-comment-body c)) seen))))
+              (prrr-review-submitted-hook
+               (list (lambda (p) (push (list 'submit (plist-get p :verdict)) seen)))))
+          (prrr-test-with-ghub-dispatch
+              `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread"))
+                (submitPullRequestReview
+                 . ((data (submitPullRequestReview (clientMutationId))))))
+            (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                                 :body "New thread body" :commit "1111"))
+            (prrr-test-with-rest-stub (prrr-test-fixture "publish-reply") captured
+              (prrr-sync-test--write 'publish-reply '(:thread-id "PRRT_kwDOexample0000001"
+                                                      :body "Reply body"))
+              (should captured))
+            (prrr-sync-test--write 'submit '(:verdict approve :body "LGTM" :commit "1111"))))
+        (should (equal '((thread "New thread body") (reply "Reply body") (submit approve))
+                       (reverse seen)))))))
+
+(ert-deftest prrr-sync-test-signalling-hook-does-not-stop-the-outbox ()
+  "Review Focus 4."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (let* ((calls 0)
+             (prrr-comment-created-hook (list (lambda (_) (cl-incf calls) (error "Boom")))))
+        (prrr-test-with-ghub-dispatch
+            `((addPullRequestReviewThread . ,(prrr-test-fixture "add-thread")))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                               :body "First" :commit "1111"))
+          (should-not (prrr-db-outbox-rows))
+          (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor
+                                               :body "Second" :commit "1111"))
+          (should-not (prrr-db-outbox-rows))
+          (should (= 2 calls))
+          (should (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01")))))))
+
+(ert-deftest prrr-sync-test-accept-checks-the-pending-review-commit ()
+  "Final review 5: a proposed Thread on another commit cannot join the Pending Review."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (let* ((thread (prrr-sync-test--write
+                        'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                        :body "Maybe." :commit "2222" :agent t)))
+               (rows (prrr-db-outbox-rows)))
+          (should (string-match-p "Pending Review is on"
+                                  (cadr (should-error (prrr-sync-accept (prrr-outbox-id thread)
+                                                                        "Surely.")
+                                                      :type 'user-error))))
+          (should (equal rows (prrr-db-outbox-rows)))
+          (should (eq 'proposed (prrr-outbox-kind (car (prrr-db-outbox-rows)))))
+          (should-not prrr-test-requests))))))
+
+(defvar prrr-sync-test--hook nil
+  "A hook for `prrr-sync-test-run-hook-runs-every-function'.")
+
+(defun prrr-sync-test--signalling-hook (&rest _)
+  "Signal an error, as a broken hook function would."
+  (error "Boom"))
+
+(ert-deftest prrr-sync-test-run-hook-runs-every-function ()
+  "Final review 6: one signalling function neither hides the others nor its name."
+  (let* ((seen nil) (messages nil)
+         (prrr-sync-test--hook (list #'prrr-sync-test--signalling-hook
+                                     (lambda (x) (push x seen)))))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format &rest args) (push (apply #'format-message format args) messages))))
+      (prrr-sync-run-hook 'prrr-sync-test--hook 'value))
+    (should (equal '(value) seen))
+    (should (seq-find (lambda (m) (string-match-p "prrr-sync-test--signalling-hook.*Boom" m))
+                      messages))))
 
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here

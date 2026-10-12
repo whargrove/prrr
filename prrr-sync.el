@@ -464,12 +464,14 @@ restart without forge's objects."
   (concat prrr-state-local-prefix (prrr-sync--new-id)))
 
 (defun prrr-sync--outbox-payload (kind payload target)
-  "Return PAYLOAD of a write KIND completed with TARGET and its local ids."
-  (append (list :target target)
-          (and (memq kind '(thread publish)) (list :thread (prrr-sync--local-id)))
-          (and (memq kind '(thread publish reply publish-reply discussion))
-               (list :comment (prrr-sync--local-id)))
-          payload))
+  "Return PAYLOAD of a write KIND completed with TARGET and its local ids.
+A proposal gets the local ids of the kind it would become, its :as."
+  (let ((kind (if (eq kind 'proposed) (plist-get payload :as) kind)))
+    (append (list :target target)
+            (and (memq kind '(thread publish)) (list :thread (prrr-sync--local-id)))
+            (and (memq kind '(thread publish reply publish-reply discussion))
+                 (list :comment (prrr-sync--local-id)))
+            payload)))
 
 (defun prrr-sync--outbox-add (pr-id kind payload)
   "Queue the write KIND with PAYLOAD for PR-ID and return its row."
@@ -492,7 +494,9 @@ since named is replaced by GitHub's id, so a command confirmed after
 its target was sent still reaches it.  BUFFER, when live, refreshes
 whenever the PR's writes change.  Return the `prrr-outbox' row that
 carries the write, or nil when it dropped queued writes instead.
-Signal a `user-error' when the viewer's login is unknown."
+Signal a `user-error' when the viewer's login is unknown, or when the
+write needs what an agent's proposal creates, such as a reply to a
+proposed Thread (`prrr-state-outbox-needs-proposal-p')."
   (let* ((payload (prrr-sync--renamed payload))
          (target (prrr-sync--target repo pullreq))
          (pr-id (plist-get target :pr-id))
@@ -500,6 +504,9 @@ Signal a `user-error' when the viewer's login is unknown."
                        (prrr-sync--outbox-creator pr-id (plist-get payload :comment-id)))))
     (unless (plist-get target :me)
       (user-error "No GitHub login: set github.user or `prrr-github-user'"))
+    (unless creator
+      (prrr-sync--refuse-if-needs-proposal
+       (prrr-outbox-create :pr-id pr-id :kind kind :payload payload)))
     (prrr-sync--remember-buffer pr-id buffer)
     (prog1 (cond ((and creator (eq kind 'edit))
                   (setf (prrr-outbox-payload creator)
@@ -516,6 +523,12 @@ Signal a `user-error' when the viewer's login is unknown."
                                          (prrr-sync--outbox-payload kind payload target))))
       (prrr-sync-retry pr-id))))
 
+(defun prrr-sync--refuse-if-needs-proposal (row)
+  "Signal a `user-error' when the write ROW would wait on a proposal.
+ROW is about to join its PR's queued writes."
+  (when (prrr-state-outbox-needs-proposal-p row (prrr-db-outbox-rows (prrr-outbox-pr-id row)))
+    (user-error "Accept the proposed Thread first")))
+
 (defun prrr-sync--outbox-creator (pr-id comment-id)
   "Return the queued write of PR-ID creating COMMENT-ID, unless its send started.
 A write being sent, or unconfirmed, may already have reached GitHub,
@@ -531,7 +544,8 @@ unconfirmed too (`prrr-state-outbox-unconfirmed-p')."
   "Drop PR-ID's queued writes that a discard of its Pending Review makes moot.
 Those are new Threads and replies of the Pending Review, and every
 queued write that needs one of them or a stored pending comment,
-unless it is being sent."
+unless it is being sent.  An agent's proposals are not part of the
+Pending Review and stay, unless they need what is dropped."
   (let* ((rows (prrr-db-outbox-rows pr-id))
          (pending (seq-filter (lambda (row) (memq (prrr-outbox-kind row) '(thread reply)))
                               rows))
@@ -622,6 +636,30 @@ GitHub all the same, so its PR is refetched to show what GitHub has."
           (prrr-sync--outbox-pump)
           (length drop)))
     0))
+
+(defun prrr-sync-accept (id body &optional buffer)
+  "Accept the queued proposal ID with BODY as its text.
+It becomes the Thread or reply it proposed, in its place in the
+Outbox, and goes out like any write (`prrr-state-outbox-accepted').
+BUFFER, when live, refreshes whenever the PR's writes change.  Signal
+a `user-error' when ID is no longer a queued proposal, when it is a
+reply to a Thread that is still a proposal, or when it is a Thread
+written at another commit than the Pending Review's, whose lines
+would land elsewhere (`prrr-state-review-commit-problem')."
+  (let ((row (prrr-db-get 'outbox id)))
+    (unless (and row (prrr-state-outbox-held-p row))
+      (user-error "That proposal is no longer queued"))
+    (let ((payload (prrr-outbox-payload row)))
+      (when (eq (plist-get payload :as) 'thread)
+        (when-let* ((problem (prrr-state-review-commit-problem
+                              (prrr-state-review-commit
+                               (prrr-sync-review-data (prrr-outbox-pr-id row)))
+                              (plist-get payload :commit))))
+          (user-error "%s" problem))))
+    (let ((accepted (prrr-state-outbox-accepted row body)))
+      (prrr-sync--refuse-if-needs-proposal accepted)
+      (prrr-db-insert accepted))
+    (prrr-sync-retry (prrr-outbox-pr-id row) buffer)))
 
 (defun prrr-sync-review-data (pr-id)
   "Return the review data of PR-ID as the user should see it.
@@ -951,6 +989,52 @@ so an edit of the comment RESULT names carries STORED's body there."
                                    :comment-id (plist-get result :comment-id)
                                    :body body)))))
 
+(defvar prrr-comment-created-hook nil
+  "Functions run with the `prrr-comment' starting a new Thread, once GitHub has it.
+Runs for Threads added to the Pending Review and published at once,
+whoever wrote them.")
+
+(defvar prrr-reply-created-hook nil
+  "Functions run with the `prrr-comment' of a reply, once GitHub has it.")
+
+(defvar prrr-review-submitted-hook nil
+  "Functions run once GitHub has a Submit of the Pending Review.
+Each gets a plist (:pr-id :verdict :body :commit); :verdict is
+`approve', `request-changes' or `comment'.")
+
+(defun prrr-sync-run-hook (hook &rest args)
+  "Run each function of HOOK with ARGS, whatever the others do.
+A function that signals is named in a message instead, and the rest
+still run: a hook must never stop the Outbox."
+  (apply #'run-hook-wrapped hook
+         (lambda (function &rest args)
+           (condition-case err
+               (apply function args)
+             (error (message "prrr: %s function %s failed: %s"
+                             hook function (error-message-string err))))
+           ;; nil: go on to the next function.
+           nil)
+         args))
+
+(defun prrr-sync--run-outbox-hooks (row outcome)
+  "Run the hook for the write ROW that GitHub accepted.
+OUTCOME is `prrr-sync--outbox-outcome' of ROW, whose rows hold the
+comment a creating write made."
+  (let ((payload (prrr-outbox-payload row)))
+    (pcase (prrr-outbox-kind row)
+      ((and (or 'thread 'publish 'reply 'publish-reply) kind)
+       (when-let* ((comment (seq-find #'prrr-comment-p (plist-get outcome :insert))))
+         (prrr-sync-run-hook (if (memq kind '(thread publish))
+                                 'prrr-comment-created-hook
+                               'prrr-reply-created-hook)
+                             comment)))
+      ('submit
+       (prrr-sync-run-hook 'prrr-review-submitted-hook
+                           (list :pr-id (prrr-outbox-pr-id row)
+                                 :verdict (plist-get payload :verdict)
+                                 :body (plist-get payload :body)
+                                 :commit (plist-get payload :commit)))))))
+
 (defun prrr-sync--outbox-record-success (row result)
   "Record that GitHub carried out the queued write ROW, as RESULT says.
 RESULT is GitHub's answer to ROW's send or, for an unconfirmed write,
@@ -963,7 +1047,8 @@ pulled it (`prrr-sync--outbox-record-post').  The caller refreshes
 buffers and pumps."
   (let ((outcome (prrr-sync--outbox-outcome row result)))
     (apply #'prrr-db-outbox-done (prrr-outbox-id row) outcome)
-    (prrr-sync--learn-renames (plist-get outcome :renames)))
+    (prrr-sync--learn-renames (plist-get outcome :renames))
+    (prrr-sync--run-outbox-hooks row outcome))
   (prrr-sync--outbox-record-post row result))
 
 (defvar prrr-sync--posted (make-hash-table :test #'equal)

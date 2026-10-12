@@ -138,7 +138,7 @@ either limit ends the run."
             (push (prrr-diff-file-path file) paths)))))
     paths))
 
-(defun prrr-diff--merge-base (pullreq head)
+(defun prrr-diff-pullreq-merge-base (pullreq head)
   "Return the merge base of PULLREQ's base commit and HEAD, or nil.
 nil when forge recorded no base commit or it is not in the repository."
   (when-let* ((base-rev (oref pullreq base-rev)))
@@ -408,30 +408,21 @@ Buffer that child may be a File Comment."
 
 (defconst prrr-diff--review-keys
   '(("c" . prrr-comment) ("C" . prrr-comment-file) ("r" . prrr-reply)
-    ("e" . prrr-edit-comment) ("k" . prrr-delete-comment)
+    ("e" . prrr-edit-comment) ("k" . prrr-delete-comment) ("a" . prrr-accept-comment)
     ("d" . prrr-discussion-comment) ("R" . prrr-toggle-resolved)
     ("s" . prrr-comment-suggest)
     ("S" . prrr-submit) ("O" . prrr-outbox)
     ("D" . prrr-range) ("." . prrr-goto-default-range) ("m" . prrr-mark-seen)
     (">" . prrr-stack-up) ("<" . prrr-stack-down)
-    ("L" . prrr-toggle-highlight))
+    ("L" . prrr-toggle-highlight) ("@" . prrr-send-to-agent))
   "The commenting and reviewing keys of a Review Buffer (SPEC section 9).
 They are bound in the section keymaps too, which win over the mode's
 and in which magit binds several of them.")
 
-(defconst prrr-diff--later-keys
-  '("@")
-  "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
-They are `undefined' until then, so magit's diff arguments or log never
-run from a Review Buffer.")
-
 (defun prrr-diff--bind-review-keys (map)
-  "Bind the review keys in MAP and make the later keys `undefined'; return MAP.
-They are `prrr-diff--review-keys' and `prrr-diff--later-keys'."
+  "Bind the keys of `prrr-diff--review-keys' in MAP; return MAP."
   (pcase-dolist (`(,key . ,command) prrr-diff--review-keys)
     (keymap-set map key command))
-  (dolist (key prrr-diff--later-keys)
-    (keymap-set map key #'undefined))
   map)
 
 (defvar prrr-diff-file-section-map
@@ -468,8 +459,8 @@ See `prrr-diff-file-section-map' for why it exists.")
      "?" #'prrr-menu
      "C-o" #'prrr-menu))
   "Keys of the Review Buffer (SPEC section 9).
-The keys of `prrr-diff--review-keys' and `prrr-diff--later-keys' are bound
-here and in the section keymaps.")
+The keys of `prrr-diff--review-keys' are bound here and in the
+section keymaps.")
 
 (define-derived-mode prrr-diff-mode magit-diff-mode "prrr"
   "Review one pull request: its diff with Threads inline.
@@ -580,14 +571,19 @@ the diff."
   (oref pullreq posts))
 
 (defun prrr-diff--outbox-status (data)
-  "Describe the Outbox of the review DATA for the header, or return nil."
+  "Describe the Outbox of the review DATA for the header, or return nil.
+An agent's proposals (`prrr-state-outbox-held-p') are counted apart:
+they are never sent."
   (let* ((outbox (plist-get data :outbox))
+         (proposed (seq-count #'prrr-state-outbox-held-p outbox))
          (failed (seq-count #'prrr-outbox-last-error outbox))
-         (unsent (- (length outbox) failed)))
+         (unsent (- (length outbox) failed proposed)))
     (when outbox
       (concat "Outbox: "
               (string-join (delq nil (list (and (> unsent 0) (format "%d unsent" unsent))
-                                           (and (> failed 0) (format "%d failed, O to act" failed))))
+                                           (and (> failed 0) (format "%d failed, O to act" failed))
+                                           (and (> proposed 0)
+                                                (format "%d proposed, a to accept" proposed))))
                            ", ")))))
 
 (defun prrr-diff--range-status (view)
@@ -611,8 +607,7 @@ queued Submit, what the last refetch said, and whether the head moved
 away from the one shown (`prrr-state-head-notice')."
   (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
          (submit (plist-get data :submit))
-         (pending (seq-count (lambda (comment) (eq (prrr-comment-state comment) 'pending))
-                             (plist-get data :comments))))
+         (pending (seq-count #'prrr-state-comment-pending-p (plist-get data :comments))))
     (string-join
      (delq nil
            (list (prrr-diff--range-status view)
@@ -686,7 +681,7 @@ Outbox's writes applied."
          (local (magit-rev-verify ref))
          (head (or prrr-diff--head local))
          (merge-base (and head (eq (prrr-range-kind range) 'default)
-                          (prrr-diff--merge-base pullreq head)))
+                          (prrr-diff-pullreq-merge-base pullreq head)))
          (ends (prrr-state-range-ends range merge-base head))
          (start (and head (car ends)))
          (end (and head (cdr ends)))
@@ -768,6 +763,10 @@ older head ends the visit of that head here, as leaving would
                              (magit-rev-verify (prrr-diff--head-ref pullreq)))))
         (prrr-diff-record-bookmark)))))
 
+(defvar prrr-review-buffer-opened-hook nil
+  "Functions run with the `forge-pullreq' once `prrr-diff-open' shows its buffer.
+The Review Buffer is current while they run.")
+
 (defun prrr-diff-open (pullreq)
   "Show the Review Buffer of PULLREQ and refetch its review data in the background.
 The buffer renders at once from the database and refreshes when the
@@ -795,13 +794,23 @@ buffer."
   ;; never during the render.
   (let ((buffer (get-buffer-create (prrr-diff--buffer-name pullreq))))
     (prrr-sync-refetch (forge-get-repository pullreq) pullreq buffer)
-    (prrr-diff-setup-buffer pullreq)))
+    (let ((shown (prrr-diff-setup-buffer pullreq)))
+      (with-current-buffer shown
+        (prrr-sync-run-hook 'prrr-review-buffer-opened-hook pullreq))
+      shown)))
 
 (defun prrr-diff-pullreq ()
   "Return the current Review Buffer's pull request.
 Signal a `user-error' outside a Review Buffer."
   (or (and (derived-mode-p 'prrr-diff-mode) prrr-diff--pullreq)
       (user-error "Not in a Review Buffer")))
+
+(defun prrr-diff-range ()
+  "Return the Range this Review Buffer shows, a `prrr-range'.
+Signal a `user-error' outside a Review Buffer."
+  (if (derived-mode-p 'prrr-diff-mode)
+      prrr-diff--range
+    (user-error "Not in a Review Buffer")))
 
 (defun prrr-diff-live-numbers (toplevel)
   "Return the numbers of the PRs shown in live Review Buffers of TOPLEVEL.
@@ -996,7 +1005,7 @@ Either is nil when the diff could not be drawn."
 (defun prrr-diff-merge-base ()
   "Return the merge base of the current Review Buffer's PR and its head, or nil.
 The head is the one the buffer shows."
-  (and prrr-diff--head (prrr-diff--merge-base prrr-diff--pullreq prrr-diff--head)))
+  (and prrr-diff--head (prrr-diff-pullreq-merge-base prrr-diff--pullreq prrr-diff--head)))
 
 (defun prrr-diff-position ()
   "Return where point is in the diff, as (PATH SIDE LINE COMMIT NAME), or nil.

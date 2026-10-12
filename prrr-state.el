@@ -452,8 +452,8 @@ GitHub sent no side.  A range Thread is shown after its last line."
 
 (defconst prrr-state-outbox-kinds
   '(thread publish reply publish-reply edit delete resolve viewed discussion
-    submit discard)
-  "Kinds of write the Outbox sends, and the payload of each.
+    submit discard proposed)
+  "Kinds of write the Outbox holds, and the payload of each.
 Every payload has :target, the PR as the Outbox reaches it:
 \(:host :owner :name :number :pr-id :me), :me being the viewer's login.
   thread         a new Thread in the Pending Review: :thread and
@@ -471,7 +471,46 @@ Every payload has :target, the PR as the Outbox reaches it:
   discussion     a Discussion Comment: :comment (its local id), :body.
   submit         :verdict (`approve', `request-changes' or `comment'),
                  :body, :commit.
-  discard        nothing more.")
+  discard        nothing more.
+  proposed       an agent's comment kept until the user accepts it: :as,
+                 `thread' or `reply', and the payload of that kind.  Never
+                 sent (`prrr-state-outbox-held-p').
+A thread or reply write may also carry :agent, non-nil when an agent
+wrote it through the API (prrr-api.el); the comment it makes is
+flagged `agent-p'.")
+
+(defun prrr-state-outbox-held-p (row)
+  "Non-nil when the write ROW waits for the user and is never sent."
+  (eq (prrr-outbox-kind row) 'proposed))
+
+(defun prrr-state--outbox-as (row)
+  "Return the kind of write ROW is shown and acts as.
+ROW's kind, or for a proposal the kind it would become, its :as."
+  (if (prrr-state-outbox-held-p row)
+      (plist-get (prrr-outbox-payload row) :as)
+    (prrr-outbox-kind row)))
+
+(defun prrr-state-outbox-accepted (row body)
+  "Return the write the proposal ROW becomes once the user accepts it with BODY.
+It is the Thread or reply ROW proposed, still the agent's, with BODY
+as its text.  It keeps ROW's id, and so its place in the Outbox, and
+its local ids, so a queued write that needs what ROW creates, such as
+a proposed reply to a proposed Thread, still finds it.  ROW is not
+changed."
+  (let ((payload (prrr-outbox-payload row)))
+    (prrr-state--copy row
+                      :kind (plist-get payload :as)
+                      :payload (plist-put (cl-loop for (key value) on payload by #'cddr
+                                                   unless (eq key :as)
+                                                   append (list key value))
+                                          :body body))))
+
+(defun prrr-state-comment-pending-p (comment)
+  "Non-nil when COMMENT is in the Pending Review.
+That is a `pending' comment that is not a proposal: a proposal shows
+as pending, but joins the Pending Review only once accepted."
+  (and (eq (prrr-comment-state comment) 'pending)
+       (not (eq (prrr-comment-local-state comment) 'proposed))))
 
 (defconst prrr-state-local-prefix "local:"
   "Prefix of the ids prrr gives what it created before GitHub names it.")
@@ -496,7 +535,7 @@ GitHub allows 80 content creations a minute (SPEC section 4).")
 (defun prrr-state-outbox-references (row)
   "Return the ids of the existing things the write ROW acts on."
   (let ((payload (prrr-outbox-payload row)))
-    (pcase (prrr-outbox-kind row)
+    (pcase (prrr-state--outbox-as row)
       ((or 'reply 'publish-reply 'resolve) (list (plist-get payload :thread-id)))
       ((or 'edit 'delete) (list (plist-get payload :comment-id))))))
 
@@ -539,12 +578,39 @@ error, as a retry does, does not make an unconfirmed write sendable."
        (not (prrr-state-outbox-unconfirmed-p row))
        (prrr-state-outbox-ready-p row)))
 
+(defun prrr-state-outbox-needs-proposal-p (row rows)
+  "Non-nil when the write ROW cannot go out until a proposal is accepted.
+That is when ROW is not a proposal itself (`prrr-state-outbox-held-p')
+and needs, directly or through other writes, an id that a proposal
+among ROWS creates: a reply to a proposed Thread, say.  Such a write
+would wait for that id for as long as the proposal waits for the
+user, so commands refuse to queue it."
+  (and (not (prrr-state-outbox-held-p row))
+       (memq row (prrr-state--outbox-waiting (if (memq row rows) rows (append rows (list row)))))
+       t))
+
+(defun prrr-state--outbox-waiting (rows)
+  "Return the rows among ROWS that wait for the user: proposals and what needs one."
+  (let ((held (seq-filter #'prrr-state-outbox-held-p rows)))
+    (append held (prrr-state-outbox-dependents
+                  rows (mapcan #'prrr-state-outbox-created-ids held)))))
+
+(defun prrr-state--outbox-candidates (rows)
+  "Return the rows among ROWS the Outbox may send some day, in order.
+Proposals and the writes that need them wait for the user, so they
+never hold back their PR's other writes (Review Focus 5)."
+  (let ((waiting (prrr-state--outbox-waiting rows)))
+    (seq-remove (lambda (row) (memq row waiting)) rows)))
+
 (defun prrr-state-outbox-busy-prs (rows)
   "Return the ids of the PRs among ROWS whose first write may be sent.
 The writes of one PR go out in order, so a failed, waiting or
-unconfirmed first write holds back the rest of its PR."
+unconfirmed first write holds back the rest of its PR.  Proposals,
+and writes that need one (`prrr-state-outbox-needs-proposal-p'), are
+skipped."
   (mapcar #'prrr-outbox-pr-id
-          (seq-filter #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
+          (seq-filter #'prrr-state--sendable-p
+                      (prrr-state--outbox-heads (prrr-state--outbox-candidates rows)))))
 
 (defun prrr-state-outbox-next (rows creations now)
   "Choose the write the Outbox sends next.
@@ -556,8 +622,10 @@ unconfirmed (`prrr-state-outbox-unconfirmed-p') and acts on no local
 id.  The oldest candidate wins.  Return nil when there is none,
 else (ROW . WAIT): send ROW after WAIT seconds, which is 0 unless ROW
 creates content and `prrr-state-creations-per-minute' were sent in the
-last minute."
-  (when-let* ((row (seq-find #'prrr-state--sendable-p (prrr-state--outbox-heads rows))))
+last minute.  Proposals, and writes that need one
+\(`prrr-state-outbox-needs-proposal-p'), are skipped."
+  (when-let* ((row (seq-find #'prrr-state--sendable-p
+                             (prrr-state--outbox-heads (prrr-state--outbox-candidates rows)))))
     (cons row
           (let ((recent (sort (seq-filter (lambda (time) (> time (- now 60))) creations) #'<)))
             (if (or (not (memq (prrr-outbox-kind row) prrr-state-creation-kinds))
@@ -614,16 +682,19 @@ Thread; the refetch does."
 
 (defun prrr-state--outbox-comment (row comment-id thread-id created-at)
   "Return the comment the write ROW creates, under COMMENT-ID in THREAD-ID.
-CREATED-AT is its creation time."
+CREATED-AT is its creation time.  A proposal's comment is `pending'
+like the Thread or reply it would become, with a `local-state' of
+`proposed'."
   (let ((payload (prrr-outbox-payload row)))
     (prrr-comment-create :comment-id comment-id :thread-id thread-id
                          :pr-id (prrr-outbox-pr-id row)
                          :author (plist-get (plist-get payload :target) :me)
                          :body (plist-get payload :body) :created-at created-at
-                         :state (if (memq (prrr-outbox-kind row) '(thread reply))
+                         :state (if (memq (prrr-state--outbox-as row) '(thread reply))
                                     'pending
                                   'submitted)
-                         :local-state 'unsent :agent-p nil)))
+                         :local-state (if (prrr-state-outbox-held-p row) 'proposed 'unsent)
+                         :agent-p (and (plist-get payload :agent) t))))
 
 (defun prrr-state-outbox-created (row result)
   "Return (ROWS . RENAMES) once GitHub accepted the creating write ROW.
@@ -665,9 +736,11 @@ DATA is a plist like the one `prrr-db-review-data' returns; ROWS are
 the PR's `prrr-outbox' rows, oldest first.  Threads, comments, the
 Pending Review and Viewed flags change as each write will change them
 on GitHub; created things carry their local ids and a `local-state' of
-`unsent'.  A failed delete or discard changes nothing, so what it was
-meant to remove stays in view; an unconfirmed write shows as unsent,
-like any write that has not failed.  The result has DATA's keys plus:
+`unsent', or `proposed' for a proposal, which shows as the Thread or
+reply it would become and is not part of the Pending Review.  A failed
+delete or discard changes nothing, so what it was meant to remove
+stays in view; an unconfirmed write shows as unsent, like any write
+that has not failed.  The result has DATA's keys plus:
   :outbox      ROWS;
   :writes      a hash table from each comment id, Thread id and Viewed
                path a queued write touches to the newest such row;
@@ -685,7 +758,7 @@ DATA's structs are never changed."
              (failed (prrr-outbox-last-error row))
              (comment-id (plist-get payload :comment-id))
              (thread-id (plist-get payload :thread-id)))
-        (pcase (prrr-outbox-kind row)
+        (pcase (prrr-state--outbox-as row)
           ((or 'thread 'publish)
            (let ((thread (plist-get payload :thread))
                  (comment (plist-get payload :comment)))
@@ -739,12 +812,10 @@ DATA's structs are never changed."
           ('discard
            (unless failed
              (dolist (comment comments)
-               (when (eq (prrr-comment-state comment) 'pending)
+               (when (prrr-state-comment-pending-p comment)
                  (push (prrr-comment-thread-id comment) emptied)))
              (setq pending nil
-                   comments (seq-remove (lambda (comment)
-                                          (eq (prrr-comment-state comment) 'pending))
-                                        comments))))
+                   comments (seq-remove #'prrr-state-comment-pending-p comments))))
           ('submit (setq submit row)))))
     (when emptied
       (let ((live (make-hash-table :test #'equal)))
@@ -986,6 +1057,7 @@ GitHub's answer."
               ('discussion "Discussion Comment")
               ('submit (format "submit (%s)" (plist-get payload :verdict)))
               ('discard "discard the Pending Review")
+              ('proposed "proposed comment")
               (kind (symbol-name kind)))
             (and (not (string-empty-p body)) (format ": %s" (truncate-string-to-width body 40 nil nil "…")))
             (cond ((prrr-outbox-last-error row)

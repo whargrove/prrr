@@ -61,9 +61,33 @@
                                          " prrr-comment prrr-reply prrr-submit prrr-outbox"
                                          " prrr-range prrr-goto-default-range prrr-mark-seen prrr-refresh"
                                          " prrr-show-since-review prrr-show-since-opened"
-                                         " prrr-show-commit prrr-show-between))"
+                                         " prrr-show-commit prrr-show-between prrr-send-to-agent"
+                                         " prrr-accept-comment))"
                                          " (unless (and (autoloadp (symbol-function command)) (commandp command))"
                                          " (push command missing)))"
+                                         " (prin1 missing)))"))
+           (buffer-string))))
+    (should (equal "nil" (string-trim output)))))
+
+(ert-deftest prrr-test-require-prrr-autoloads-every-api-function ()
+  "`(require \\='prrr)' alone makes the Agent API callable (Review Focus 2).
+An agent's `emacsclient -e' may be the first thing to call it."
+  (let ((output
+         (with-temp-buffer
+           (call-process (expand-file-name invocation-name invocation-directory)
+                         nil '(t nil) nil
+                         "-Q" "--batch"
+                         "--eval" (format "(progn (setq package-user-dir %S) (package-initialize))"
+                                          package-user-dir)
+                         "-L" prrr-test-root
+                         "--eval" (concat "(progn (require 'prrr) (let (missing)"
+                                         " (dolist (function '(prrr-api-pullreq prrr-api-threads"
+                                         " prrr-api-diff prrr-api-pending prrr-api-add-comment prrr-api-reply"
+                                         " prrr-api-delete-pending-comment prrr-api-submit"
+                                         " prrr-api-export prrr-api-import))"
+                                         " (unless (and (fboundp function)"
+                                         " (autoloadp (symbol-function function)))"
+                                         " (push function missing)))"
                                          " (prin1 missing)))"))
            (buffer-string))))
     (should (equal "nil" (string-trim output)))))
