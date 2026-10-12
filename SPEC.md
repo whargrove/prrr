@@ -651,8 +651,9 @@ bodies; nothing else is added.
   seconds), as when the connection fails, ends as offline; a later answer
   is ignored.
 - A failed Teams fetch does not stop the queue pull: the stored Teams stay,
-  Teams are not retried before their daily cadence, and the header says
-  "Teams unavailable: ...".
+  and the header says "Teams unavailable: ..." until a Teams fetch
+  succeeds. An offline or rate-limited failure is retried on the next pull;
+  any other waits for the daily cadence.
 - Network failures on refetch keep the database copy and show "offline" in
   the header; writes go to the Outbox.
 - A missing PR ref (`refs/pullreqs/N` absent) prompts to run `forge-pull`.

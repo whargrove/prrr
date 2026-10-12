@@ -91,8 +91,10 @@ pull can appear in forge's list a few minutes before it appears here. Press
 Teams only refine the `team-requested` and `teammate-reviewed` states. If
 prrr cannot list your teams, for example because the token lacks `read:org`
 or an organization requires SAML SSO, the queue still fills, prrr uses the
-teams it already knows, and the heading says `Teams unavailable: …`. It
-tries the teams again the next day, or when you run `prrr-refresh-teams`.
+teams it already knows, and the heading says `Teams unavailable: …` until
+the teams load. It tries the teams again on the next pull when you were
+offline or rate-limited, otherwise the next day, or when you run
+`prrr-refresh-teams`.
 
 ### Keys on a queue row
 

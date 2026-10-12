@@ -45,6 +45,7 @@
   (declare (indent 0))
   `(let ((prrr-sync--status (make-hash-table :test #'equal))
          (prrr-sync--teams-tried-at nil)
+         (prrr-sync--teams-failure nil)
          (prrr-github-user "example-me"))
      ,@body))
 
@@ -179,6 +180,53 @@ The stored Teams stay, the failure is not retried before
                      (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))))
       (should-not (prrr-sync--teams-due-p)))))
 
+
+(defun prrr-sync-test--pull-with-teams (teams-answer)
+  "Pull the test repository; the Teams query answers with TEAMS-ANSWER.
+TEAMS-ANSWER is (:error ERR) or (:value VALUE); the queue query
+answers with the queue fixture.  Return the pull's status."
+  (cl-letf (((symbol-function 'ghub-query)
+             (lambda (query _variables &rest args)
+               (cond ((not (eq (car (cadr query)) 'viewer))
+                      (funcall (plist-get args :callback) (prrr-test-fixture "queue")))
+                     ((plist-member teams-answer :error)
+                      (funcall (plist-get args :errorback) (plist-get teams-answer :error) nil nil nil))
+                     (t (funcall (plist-get args :callback) (plist-get teams-answer :value)))))))
+    (prrr-sync-pull (prrr-sync-test--repo)))
+  (prrr-sync-status "example-repo-id"))
+
+(ert-deftest prrr-sync-test-pull-keeps-teams-unavailable-until-teams-succeed ()
+  "The note outlives the failing pull: the Teams stay stale until a success."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-sync-test--pull-with-teams '(:error (error http 401)))
+      (should-not (prrr-sync--teams-due-p))
+      (should (equal "Teams unavailable: GitHub rejected the token (HTTP 401)"
+                     (plist-get (prrr-sync-test--pull-with-teams '(:error (error http 401)))
+                                :message))))))
+
+(ert-deftest prrr-sync-test-pull-retries-teams-after-an-offline-failure ()
+  "A network blip does not cost a day of Teams: the next pull tries again."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-sync-test--pull-with-teams '(:error (error connection-failed "refused")))
+      (should (prrr-sync--teams-due-p))
+      (should (string-prefix-p "Teams unavailable: "
+                               (plist-get (prrr-sync-test--pull-with-teams
+                                           '(:error (error http 429)))
+                                          :message)))
+      (should (prrr-sync--teams-due-p)))))
+
+(ert-deftest prrr-sync-test-teams-success-clears-teams-unavailable ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (prrr-sync-test--pull-with-teams '(:error (error connection-failed "refused")))
+      (let ((status (prrr-sync-test--pull-with-teams
+                     `(:value ,(prrr-test-fixture "teams")))))
+        (should (eq 'ok (plist-get status :state)))
+        (should-not (plist-get status :message)))
+      (should-not prrr-sync--teams-failure)
+      (should-not (prrr-sync--teams-due-p)))))
 (ert-deftest prrr-sync-test-pull-queue-signal-after-teams-sends-each-query-once ()
   "A signal while sending the queue query fails the pull; Teams are not blamed."
   (prrr-db-with-test-db
