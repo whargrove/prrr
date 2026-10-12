@@ -642,11 +642,20 @@ GitHub all the same, so its PR is refetched to show what GitHub has."
 It becomes the Thread or reply it proposed, in its place in the
 Outbox, and goes out like any write (`prrr-state-outbox-accepted').
 BUFFER, when live, refreshes whenever the PR's writes change.  Signal
-a `user-error' when ID is no longer a queued proposal, or when it is
-a reply to a Thread that is still a proposal."
+a `user-error' when ID is no longer a queued proposal, when it is a
+reply to a Thread that is still a proposal, or when it is a Thread
+written at another commit than the Pending Review's, whose lines
+would land elsewhere (`prrr-state-review-commit-problem')."
   (let ((row (prrr-db-get 'outbox id)))
     (unless (and row (prrr-state-outbox-held-p row))
       (user-error "That proposal is no longer queued"))
+    (let ((payload (prrr-outbox-payload row)))
+      (when (eq (plist-get payload :as) 'thread)
+        (when-let* ((problem (prrr-state-review-commit-problem
+                              (prrr-state-review-commit
+                               (prrr-sync-review-data (prrr-outbox-pr-id row)))
+                              (plist-get payload :commit))))
+          (user-error "%s" problem))))
     (let ((accepted (prrr-state-outbox-accepted row body)))
       (prrr-sync--refuse-if-needs-proposal accepted)
       (prrr-db-insert accepted))
@@ -994,11 +1003,18 @@ Each gets a plist (:pr-id :verdict :body :commit); :verdict is
 `approve', `request-changes' or `comment'.")
 
 (defun prrr-sync-run-hook (hook &rest args)
-  "Run HOOK with ARGS; show any error as a message instead of signaling.
-A hook must never stop the Outbox."
-  (condition-case err
-      (apply #'run-hook-with-args hook args)
-    (error (message "prrr: %s failed: %s" hook (error-message-string err)))))
+  "Run each function of HOOK with ARGS, whatever the others do.
+A function that signals is named in a message instead, and the rest
+still run: a hook must never stop the Outbox."
+  (apply #'run-hook-wrapped hook
+         (lambda (function &rest args)
+           (condition-case err
+               (apply function args)
+             (error (message "prrr: %s function %s failed: %s"
+                             hook function (error-message-string err))))
+           ;; nil: go on to the next function.
+           nil)
+         args))
 
 (defun prrr-sync--run-outbox-hooks (row outcome)
   "Run the hook for the write ROW that GitHub accepted.

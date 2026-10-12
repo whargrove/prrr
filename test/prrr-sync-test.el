@@ -1968,5 +1968,42 @@ is refused and queues nothing; a proposed reply to it is fine."
           (should (= 2 calls))
           (should (prrr-db-get 'review-comment "PRRC_kwDOexampleNew01")))))))
 
+(ert-deftest prrr-sync-test-accept-checks-the-pending-review-commit ()
+  "Final review 5: a proposed Thread on another commit cannot join the Pending Review."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (let* ((thread (prrr-sync-test--write
+                        'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                        :body "Maybe." :commit "2222" :agent t)))
+               (rows (prrr-db-outbox-rows)))
+          (should (string-match-p "Pending Review is on"
+                                  (cadr (should-error (prrr-sync-accept (prrr-outbox-id thread)
+                                                                        "Surely.")
+                                                      :type 'user-error))))
+          (should (equal rows (prrr-db-outbox-rows)))
+          (should (eq 'proposed (prrr-outbox-kind (car (prrr-db-outbox-rows)))))
+          (should-not prrr-test-requests))))))
+
+(defvar prrr-sync-test--hook nil
+  "A hook for `prrr-sync-test-run-hook-runs-every-function'.")
+
+(defun prrr-sync-test--signalling-hook (&rest _)
+  "Signal an error, as a broken hook function would."
+  (error "Boom"))
+
+(ert-deftest prrr-sync-test-run-hook-runs-every-function ()
+  "Final review 6: one signalling function neither hides the others nor its name."
+  (let* ((seen nil) (messages nil)
+         (prrr-sync-test--hook (list #'prrr-sync-test--signalling-hook
+                                     (lambda (x) (push x seen)))))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format &rest args) (push (apply #'format-message format args) messages))))
+      (prrr-sync-run-hook 'prrr-sync-test--hook 'value))
+    (should (equal '(value) seen))
+    (should (seq-find (lambda (m) (string-match-p "prrr-sync-test--signalling-hook.*Boom" m))
+                      messages))))
+
 (provide 'prrr-sync-test)
 ;;; prrr-sync-test.el ends here
