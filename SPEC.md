@@ -67,8 +67,8 @@ depends only on the files above it.
 | `prrr-review.el`    | The commands that write: comment, reply, edit, delete, resolve, suggest, Discussion Comment, Immediate Publish, Submit with Verdict, discard, Outbox retry and discard. | prrr-sync, prrr-thread, prrr-diff, prrr-state |
 | `prrr-stack.el`     | Stack navigation in the Review Queue and the Review Buffer.                                                                  | prrr-state, prrr-queue, prrr-diff      |
 | `prrr-treesit.el`   | Deferred per-file tree-sitter highlighting.                                                                                  | prrr-diff, treesit                     |
-| `prrr-api.el`       | The public `prrr-api-*` functions, hooks, JSON export and import.                                                            | prrr-review, prrr-range                |
-| `prrr-agent.el`     | `prrr-send-to-agent`, the Markdown payload, the default invoke function.                                                     | prrr-api                               |
+| `prrr-api.el`       | The public `prrr-api-*` functions, JSON export and import. (The hooks are defined where they fire, in `prrr-sync.el` and `prrr-diff.el`.) | prrr-sync, prrr-diff, prrr-queue, prrr-state, prrr-github |
+| `prrr-agent.el`     | `prrr-send-to-agent`, the Markdown payload, the default invoke function; the only file that names agent-shell, never required. | prrr-api, prrr-diff, prrr-thread       |
 | `prrr-transient.el` | All transient prefixes.                                                                                                      | every command file                     |
 
 Rules:
@@ -272,8 +272,8 @@ its type, and a section keymap wins over the mode's. A `discussion`
 section's keymap is cleared, since forge's `forge-discussion-section-map`
 would otherwise apply. `file` and `hunk` sections get
 `prrr-diff-file-section-map` and `prrr-diff-hunk-section-map`, children of
-magit's, in which every key a later milestone gives to prrr is `undefined`
-(magit's bind `C` to `magit-commit-add-log`).
+magit's, in which the review keys are bound again (magit's bind `C` to
+`magit-commit-add-log`).
 
 **Magit coupling.** prrr ships its own copy of `magit-diff-wash-hunk`
 (extended to insert `thread` children) and washes deferred files with
@@ -563,19 +563,20 @@ menu key inside the magit-status section, where `?` belongs to magit.
 | `g` / `G`   | `prrr-refresh` / `prrr-refetch`                     | refresh at the current head / invalidate-and-refetch                                  |
 | `S`         | `prrr-submit`                                       | Verdict transient: `a` approve, `r` request changes, `c` comment, `k` discard pending |
 | `O`         | `prrr-outbox`                                       | transient: `r` retry, `k` discard                                                     |
-| `@`         | `prrr-send-to-agent`                                |                                                                                       |
+| `@`         | `prrr-send-to-agent`                                | instructions in a capture buffer, then `prrr-agent-invoke-function`                   |
+| `a`         | `prrr-accept-comment`                               | agent's proposed comment at point, as edited                                          |
 | `L`         | `prrr-toggle-highlight`                             |                                                                                       |
 | `?` / `C-o` | `prrr-menu`                                         | main transient                                                                        |
 
 Preserved from magit: `TAB`, `S-TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`,
-`q`, `1`-`4`, `E` ediff, `h`. Overridden magit keys (`c`, `d`, `e`,
-`k`, `s`, `z`, `D`, `b`, `B`, `o`, `v`, `L`, `S`, `O`, `G`) are commit, diff,
-ediff, delete, stage, stash, diff args, branch, bisect, submodule, revert,
-log, and refresh-all, none of which belong in a review buffer.
+`q`, `1`-`4`, `E` ediff, `h`. Overridden magit keys (`a`, `c`, `d`, `e`,
+`k`, `s`, `z`, `D`, `b`, `B`, `o`, `v`, `L`, `S`, `O`, `G`) are apply, commit,
+diff, ediff, delete, stage, stash, diff args, branch, bisect, submodule,
+revert, log, and refresh-all, none of which belong in a review buffer.
 
 **Main transient** `prrr-menu`, groups: Comment (`c C r e k d R s`),
 Navigate (`] [ } { J K j`), View (`v z Z L`), Range (`D . m`), Stack
-(`> <`), Review (`S O`), Open (`o b B`), Sync (`g G`), Agent (`@`). The
+(`> <`), Review (`S O`), Open (`o b B`), Sync (`g G`), Agent (`@ a`). The
 transient has one switch, `-i` immediate, equivalent to `C-u`.
 
 **Review Queue section** (`prrr-queue-section-map`, active on a queue row):
@@ -599,38 +600,103 @@ abort, `C-c C-i` toggle immediate.
 
 ## 10. Agent API (prrr-t9q.8)
 
-Public functions in `prrr-api.el`, each taking a PR designator (`(REPO .
-NUMBER)` or a forge `forge-pullreq`) and returning structs or alists, never
-buffers:
+Public functions in `prrr-api.el`, each taking a PR designator and
+returning alists, never buffers:
 
 `prrr-api-pullreq`, `prrr-api-threads` (optional Range), `prrr-api-diff`
 (Range, optional file), `prrr-api-pending`, `prrr-api-add-comment` (path,
-line, optional start-line, side, body, `:file t` for a File Comment),
+line, body, `:start-line`, `:side`, `:file t` for a File Comment),
 `prrr-api-reply`, `prrr-api-delete-pending-comment`, `prrr-api-submit`
-(Verdict, body), `prrr-api-export` (JSON file, crit-review's handoff shape
-extended with GitHub ids), `prrr-api-import` (file of comments). All work
-through `emacsclient -e` without buffer context and in-process alike.
+(Verdict, body), `prrr-api-export` (JSON file), `prrr-api-import` (file of
+comments). All are autoloaded and work through `emacsclient -e` without
+buffer context, from any `default-directory`, and in-process alike.
+
+**Designators.** A PR designator is a `forge-pullreq`, or `(REPO . NUMBER)`
+with REPO a `forge-repository` or the string `"OWNER/NAME"` of a repository
+on github.com that forge tracks (GitHub Enterprise callers pass the
+repository object). A Range designator is nil or `(default)`, a
+`prrr-range`, `(since-review)`, `(since-opened)`, `(commit OID)` or
+`(between FROM TO)`. The API never fetches: a Range whose commits are not
+in the repository is a `user-error` that points at the Review Buffer, which
+fetches them. Every function resolves the PR's worktree from forge and
+signals a `user-error` when forge knows none or `refs/pullreqs/N` is
+missing.
+
+**Reads.** Reads return alists whose keys are the JSON keys `prrr-api-export`
+writes (snake_case symbols); booleans are t and nil, true and false in JSON.
+One shape serves in-process callers, `emacsclient -e` and export. Queued
+comments appear with `local_state` `"unsent"`, proposals with
+`"proposed"`, and every comment carries `agent`. `prrr-api-threads` with a
+Range keeps the Threads on files the Range changes. The summary's `pending`
+counts the Pending Review's comments and `agent` those an agent added.
+
+**Writes.** Writes go through the Outbox like the Review Buffer's and never
+block on the network; the API never uses Immediate Publish. A new comment is
+validated before it is queued, since GitHub would otherwise refuse it later
+on an Outbox row the agent never sees: its anchor must pass
+`prrr-state-anchor-problem` for the default Range, a line comment's lines
+must lie inside one hunk of the PR's diff on that side (the refusal lists
+the hunks' line ranges), and a start line may not come after the line. A
+new Thread must also fit the Pending Review's commit, as in the Review
+Buffer. `prrr-api-submit` asks the user with `yes-or-no-p`, showing the
+Verdict and the counts of pending and agent comments, unless
+`prrr-api-confirm-submit` is nil, so an agent cannot publish a review
+unattended by default; it returns nil when the user declines.
 
 **Agent comments.** `prrr-agent-comment-mode` is `pending` (default): a
 comment added through the API goes straight to the Pending Review with the
 user's token, flagged `agent-p`, rendered with the `prrr-agent` face and an
 "agent" badge, editable and deletable like any pending comment, and
-counted in the Submit confirmation. The alternative `proposed` keeps such
-comments local with `local-state` `proposed` until the user accepts (`e`
-then `C-c C-c`, or `prrr-accept-comment`) or rejects (`k`) each one.
+counted in the Submit confirmation. The flag survives the Outbox and every
+refetch. The alternative `proposed` queues such comments as Outbox rows of
+kind `proposed`, which the Outbox never sends and which hold back none of
+the PR's other writes. They show with `local-state` `proposed` until the
+user accepts (`a`, or `e`, then `C-c C-c`: `prrr-accept-comment`) or
+rejects (`k`) each one. Accepting converts the proposal in place into the
+write it proposed, with the body as edited, still flagged as the agent's.
+Proposals are not part of the Pending Review: its counts, the header and
+Submit leave them out (the header shows `N proposed, a to accept`), and a
+discard keeps them. A reply to a still-proposed Thread is refused ("Accept
+the proposed Thread first") unless it is a proposal itself.
 
-**Hooks.** `prrr-comment-created-hook`, `prrr-reply-created-hook`,
-`prrr-review-submitted-hook`, `prrr-review-buffer-opened-hook`, each run
-with the relevant struct. `prrr-agent-invoke-function` is the single
-agent-specific seam.
+**Export and import.** `prrr-api-export` writes the review to a file,
+`prrr/review-N.json` inside the repository's git directory by default,
+outside the worktree. Its shape is crit-review's version-1 handoff
+(`version base_ref base round generated_at unresolved comments`, each
+comment `id type file start_line end_line side quote anchor body author
+round resolved replies`) extended with `pr` (the summary) and `head`, per
+comment `thread_id comment_id database_id state local_state agent
+outdated`, and per reply `comment_id state local_state agent`. One comment
+entry stands for one Thread, its later comments being the replies; `type`
+gains `"file"` for File Comments. `prrr-api-import` reads the same shape: an
+entry without `comment_id` of type `"line"` or `"file"` is a new Thread, a
+reply without `comment_id` under an entry with one is a new reply to its
+`thread_id`, and any other entry, such as one of type `"review"`, is
+skipped and counted. All become agent comments. Every entry is validated
+before anything is queued: one bad entry queues nothing.
 
-**Send to agent.** `prrr-send-to-agent` collects the PR summary, current
-Range, diff, Threads, Pending Review (agent comments included), and the
-user's instructions from a capture buffer into a Markdown payload and calls
-`prrr-agent-invoke-function`. The default implementation submits the payload
-to an `agent-shell` buffer for the repository when agent-shell is loaded
-(queue request, else insert and submit), otherwise copies it to the kill
-ring.
+**Hooks.** Each is defined where it fires and run so that a function that
+signals shows a message and never stops the Outbox.
+`prrr-comment-created-hook` and `prrr-reply-created-hook` (`prrr-sync.el`)
+run with the stored `prrr-comment` once GitHub confirms it.
+`prrr-review-submitted-hook` (`prrr-sync.el`) runs with a plist `(:pr-id
+:verdict :body :commit)` once GitHub has the Submit; no submitted-review
+struct exists. `prrr-review-buffer-opened-hook` (`prrr-diff.el`) runs with
+the `forge-pullreq` at the end of `prrr-diff-open`, the Review Buffer
+current. `prrr-agent-invoke-function` is the single agent-specific seam.
+
+**Send to agent.** `prrr-send-to-agent` (`@`) collects the PR summary,
+current Range, diff, Threads, Pending Review (agent comments and proposals
+included), the API calls to answer with, and the user's instructions from a
+capture buffer into a Markdown payload, and calls
+`prrr-agent-invoke-function` with it and a plist `(:pullreq :directory
+:range)`. A diff longer than `prrr-agent-max-diff-lines` (default 2000) is
+cut, with a note naming the changed files and telling the agent to call
+`prrr-api-diff` per file. The default implementation gives the payload to
+an `agent-shell` buffer of the repository when agent-shell is loaded
+(`agent-shell-prompt-queue` while the shell is busy, else insert and
+submit), and otherwise copies it to the kill ring. agent-shell is never
+required, and `prrr-agent.el` is the only file that names it.
 
 **Attribution.** Everything is posted under the user's account.
 `prrr-agent-comment-prefix` (default "") is prepended to agent-authored

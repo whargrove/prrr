@@ -76,6 +76,7 @@
 (autoload 'prrr-show-since-opened "prrr-range" "Show what changed since you last saw this pull request." t)
 (autoload 'prrr-show-commit "prrr-range" "Show one commit of the pull request." t)
 (autoload 'prrr-show-between "prrr-range" "Show the diff between two commits of the pull request." t)
+(autoload 'prrr-send-to-agent "prrr-agent" "Send this pull request's review to an agent with your instructions." t)
 ;; The Agent API (SPEC section 10): functions, not commands.
 (autoload 'prrr-api-pullreq "prrr-api" "Return a summary of a pull request as an alist.")
 (autoload 'prrr-api-threads "prrr-api" "Return the Threads of a pull request as alists.")

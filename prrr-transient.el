@@ -36,6 +36,7 @@
 (require 'prrr-review)
 (require 'prrr-range)
 (require 'prrr-treesit)
+(require 'prrr-agent)
 
 (defun prrr-transient--shown (what value)
   "Describe a toggle for WHAT that is on when VALUE is non-nil."
@@ -120,6 +121,7 @@
     ("S" "submit or discard…" prrr-submit)
     ("O" "outbox…" prrr-outbox)]
    ["Agent"
+    ("@" "send to agent" prrr-send-to-agent)
     ("a" "accept proposed comment" prrr-accept-comment)]]
   [["Navigate"
     ("]" "next Thread" prrr-next-thread)

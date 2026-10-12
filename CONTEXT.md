@@ -57,6 +57,9 @@ the package deals with. No implementation details live here.
   locally but GitHub has not yet accepted. Shown distinctly until they are
   sent; can be retried or discarded. A change whose sending got no answer
   waits for GitHub's answer until a refetch shows whether it arrived.
+- **Agent Comment**: a Review Comment an agent wrote through prrr's API, under
+  the user's account; marked with an agent badge and counted at Submit. A
+  **Proposed** Agent Comment stays local until the user accepts it.
 - **Bookmark**: prrr's own record of the last PR head the user opened, used
   to show what is new since the user last looked, independent of GitHub's
   review history.

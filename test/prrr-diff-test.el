@@ -791,7 +791,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
                    ("z" . prrr-collapse-all) ("Z" . prrr-expand-all)
                    ("o" . prrr-open-topic) ("b" . prrr-browse) ("B" . prrr-checkout)
                    ("g" . prrr-refresh) ("G" . prrr-refetch) ("L" . prrr-toggle-highlight)
-                   ("a" . prrr-accept-comment)))
+                   ("a" . prrr-accept-comment) ("@" . prrr-send-to-agent)))
     (should (eq command (keymap-lookup prrr-diff-mode-map key)))
     (let ((suffix (transient-get-suffix 'prrr-menu key)))
       (should (eq command (plist-get (if (vectorp suffix) (aref suffix 2) (cdr suffix))
@@ -800,8 +800,8 @@ SETUP runs first, inside the fixture repository and a fresh database.
   (should (eq 'prrr-menu (keymap-lookup prrr-diff-mode-map "C-o")))
   (should (eq 'magit-dispatch (keymap-lookup prrr-diff-mode-map "h"))))
 
-(ert-deftest prrr-diff-test-later-keys-do-nothing-yet ()
-  "Magit's diff arguments, log and friends never run in a Review Buffer.
+(ert-deftest prrr-diff-test-review-keys-win-in-sections ()
+  "Every review key runs prrr's command, never magit's, in a Review Buffer.
 Checked by the effective binding on a file heading, a hunk line and a
 Thread, where section keymaps apply on top of the mode's."
   (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
@@ -812,9 +812,6 @@ Thread, where section keymaps apply on top of the mode's."
                                              (hunk-line . ,(oref hunk content))
                                              (thread . ,(oref thread start))))
         (goto-char position)
-        (dolist (key prrr-diff--later-keys)
-          (should (equal (list where key 'undefined)
-                         (list where key (key-binding (kbd key))))))
         (pcase-dolist (`(,key . ,command) prrr-diff--review-keys)
           (should (equal (list where key command)
                          (list where key (key-binding (kbd key))))))))))

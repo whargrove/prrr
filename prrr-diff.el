@@ -414,24 +414,15 @@ Buffer that child may be a File Comment."
     ("S" . prrr-submit) ("O" . prrr-outbox)
     ("D" . prrr-range) ("." . prrr-goto-default-range) ("m" . prrr-mark-seen)
     (">" . prrr-stack-up) ("<" . prrr-stack-down)
-    ("L" . prrr-toggle-highlight))
+    ("L" . prrr-toggle-highlight) ("@" . prrr-send-to-agent))
   "The commenting and reviewing keys of a Review Buffer (SPEC section 9).
 They are bound in the section keymaps too, which win over the mode's
 and in which magit binds several of them.")
 
-(defconst prrr-diff--later-keys
-  '("@")
-  "Keys that later milestones give to prrr in a Review Buffer (SPEC section 9).
-They are `undefined' until then, so magit's diff arguments or log never
-run from a Review Buffer.")
-
 (defun prrr-diff--bind-review-keys (map)
-  "Bind the review keys in MAP and make the later keys `undefined'; return MAP.
-They are `prrr-diff--review-keys' and `prrr-diff--later-keys'."
+  "Bind the keys of `prrr-diff--review-keys' in MAP; return MAP."
   (pcase-dolist (`(,key . ,command) prrr-diff--review-keys)
     (keymap-set map key command))
-  (dolist (key prrr-diff--later-keys)
-    (keymap-set map key #'undefined))
   map)
 
 (defvar prrr-diff-file-section-map
@@ -468,8 +459,8 @@ See `prrr-diff-file-section-map' for why it exists.")
      "?" #'prrr-menu
      "C-o" #'prrr-menu))
   "Keys of the Review Buffer (SPEC section 9).
-The keys of `prrr-diff--review-keys' and `prrr-diff--later-keys' are bound
-here and in the section keymaps.")
+The keys of `prrr-diff--review-keys' are bound here and in the
+section keymaps.")
 
 (define-derived-mode prrr-diff-mode magit-diff-mode "prrr"
   "Review one pull request: its diff with Threads inline.
@@ -813,6 +804,13 @@ buffer."
 Signal a `user-error' outside a Review Buffer."
   (or (and (derived-mode-p 'prrr-diff-mode) prrr-diff--pullreq)
       (user-error "Not in a Review Buffer")))
+
+(defun prrr-diff-range ()
+  "Return the Range this Review Buffer shows, a `prrr-range'.
+Signal a `user-error' outside a Review Buffer."
+  (if (derived-mode-p 'prrr-diff-mode)
+      prrr-diff--range
+    (user-error "Not in a Review Buffer")))
 
 (defun prrr-diff-live-numbers (toplevel)
   "Return the numbers of the PRs shown in live Review Buffers of TOPLEVEL.

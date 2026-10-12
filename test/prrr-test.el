@@ -61,7 +61,7 @@
                                          " prrr-comment prrr-reply prrr-submit prrr-outbox"
                                          " prrr-range prrr-goto-default-range prrr-mark-seen prrr-refresh"
                                          " prrr-show-since-review prrr-show-since-opened"
-                                         " prrr-show-commit prrr-show-between))"
+                                         " prrr-show-commit prrr-show-between prrr-send-to-agent))"
                                          " (unless (and (autoloadp (symbol-function command)) (commandp command))"
                                          " (push command missing)))"
                                          " (prin1 missing)))"))
