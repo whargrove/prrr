@@ -403,6 +403,14 @@ fails every Thread the Outbox sends, so an accepted one stays queued."
     (should-not (prrr-db-outbox-rows prrr-diff-test--pr))
     (should-not prrr-test-requests)))
 
+(ert-deftest prrr-review-test-reply-to-a-proposed-thread-is-refused ()
+  "Review Focus 5: r on a proposed Thread would wait on the proposal."
+  (prrr-review-test--with-proposal
+    (let ((rows (prrr-db-outbox-rows prrr-diff-test--pr)))
+      (should-error (progn (prrr-reply nil) (prrr-review-test--send "Yes"))
+                    :type 'user-error)
+      (should (equal rows (prrr-db-outbox-rows prrr-diff-test--pr))))))
+
 (ert-deftest prrr-review-test-submit-names-proposals-left-out ()
   (prrr-review-test--with-proposal
     (prrr-submit-approve)

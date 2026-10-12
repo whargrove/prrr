@@ -1450,3 +1450,19 @@ One line rewritten at 12, two lines added after 20, three removed at 30."
     ;; The proposal itself is unchanged.
     (should (eq 'proposed (prrr-outbox-kind proposal)))
     (should (equal "Maybe" (plist-get (prrr-outbox-payload proposal) :body)))))
+
+(ert-deftest prrr-state-test-write-on-a-proposal-never-blocks-its-pr ()
+  "Review Focus 5: a write that needs what a proposal creates waits apart.
+It cannot be sent before the proposal is accepted, so it is skipped
+rather than held at the head of its PR, and later writes still go."
+  (let* ((proposal (prrr-state-test--proposal "1" 'thread))
+         (reply (prrr-state-test--write "2" "PR_1" 'reply
+                                        '(:thread-id "local:t1" :comment "local:r" :body "Yes")))
+         (viewed (prrr-state-test--write "3" "PR_1" 'viewed '(:path "a.el" :viewed t)))
+         (rows (list proposal reply viewed)))
+    (should (prrr-state-outbox-needs-proposal-p reply rows))
+    (should-not (prrr-state-outbox-needs-proposal-p viewed rows))
+    (should-not (prrr-state-outbox-needs-proposal-p proposal rows))
+    (should (equal "3" (prrr-outbox-id (car (prrr-state-outbox-next rows nil 0.0)))))
+    (should (equal '("PR_1") (prrr-state-outbox-busy-prs rows)))
+    (should-not (prrr-state-outbox-next (list proposal reply) nil 0.0))))

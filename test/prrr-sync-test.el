@@ -1799,6 +1799,31 @@ the comment records it once."
           (should-error (prrr-sync-accept (prrr-outbox-id thread) "Again")
                         :type 'user-error))))))
 
+(ert-deftest prrr-sync-test-writes-on-a-proposed-thread-are-refused ()
+  "Review Focus 5: nothing the user queues may wait on a proposal.
+A reply to a proposed Thread, or accepting a proposed reply to one,
+is refused and queues nothing; a proposed reply to it is fine."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-test-with-ghub-dispatch nil
+        (let* ((thread (prrr-sync-test--write
+                        'proposed (list :as 'thread :anchor prrr-sync-test--anchor
+                                        :body "Maybe." :commit "1111" :agent t)))
+               (thread-id (plist-get (prrr-outbox-payload thread) :thread))
+               (reply (prrr-sync-test--write
+                       'proposed (list :as 'reply :body "And this." :agent t :commit "1111"
+                                       :thread-id thread-id)))
+               (rows (prrr-db-outbox-rows)))
+          (should (string-match-p "Accept the proposed Thread first"
+                                  (cadr (should-error (prrr-sync-test--write
+                                                       'reply (list :thread-id thread-id
+                                                                    :body "Yes" :commit "1111"))
+                                                      :type 'user-error))))
+          (should-error (prrr-sync-accept (prrr-outbox-id reply) "Sure") :type 'user-error)
+          (should (equal rows (prrr-db-outbox-rows)))
+          (should-not prrr-test-requests))))))
+
 ;;;; Bookmark and pinned commits
 
 (ert-deftest prrr-sync-test-pin-keeps-a-commit ()

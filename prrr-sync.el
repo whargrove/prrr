@@ -494,7 +494,9 @@ since named is replaced by GitHub's id, so a command confirmed after
 its target was sent still reaches it.  BUFFER, when live, refreshes
 whenever the PR's writes change.  Return the `prrr-outbox' row that
 carries the write, or nil when it dropped queued writes instead.
-Signal a `user-error' when the viewer's login is unknown."
+Signal a `user-error' when the viewer's login is unknown, or when the
+write needs what an agent's proposal creates, such as a reply to a
+proposed Thread (`prrr-state-outbox-needs-proposal-p')."
   (let* ((payload (prrr-sync--renamed payload))
          (target (prrr-sync--target repo pullreq))
          (pr-id (plist-get target :pr-id))
@@ -502,6 +504,9 @@ Signal a `user-error' when the viewer's login is unknown."
                        (prrr-sync--outbox-creator pr-id (plist-get payload :comment-id)))))
     (unless (plist-get target :me)
       (user-error "No GitHub login: set github.user or `prrr-github-user'"))
+    (unless creator
+      (prrr-sync--refuse-if-needs-proposal
+       (prrr-outbox-create :pr-id pr-id :kind kind :payload payload)))
     (prrr-sync--remember-buffer pr-id buffer)
     (prog1 (cond ((and creator (eq kind 'edit))
                   (setf (prrr-outbox-payload creator)
@@ -517,6 +522,12 @@ Signal a `user-error' when the viewer's login is unknown."
                   (prrr-sync--outbox-add pr-id kind
                                          (prrr-sync--outbox-payload kind payload target))))
       (prrr-sync-retry pr-id))))
+
+(defun prrr-sync--refuse-if-needs-proposal (row)
+  "Signal a `user-error' when the write ROW would wait on a proposal.
+ROW is about to join its PR's queued writes."
+  (when (prrr-state-outbox-needs-proposal-p row (prrr-db-outbox-rows (prrr-outbox-pr-id row)))
+    (user-error "Accept the proposed Thread first")))
 
 (defun prrr-sync--outbox-creator (pr-id comment-id)
   "Return the queued write of PR-ID creating COMMENT-ID, unless its send started.
@@ -631,11 +642,14 @@ GitHub all the same, so its PR is refetched to show what GitHub has."
 It becomes the Thread or reply it proposed, in its place in the
 Outbox, and goes out like any write (`prrr-state-outbox-accepted').
 BUFFER, when live, refreshes whenever the PR's writes change.  Signal
-a `user-error' when ID is no longer a queued proposal."
+a `user-error' when ID is no longer a queued proposal, or when it is
+a reply to a Thread that is still a proposal."
   (let ((row (prrr-db-get 'outbox id)))
     (unless (and row (prrr-state-outbox-held-p row))
       (user-error "That proposal is no longer queued"))
-    (prrr-db-insert (prrr-state-outbox-accepted row body))
+    (let ((accepted (prrr-state-outbox-accepted row body)))
+      (prrr-sync--refuse-if-needs-proposal accepted)
+      (prrr-db-insert accepted))
     (prrr-sync-retry (prrr-outbox-pr-id row) buffer)))
 
 (defun prrr-sync-review-data (pr-id)

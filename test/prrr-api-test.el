@@ -224,5 +224,17 @@ each stays queued for BODY to inspect and none reaches the network."
                                                          :pr-id (oref pullreq their-id))))
                      (alist-get 'pending (prrr-api-pullreq pullreq)))))))
 
+(ert-deftest prrr-api-test-reply-to-a-proposed-thread-is-refused ()
+  "Review Focus 5: an agent's reply must not wait on a proposal it cannot accept."
+  (prrr-api-test--with-pr
+    (let* ((prrr-agent-comment-mode 'proposed)
+           (_ (prrr-api-add-comment pullreq "src/example.el" 12 "Consider a guard."))
+           (thread-id (plist-get (prrr-outbox-payload
+                                  (car (prrr-db-outbox-rows (oref pullreq their-id))))
+                                 :thread)))
+      (let ((prrr-agent-comment-mode 'pending))
+        (should-error (prrr-api-reply pullreq thread-id "More") :type 'user-error))
+      (should (= 1 (length (prrr-db-outbox-rows (oref pullreq their-id))))))))
+
 (provide 'prrr-api-test)
 ;;; prrr-api-test.el ends here

@@ -578,14 +578,39 @@ error, as a retry does, does not make an unconfirmed write sendable."
        (not (prrr-state-outbox-unconfirmed-p row))
        (prrr-state-outbox-ready-p row)))
 
+(defun prrr-state-outbox-needs-proposal-p (row rows)
+  "Non-nil when the write ROW cannot go out until a proposal is accepted.
+That is when ROW is not a proposal itself (`prrr-state-outbox-held-p')
+and needs, directly or through other writes, an id that a proposal
+among ROWS creates: a reply to a proposed Thread, say.  Such a write
+would wait for that id for as long as the proposal waits for the
+user, so commands refuse to queue it."
+  (and (not (prrr-state-outbox-held-p row))
+       (memq row (prrr-state--outbox-waiting (if (memq row rows) rows (append rows (list row)))))
+       t))
+
+(defun prrr-state--outbox-waiting (rows)
+  "Return the rows among ROWS that wait for the user: proposals and what needs one."
+  (let ((held (seq-filter #'prrr-state-outbox-held-p rows)))
+    (append held (prrr-state-outbox-dependents
+                  rows (mapcan #'prrr-state-outbox-created-ids held)))))
+
+(defun prrr-state--outbox-candidates (rows)
+  "Return the rows among ROWS the Outbox may send some day, in order.
+Proposals and the writes that need them wait for the user, so they
+never hold back their PR's other writes (Review Focus 5)."
+  (let ((waiting (prrr-state--outbox-waiting rows)))
+    (seq-remove (lambda (row) (memq row waiting)) rows)))
+
 (defun prrr-state-outbox-busy-prs (rows)
   "Return the ids of the PRs among ROWS whose first write may be sent.
 The writes of one PR go out in order, so a failed, waiting or
-unconfirmed first write holds back the rest of its PR.  Proposals
-\(`prrr-state-outbox-held-p') are skipped."
+unconfirmed first write holds back the rest of its PR.  Proposals,
+and writes that need one (`prrr-state-outbox-needs-proposal-p'), are
+skipped."
   (mapcar #'prrr-outbox-pr-id
           (seq-filter #'prrr-state--sendable-p
-                      (prrr-state--outbox-heads (seq-remove #'prrr-state-outbox-held-p rows)))))
+                      (prrr-state--outbox-heads (prrr-state--outbox-candidates rows)))))
 
 (defun prrr-state-outbox-next (rows creations now)
   "Choose the write the Outbox sends next.
@@ -597,10 +622,10 @@ unconfirmed (`prrr-state-outbox-unconfirmed-p') and acts on no local
 id.  The oldest candidate wins.  Return nil when there is none,
 else (ROW . WAIT): send ROW after WAIT seconds, which is 0 unless ROW
 creates content and `prrr-state-creations-per-minute' were sent in the
-last minute.  Proposals (`prrr-state-outbox-held-p') are skipped."
+last minute.  Proposals, and writes that need one
+\(`prrr-state-outbox-needs-proposal-p'), are skipped."
   (when-let* ((row (seq-find #'prrr-state--sendable-p
-                             (prrr-state--outbox-heads
-                              (seq-remove #'prrr-state-outbox-held-p rows)))))
+                             (prrr-state--outbox-heads (prrr-state--outbox-candidates rows)))))
     (cons row
           (let ((recent (sort (seq-filter (lambda (time) (> time (- now 60))) creations) #'<)))
             (if (or (not (memq (prrr-outbox-kind row) prrr-state-creation-kinds))
