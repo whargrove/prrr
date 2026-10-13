@@ -110,7 +110,8 @@
 (ert-deftest prrr-github-test-pr-nodes-query-shape ()
   "The batch refresh asks nodes(ids:) for the queue fields of each PR, plus state."
   (should (eq 'nodes (car prrr-github-pr-nodes-query)))
-  (should (equal '((ids $ids \[ID!\])) (append (cadr prrr-github-pr-nodes-query) nil)))
+  ;; GitHub's nodes(ids:) argument is a non-null list of non-null ids.
+  (should (equal '((ids $ids \[ID!\]!)) (append (cadr prrr-github-pr-nodes-query) nil)))
   (let ((fragment (caddr prrr-github-pr-nodes-query)))
     (should (equal "... on PullRequest" (symbol-name (car fragment))))
     (should (memq 'state (cdr fragment)))

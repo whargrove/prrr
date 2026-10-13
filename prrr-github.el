@@ -85,7 +85,7 @@ Variables: $owner and $name.  Pages every open PR."))
 
 (eval-and-compile
   (defconst prrr-github-pr-nodes-query
-    `(nodes [(ids $ids \[ID!\])]
+    `(nodes [(ids $ids \[ID!\]!)]
        (,(intern "... on PullRequest") state ,@prrr-github--pr-meta-fields))
     "The queue fields of the PRs named by id, plus their state (SPEC section 4).
 Variable: $ids, a vector of at most `prrr-github-nodes-per-request'
