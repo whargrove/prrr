@@ -645,12 +645,66 @@ SETUP runs first, inside the fixture repository and a fresh database.
 
 ;; The hunk at point keeps its usual faces unless the user asks.
 (ert-deftest prrr-diff-test-hunk-body-highlight-follows-option ()
-  (dolist (option '(nil t))
+  (dolist (option '(nil heading body))
     (with-temp-buffer
-      (let ((prrr-highlight-hunk-body option)
-            (magit-diff-highlight-hunk-body (not option)))
+      (let ((prrr-hunk-highlight option)
+            (magit-diff-highlight-hunk-body (not (eq option 'body))))
         (prrr-diff-mode)
-        (should (eq option magit-diff-highlight-hunk-body))))))
+        (should (eq (eq option 'body) magit-diff-highlight-hunk-body))))))
+
+(defun prrr-diff-test--highlight-hunk-at-point (option)
+  "Put point in the first hunk of src/example.el with `prrr-hunk-highlight' OPTION.
+Return (HUNK . OVERLAYS): the hunk, which has a Thread, and the
+highlight overlays magit laid, each as (START END FACE)."
+  (setq-local prrr-hunk-highlight option)
+  (setq-local magit-diff-highlight-hunk-body (eq option 'body))
+  (let ((hunk (car (prrr-diff-test--hunks "src/example.el"))))
+    (goto-char (oref hunk content))
+    ;; The command loop forgets the focused sections before each command.
+    (setq magit-section-focused-sections nil)
+    (magit-section-update-highlight t)
+    (cons hunk
+          (mapcar (lambda (overlay)
+                    (list (overlay-start overlay) (overlay-end overlay)
+                          (overlay-get overlay 'font-lock-face)))
+                  magit-section-highlight-overlays))))
+
+(ert-deftest prrr-diff-test-hunk-highlight-nil-marks-nothing ()
+  "By default the hunk at point gets no overlay and keeps its plain faces.
+magit's own method would overlay the body up to the first Thread."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (pcase-let ((`(,hunk . ,overlays) (prrr-diff-test--highlight-hunk-at-point nil)))
+      (should (null prrr-hunk-highlight))
+      (should (null overlays))
+      (should (eq 'magit-diff-hunk-heading
+                  (get-text-property (oref hunk start) 'font-lock-face)))
+      (should (memq (get-text-property (oref hunk content) 'font-lock-face)
+                    '(magit-diff-context magit-diff-added magit-diff-removed))))))
+
+(ert-deftest prrr-diff-test-hunk-highlight-heading-marks-the-heading-only ()
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (pcase-let ((`(,hunk . ,overlays) (prrr-diff-test--highlight-hunk-at-point 'heading)))
+      (should (equal (list (list (marker-position (oref hunk start))
+                                 (marker-position (oref hunk content))
+                                 'magit-diff-hunk-heading-highlight))
+                     overlays))
+      (should (memq (get-text-property (oref hunk content) 'font-lock-face)
+                    '(magit-diff-context magit-diff-added magit-diff-removed))))))
+
+(ert-deftest prrr-diff-test-hunk-highlight-body-paints-the-diff-lines ()
+  "`body' highlights the heading and the diff lines, never the Thread."
+  (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+    (pcase-let* ((`(,hunk . ,overlays) (prrr-diff-test--highlight-hunk-at-point 'body))
+                 (thread (car (oref hunk children))))
+      (should (equal (list (list (marker-position (oref hunk start))
+                                 (marker-position (oref hunk content))
+                                 'magit-diff-hunk-heading-highlight))
+                     overlays))
+      (should (memq (get-text-property (oref hunk content) 'font-lock-face)
+                    '(magit-diff-context-highlight magit-diff-added-highlight
+                      magit-diff-removed-highlight)))
+      (should (eq 'prrr-thread-heading
+                  (get-text-property (+ (oref thread start) 4) 'font-lock-face))))))
 
 (ert-deftest prrr-diff-test-review-missing-ref-offers-pull ()
   "Review Focus 1: no Review Buffer without the PR's head."

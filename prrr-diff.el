@@ -63,12 +63,17 @@ every file after it, are washed when first expanded."
   :type 'natnum
   :group 'prrr)
 
-(defcustom prrr-highlight-hunk-body nil
-  "Whether Review Buffers highlight the body of the hunk at point.
-This is `magit-diff-highlight-hunk-body' for Review Buffers.  nil
-leaves every diff line in its usual face wherever point is: magit's
-highlighted faces can lower the contrast of the lines under review."
-  :type 'boolean
+(defcustom prrr-hunk-highlight nil
+  "How Review Buffers mark the hunk at point.
+nil marks nothing: every line keeps its usual face wherever point is,
+since magit's highlighted faces can lower the contrast of the lines
+under review.  `heading' highlights the hunk's heading line.  `body'
+highlights the heading and the hunk's diff lines, as magit does
+\(`magit-diff-highlight-hunk-body').  A hunk's Threads are never
+highlighted along with it."
+  :type '(choice (const :tag "Nothing" nil)
+                 (const :tag "The hunk heading" heading)
+                 (const :tag "The heading and the diff lines" body))
   :group 'prrr)
 
 ;;;; Changed files
@@ -360,6 +365,18 @@ child, starting on the line before the run.  HIGHLIGHT is passed on."
                                            (point)))))
           (oset section end end))))))
 
+(cl-defmethod magit-section-highlight ((section magit-hunk-section)
+                                       &context (major-mode prrr-diff-mode))
+  "Highlight SECTION's heading as `prrr-hunk-highlight' says.
+In MAJOR-MODE `prrr-diff-mode' only.  magit's method would also lay its
+overlay from the body to the first Thread and highlight the Threads.
+The diff lines are painted by `magit-section-paint' instead, under
+`magit-diff-highlight-hunk-body'."
+  (when (memq prrr-hunk-highlight '(heading body))
+    (magit-section-highlight-range (oref section start)
+                                   (or (oref section content) (oref section end))
+                                   (oref section heading-highlight-face))))
+
 (cl-defmethod magit-section-get-relative-position ((section magit-hunk-section)
                                                    &context (major-mode prrr-diff-mode))
   "Return where point is in SECTION in MAJOR-MODE `prrr-diff-mode'.
@@ -547,7 +564,7 @@ section keymaps.")
                      not-in-range outdated outdated-files))
   ;; magit's hunk fontifier walks every line of a hunk, Threads included.
   (setq-local magit-diff-fontify-hunk nil)
-  (setq-local magit-diff-highlight-hunk-body prrr-highlight-hunk-body)
+  (setq-local magit-diff-highlight-hunk-body (eq prrr-hunk-highlight 'body))
   ;; Leaving the buffer, by killing it or quitting its window, ends a
   ;; visit: since-opened starts from what the visit showed.
   (add-hook 'kill-buffer-hook #'prrr-diff-record-bookmark nil t)

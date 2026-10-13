@@ -134,7 +134,6 @@ forge's own pull request keys, such as `C-c C-c`, also work on a row.
 | `prrr-queue-show-served` | `t`     | Show the Served partition                       |
 | `prrr-eager-files`       | `30`    | Files expanded when a Review Buffer opens       |
 | `prrr-eager-lines`       | `2000`  | Changed lines expanded when it opens            |
-| `prrr-highlight-hunk-body` | `nil` | Highlight the hunk at point in a Review Buffer  |
 | `prrr-database-file`     | `prrr-database.sqlite` in `user-emacs-directory` | prrr's own database |
 
 prrr keeps its data in its own SQLite file and never writes to forge's
@@ -238,6 +237,7 @@ and `q` work as in any magit diff.
 | `prrr-highlight`           | `t`      | Highlight diff lines                                                     |
 | `prrr-highlight-max-lines` | `3000`   | Larger files are highlighted when Emacs is idle, ten times larger never  |
 | `prrr-highlight-modes`     | built-in | ts-mode by file-name regexp or major mode, where `foo-ts-mode` misses    |
+| `prrr-hunk-highlight`      | `nil`    | Mark the hunk at point: `nil` not at all, `heading`, or `body` as magit  |
 
 ## Commenting and reviewing
 
