@@ -48,7 +48,7 @@
    (directory-file-name (file-name-directory load-file-name)))
   "Root of the prrr checkout.")
 
-(defvar record-fixtures--pending 3
+(defvar record-fixtures--pending 4
   "Requests still in flight.")
 
 (defun record-fixtures--save (name data)
@@ -77,7 +77,18 @@
   (pcase-let ((`(,owner ,name) (split-string repo "/")))
     (prrr-github--query "api.github.com" prrr-github-queue-query
       ((owner owner) (name name))
-      :callback (lambda (data &rest _) (record-fixtures--save "queue" data))
+      :callback (lambda (data &rest _)
+                  (record-fixtures--save "queue" data)
+                  ;; The batch refresh names the open PRs the queue query found.
+                  (let ((ids (mapcar (lambda (pr) (alist-get 'id pr))
+                                     (seq-take (alist-get 'pullRequests
+                                                          (alist-get 'repository data))
+                                               prrr-github-nodes-per-request))))
+                    (prrr-github--query "api.github.com" prrr-github-pr-nodes-query
+                      ((ids (vconcat ids)))
+                      :callback (lambda (data &rest _) (record-fixtures--save "pr-nodes" data))
+                      :errorback (lambda (err &rest _)
+                                   (record-fixtures--failed "pr-nodes" err)))))
       :errorback (lambda (err &rest _) (record-fixtures--failed "queue" err)))
     (prrr-github--query "api.github.com" prrr-github-teams-query
       ((me (vector me)))

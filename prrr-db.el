@@ -379,6 +379,19 @@ the last pull disappear.  One transaction."
                  (mapcar #'prrr-db--struct-to-row metas))))
     nil))
 
+(defun prrr-db-update-pr-metas (metas gone)
+  "Store METAS, replacing rows with the same PR id, and delete the rows of GONE.
+METAS are `prrr-pr-meta' rows and GONE a list of PR ids whose PRs are
+no longer open.  The other rows stay.  One transaction."
+  (let ((db (prrr-db)))
+    (emacsql-with-transaction db
+      (when metas
+        (emacsql db [:insert-or-replace :into pullreq-meta :values $v1]
+                 (mapcar #'prrr-db--struct-to-row metas)))
+      (when gone
+        (emacsql db [:delete :from pullreq-meta :where (in pr-id $v1)] (vconcat gone))))
+    nil))
+
 (defun prrr-db-replace-teams (teams)
   "Make TEAMS, a list of `prrr-team', the viewer's only Teams.  One transaction."
   (let ((db (prrr-db)))

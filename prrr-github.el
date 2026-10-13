@@ -62,21 +62,39 @@ the current repository, which is where forge reads it."
 ;;;; Queries
 
 (eval-and-compile
+  (defconst prrr-github--pr-meta-fields
+    '(id number headRefOid createdAt isDraft
+      (author login)
+      (reviewRequests [(:edges t)]
+        (requestedReviewer "__typename ... on User { login } ... on Team { combinedSlug }\n"))
+      (latestReviews [(:edges t)]
+        (author login) state submittedAt (commit oid)
+        (onBehalfOf [(:edges t)] combinedSlug))
+      (viewerLatestReview state submittedAt (commit oid))
+      (viewerLatestReviewRequest id)
+      (assignees [(:edges t)] login))
+    "The fields of one PR that a `prrr-pr-meta' row is decoded from."))
+
+(eval-and-compile
   (defconst prrr-github-queue-query
-    '(repository [(owner $owner String!) (name $name String!)]
+    `(repository [(owner $owner String!) (name $name String!)]
        (pullRequests [(:edges t) (states . (OPEN))]
-         id number headRefOid createdAt isDraft
-         (author login)
-         (reviewRequests [(:edges t)]
-           (requestedReviewer "__typename ... on User { login } ... on Team { combinedSlug }\n"))
-         (latestReviews [(:edges t)]
-           (author login) state submittedAt (commit oid)
-           (onBehalfOf [(:edges t)] combinedSlug))
-         (viewerLatestReview state submittedAt (commit oid))
-         (viewerLatestReviewRequest id)
-         (assignees [(:edges t)] login)))
+         ,@prrr-github--pr-meta-fields))
     "Review Queue inputs of one repository (SPEC section 4).
 Variables: $owner and $name.  Pages every open PR."))
+
+(eval-and-compile
+  (defconst prrr-github-pr-nodes-query
+    `(nodes [(ids $ids \[ID!\])]
+       (,(intern "... on PullRequest") state ,@prrr-github--pr-meta-fields))
+    "The queue fields of the PRs named by id, plus their state (SPEC section 4).
+Variable: $ids, a vector of at most `prrr-github-nodes-per-request'
+node ids.  The inline fragment is a symbol: ghub's query language
+has no fragments, but prints a symbol's name as is.  GitHub answers
+with one node per id, in order, null for a node it cannot return."))
+
+(defconst prrr-github-nodes-per-request 100
+  "Most ids one nodes(ids:) query may name.")
 
 (eval-and-compile
   (defconst prrr-github-teams-query
@@ -150,26 +168,44 @@ Each result is (LOGIN STATE SUBMITTED-AT COMMIT-OID ON-BEHALF-OF-SLUGS)."
   "Decode a viewerLatestReview NODE into (STATE SUBMITTED-AT COMMIT-OID)."
   (and node (let-alist node (list .state .submittedAt .commit.oid))))
 
+(defun prrr-github--pr-meta (pr forge-repo-id fetched-at)
+  "Decode the node PR into a `prrr-pr-meta'.
+PR was selected as `prrr-github--pr-meta-fields'.  FORGE-REPO-ID and
+FETCHED-AT are stored in the row."
+  (let-alist pr
+    (prrr-pr-meta-create
+     :pr-id .id
+     :forge-repo-id forge-repo-id
+     :number .number
+     :head-oid .headRefOid
+     :review-requests (prrr-github--review-requests .reviewRequests)
+     :latest-reviews (prrr-github--latest-reviews .latestReviews)
+     :viewer-latest-review (prrr-github--viewer-review .viewerLatestReview)
+     :viewer-latest-review-request .viewerLatestReviewRequest.id
+     :assignees (mapcar (lambda (user) (alist-get 'login user)) .assignees)
+     :created-at .createdAt
+     :fetched-at fetched-at)))
+
 (defun prrr-github-decode-queue (data forge-repo-id &optional fetched-at)
   "Decode queue query DATA into a list of `prrr-pr-meta'.
 FORGE-REPO-ID is stored in every row; FETCHED-AT is the timestamp to
 record, nil when the caller stamps rows itself."
   (let-alist data
-    (mapcar (lambda (pr)
-              (let-alist pr
-                (prrr-pr-meta-create
-                 :pr-id .id
-                 :forge-repo-id forge-repo-id
-                 :number .number
-                 :head-oid .headRefOid
-                 :review-requests (prrr-github--review-requests .reviewRequests)
-                 :latest-reviews (prrr-github--latest-reviews .latestReviews)
-                 :viewer-latest-review (prrr-github--viewer-review .viewerLatestReview)
-                 :viewer-latest-review-request .viewerLatestReviewRequest.id
-                 :assignees (mapcar (lambda (user) (alist-get 'login user)) .assignees)
-                 :created-at .createdAt
-                 :fetched-at fetched-at)))
+    (mapcar (lambda (pr) (prrr-github--pr-meta pr forge-repo-id fetched-at))
             .repository.pullRequests)))
+
+(defun prrr-github-decode-pr-nodes (data ids forge-repo-id &optional fetched-at)
+  "Decode DATA, the answer to `prrr-github-pr-nodes-query' for IDS.
+Return (:open METAS :gone IDS): a `prrr-pr-meta' per node still open,
+stamped FORGE-REPO-ID and FETCHED-AT, and the ids of IDS whose PR is
+no longer open or that GitHub did not return."
+  (let ((open (cl-loop for pr in (alist-get 'nodes data)
+                       when (and pr (equal (alist-get 'state pr) "OPEN"))
+                       collect (prrr-github--pr-meta pr forge-repo-id fetched-at))))
+    (list :open open
+          :gone (seq-remove (lambda (id) (seq-some (lambda (meta) (equal id (prrr-pr-meta-pr-id meta)))
+                                                   open))
+                            ids))))
 
 ;;;; Decoding teams
 
@@ -428,6 +464,42 @@ decoded; exactly one of the two is called."
                  (prrr-github-decode-queue data forge-repo-id (prrr-github--now)))
                callback errorback)
     :errorback (prrr-github--errorback errorback)))
+
+(defun prrr-github-fetch-pr-metas (host ids callback errorback &optional forge-repo-id)
+  "Fetch the queue fields of the PRs with node ids IDS on HOST.
+One request per `prrr-github-nodes-per-request' ids, all sent at once.
+CALLBACK receives the merged (:open METAS :gone IDS) of
+`prrr-github-decode-pr-nodes', the rows stamped with the current time
+and FORGE-REPO-ID, once every request answered.  ERRORBACK receives
+the first failure, classified by `prrr-github-error', or an `error'
+failure when an answer cannot be decoded; the other answers are then
+dropped.  Exactly one of the two is called."
+  (let* ((chunks (seq-partition ids prrr-github-nodes-per-request))
+         (pending (length chunks))
+         (failed nil)
+         (open nil)
+         (gone nil))
+    (dolist (chunk chunks)
+      (prrr-github--query host prrr-github-pr-nodes-query
+        ((ids (vconcat chunk)))
+        :callback (prrr-github--callback
+                   (lambda (data)
+                     (prrr-github-decode-pr-nodes data chunk forge-repo-id (prrr-github--now)))
+                   (lambda (answer)
+                     (unless failed
+                       (setq open (append open (plist-get answer :open))
+                             gone (append gone (plist-get answer :gone)))
+                       (when (zerop (cl-decf pending))
+                         (funcall callback (list :open open :gone gone)))))
+                   (lambda (failure)
+                     (unless failed
+                       (setq failed t)
+                       (funcall errorback failure))))
+        :errorback (prrr-github--errorback
+                    (lambda (failure)
+                      (unless failed
+                        (setq failed t)
+                        (funcall errorback failure))))))))
 
 (defun prrr-github-fetch-teams (host me callback errorback)
   "Fetch the Teams of the viewer ME on HOST.

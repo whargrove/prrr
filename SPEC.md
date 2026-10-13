@@ -133,6 +133,15 @@ and forgets satisfied ones, which is why prrr fetches requests itself.
 Assignees come from prrr's query because reading them from forge costs a
 database join per PR, a quarter of the queue's section 12 budget.
 
+**Refreshing the queue first.** A pull sends, before the paged query, one
+`nodes(ids: [...])` query (100 ids per request) selecting the same fields
+plus `state` for the PRs already in `pullreq-meta`. Its answer is stored
+and the status buffer refreshed at once, so the rows already in the queue
+show their new state while the paged query still runs; a PR it finds
+closed or missing leaves the queue then. The paged query's answer then
+replaces every row as before. A failure of the refresh is not the pull's
+outcome.
+
 **Teams.** `viewer { organizations(first: 100) { nodes { login
 teams(first: 100, userLogins: [$me]) { nodes { slug combinedSlug } } } } }`
 into `team`. Fetched on first use, by `prrr-refresh-teams`, and

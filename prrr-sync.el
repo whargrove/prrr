@@ -285,11 +285,16 @@ and must not fail a pull whose rows are stored."
 (defun prrr-sync-pull (repo &optional buffer)
   "Pull the Review Queue inputs of REPO in the background.
 REPO is a `forge-github-repository'.  Fetches the viewer's Teams first
-when they are due, then the queue query, and stores both.  Teams only
-refine the Review State, so a failed Teams fetch keeps the stored
-Teams and the pull goes on (`prrr-sync--fetch-teams' says when it is
-tried again).  Until a Teams fetch succeeds, the status is `ok' with
-a :message that starts \"Teams unavailable\".  Records the
+when they are due, then refreshes the PRs already stored in one
+request (`prrr-github-fetch-pr-metas'), then runs the queue query,
+and stores each answer as it comes.  The refresh gives the rows in
+the queue their new state at once, and BUFFER a refresh, while the
+query still pages every open PR; a PR it finds closed leaves at once.
+Its failure is not the pull's: the query goes on and decides.  Teams
+only refine the Review State, so a failed Teams fetch keeps the
+stored Teams and the pull goes on (`prrr-sync--fetch-teams' says
+when it is tried again).  Until a Teams fetch succeeds, the status is
+`ok' with a :message that starts \"Teams unavailable\".  Records the
 outcome in `prrr-sync-status' and refreshes BUFFER, when live, after
 the pull ends either way.  A pull without an answer ends as `offline'
 after `prrr-sync-timeout' seconds.  Return non-nil when a pull
@@ -318,14 +323,33 @@ Never signals: every failure becomes the status."
                                                 (format "Teams unavailable: %s"
                                                         prrr-sync--teams-failure)))
                             buffer))))
-                     fail id))))))
+                     fail id)))))
+             (refresh-stored
+              (lambda (&rest _)
+                (when (prrr-sync--current-p id token)
+                  (let ((ids (mapcar #'prrr-pr-meta-pr-id
+                                     (prrr-db-select 'pullreq-meta :forge-repo-id id))))
+                    (if (null ids)
+                        (funcall fetch-queue)
+                      (prrr-sync--guarded fail
+                        (prrr-github-fetch-pr-metas
+                         host ids
+                         (lambda (answer)
+                           (when (prrr-sync--current-p id token)
+                             (when (prrr-sync--guarded fail
+                                     (prrr-db-update-pr-metas (plist-get answer :open)
+                                                              (plist-get answer :gone))
+                                     (prrr-sync--schedule-refresh buffer)
+                                     t)
+                               (funcall fetch-queue))))
+                         fetch-queue id))))))))
         (prrr-sync--guarded fail
           (let ((me (prrr-github-viewer)))
             (cond ((null me)
                    (funcall fail (list :kind 'error :message prrr-sync-no-login :reset-at nil)))
                   ((prrr-sync--teams-due-p)
-                   (prrr-sync--fetch-teams host me fetch-queue fetch-queue))
-                  (t (funcall fetch-queue)))))
+                   (prrr-sync--fetch-teams host me refresh-stored refresh-stored))
+                  (t (funcall refresh-stored)))))
         t))))
 
 ;;;; Per-PR refetch

@@ -295,6 +295,71 @@ answers with the queue fixture.  Return the pull's status."
         (should-not (prrr-sync-pull (prrr-sync-test--repo)))
         (should (null prrr-test-requests))))))
 
+(defun prrr-sync-test--stored-head (pr-id)
+  "Return the head stored for PR-ID, or nil without a row."
+  (and-let* ((meta (prrr-db-get 'pullreq-meta pr-id)))
+    (prrr-pr-meta-head-oid meta)))
+
+(ert-deftest prrr-sync-test-pull-refreshes-stored-prs-before-paging ()
+  "The PRs already in the queue are refreshed in one request first (prrr-3i4).
+Their rows are stored and the buffer refreshed before the full query
+answers, while the pull still runs; a PR no longer open leaves at once."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
+      (prrr-db-insert (prrr-pr-meta-create :pr-id "PR_kwDOexample0000001" :number 1
+                                           :forge-repo-id "example-repo-id"
+                                           :head-oid "1111111111111111111111111111111111111111"))
+      (prrr-db-insert (prrr-pr-meta-create :pr-id "PR_kwDOexample0000002" :number 2
+                                           :forge-repo-id "example-repo-id"))
+      (let ((scheduled nil) (seen nil))
+        (with-temp-buffer
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (time _repeat fn &rest args)
+                       (when (equal time 0) (push (cons fn args) scheduled)))))
+            (prrr-test-with-ghub-dispatch
+                `((nodes . ,(prrr-test-fixture "pr-nodes"))
+                  (repository . ,(lambda (&rest _)
+                                   (setq seen (list (prrr-sync-test--stored-head
+                                                     "PR_kwDOexample0000001")
+                                                    (prrr-db-get 'pullreq-meta
+                                                                 "PR_kwDOexample0000002")
+                                                    (plist-get (prrr-sync-status "example-repo-id")
+                                                               :state)
+                                                    (length scheduled)))
+                                   (prrr-test-fixture "queue"))))
+              (prrr-sync-pull (prrr-sync-test--repo) (current-buffer))
+              (should (equal '(nodes repository) prrr-test-requests))
+              (should (equal '((ids . ["PR_kwDOexample0000001" "PR_kwDOexample0000002"]))
+                             (cdr (assq 'nodes prrr-test-variables)))))
+            ;; Seen when the full query answered: the batch was stored, the
+            ;; buffer's refresh scheduled, and the pull still running.
+            (should (equal '("1111111111111111111111111111111111111112" nil pulling 1) seen))
+            (should (eq 'ok (plist-get (prrr-sync-status "example-repo-id") :state)))
+            (should (= 2 (length scheduled)))
+            (should (= 3 (length (prrr-db-select 'pullreq-meta :forge-repo-id "example-repo-id"))))))))))
+
+(ert-deftest prrr-sync-test-pull-without-stored-prs-pages-at-once ()
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
+      (prrr-test-with-ghub-dispatch `((repository . ,(prrr-test-fixture "queue")))
+        (prrr-sync-pull (prrr-sync-test--repo))
+        (should (equal '(repository) prrr-test-requests))))))
+
+(ert-deftest prrr-sync-test-pull-batch-failure-still-pages ()
+  "A failed batch refresh is not the pull's outcome; the full query decides."
+  (prrr-db-with-test-db
+    (prrr-sync-test--with-clean-status
+      (setq prrr-sync--teams-tried-at (prrr-sync--timestamp))
+      (prrr-db-insert (prrr-sync-test--meta "2026-10-01T00:00:00Z"))
+      (prrr-test-with-ghub-dispatch `((nodes . (:error (error http 502)))
+                                      (repository . ,(prrr-test-fixture "queue")))
+        (prrr-sync-pull (prrr-sync-test--repo))
+        (should (equal '(nodes repository) prrr-test-requests))
+        (should (eq 'ok (plist-get (prrr-sync-status "example-repo-id") :state)))
+        (should (= 3 (length (prrr-db-select 'pullreq-meta :forge-repo-id "example-repo-id"))))))))
+
 (ert-deftest prrr-sync-test-pull-refreshes-buffer-later-not-now ()
   "The refresh is deferred so a synchronous answer cannot re-enter a refresh."
   (prrr-db-with-test-db

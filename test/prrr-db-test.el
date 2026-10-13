@@ -220,6 +220,24 @@
     (prrr-db-replace-pr-metas "repo-a" nil)
     (should (null (prrr-db-select 'pullreq-meta :forge-repo-id "repo-a")))))
 
+(ert-deftest prrr-db-test-update-pr-metas-replaces-and-deletes-only-those ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-pr-meta-create :pr-id "STALE" :forge-repo-id "repo-a" :head-oid "old"))
+    (prrr-db-insert (prrr-pr-meta-create :pr-id "MERGED" :forge-repo-id "repo-a"))
+    (prrr-db-insert (prrr-pr-meta-create :pr-id "KEPT" :forge-repo-id "repo-a"))
+    (prrr-db-update-pr-metas
+     (list (prrr-pr-meta-create :pr-id "STALE" :forge-repo-id "repo-a" :head-oid "new"))
+     '("MERGED"))
+    (should (equal "new" (prrr-pr-meta-head-oid (prrr-db-get 'pullreq-meta "STALE"))))
+    (should-not (prrr-db-get 'pullreq-meta "MERGED"))
+    (should (prrr-db-get 'pullreq-meta "KEPT"))))
+
+(ert-deftest prrr-db-test-update-pr-metas-with-nothing-changes-nothing ()
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-pr-meta-create :pr-id "KEPT" :forge-repo-id "repo-a"))
+    (prrr-db-update-pr-metas nil nil)
+    (should (equal '("KEPT") (mapcar #'prrr-pr-meta-pr-id (prrr-db-select 'pullreq-meta))))))
+
 (ert-deftest prrr-db-test-replace-teams ()
   (prrr-db-with-test-db
     (prrr-db-insert (prrr-team-create :combined-slug "example-org/old"))

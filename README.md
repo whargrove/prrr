@@ -80,7 +80,9 @@ bottom first, with `⟰ k/n` marking each PR's place in it. Its other PRs
 sit one level under its first row; `TAB` on that row folds them away.
 
 The queue renders from a local database. It pulls in the background when
-its data is older than `prrr-queue-stale-after` seconds (default 300). The
+its data is older than `prrr-queue-stale-after` seconds (default 300). A
+pull first refreshes the PRs already in the queue in one request, so their
+rows change at once, and then pages every open PR to find new ones. The
 heading shows `pulling…`, `offline`, `rate limited until 14:05`, or the
 error. A pull that gets no answer within `prrr-sync-timeout` seconds
 (default 60), as when the network is down, ends as `offline` and is retried

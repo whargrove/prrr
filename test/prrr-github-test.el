@@ -107,6 +107,84 @@
     (should (string-match-p "__typename.*on User { login }.*on Team { combinedSlug }"
                             (format "%S" prs)))))
 
+(ert-deftest prrr-github-test-pr-nodes-query-shape ()
+  "The batch refresh asks nodes(ids:) for the queue fields of each PR, plus state."
+  (should (eq 'nodes (car prrr-github-pr-nodes-query)))
+  (should (equal '((ids $ids \[ID!\])) (append (cadr prrr-github-pr-nodes-query) nil)))
+  (let ((fragment (caddr prrr-github-pr-nodes-query)))
+    (should (equal "... on PullRequest" (symbol-name (car fragment))))
+    (should (memq 'state (cdr fragment)))
+    (should (equal (cddr (assq 'pullRequests (cddr prrr-github-queue-query)))
+                   (remq 'state (cdr fragment))))))
+
+(ert-deftest prrr-github-test-decode-pr-nodes-open-and-gone ()
+  "An open node is a meta row; a closed or missing one is gone."
+  (let ((answer (prrr-github-decode-pr-nodes
+                 (prrr-test-fixture "pr-nodes")
+                 '("PR_kwDOexample0000001" "PR_kwDOexample0000002" "PR_kwDOexample0000009")
+                 "example-repo-id" "2026-10-10T12:00:00Z")))
+    (should (equal '("PR_kwDOexample0000001")
+                   (mapcar #'prrr-pr-meta-pr-id (plist-get answer :open))))
+    (let ((meta (car (plist-get answer :open))))
+      (should (equal "1111111111111111111111111111111111111112" (prrr-pr-meta-head-oid meta)))
+      (should (equal '((user "example-me")) (prrr-pr-meta-review-requests meta)))
+      (should (equal "example-repo-id" (prrr-pr-meta-forge-repo-id meta)))
+      (should (equal "2026-10-10T12:00:00Z" (prrr-pr-meta-fetched-at meta))))
+    (should (equal '("PR_kwDOexample0000002" "PR_kwDOexample0000009")
+                   (plist-get answer :gone)))))
+
+(ert-deftest prrr-github-test-fetch-pr-metas-sends-ids-and-decodes ()
+  (prrr-test-with-ghub-stub (prrr-test-fixture "pr-nodes") captured
+    (let (result)
+      (prrr-github-fetch-pr-metas "api.github.com"
+                                  '("PR_kwDOexample0000001" "PR_kwDOexample0000002")
+                                  (lambda (answer) (setq result answer))
+                                  (lambda (err) (ert-fail (list "unexpected errorback" err)))
+                                  "example-repo-id")
+      (should (equal `(query ,prrr-github-pr-nodes-query) (nth 0 captured)))
+      (should (equal '((ids . ["PR_kwDOexample0000001" "PR_kwDOexample0000002"]))
+                     (nth 1 captured)))
+      (should (equal '("PR_kwDOexample0000001")
+                     (mapcar #'prrr-pr-meta-pr-id (plist-get result :open))))
+      (should (equal "example-repo-id" (prrr-pr-meta-forge-repo-id (car (plist-get result :open)))))
+      (should (stringp (prrr-pr-meta-fetched-at (car (plist-get result :open)))))
+      (should (equal '("PR_kwDOexample0000002") (plist-get result :gone))))))
+
+(ert-deftest prrr-github-test-fetch-pr-metas-chunks-by-hundred ()
+  "GitHub takes at most 100 ids per nodes query; the answers are merged."
+  (let ((ids (mapcar (lambda (n) (format "PR_%d" n)) (number-sequence 1 101)))
+        (sent nil) (result nil))
+    (cl-letf (((symbol-function 'ghub-query)
+               (lambda (_query variables &rest args)
+                 (let ((chunk (append (alist-get 'ids variables) nil)))
+                   (push chunk sent)
+                   (funcall (plist-get args :callback)
+                            `(data (nodes ,@(mapcar (lambda (id)
+                                                      `((id . ,id) (number . 1) (state . "OPEN")))
+                                                    chunk))))))))
+      (prrr-github-fetch-pr-metas "api.github.com" ids
+                                  (lambda (answer) (setq result answer))
+                                  (lambda (err) (ert-fail (list "unexpected errorback" err)))))
+    (should (equal '(100 1) (mapcar #'length (reverse sent))))
+    (should (equal ids (mapcar #'prrr-pr-meta-pr-id (plist-get result :open))))
+    (should (null (plist-get result :gone)))))
+
+(ert-deftest prrr-github-test-fetch-pr-metas-fails-once ()
+  "One failing chunk fails the fetch once; the other chunk's answer is dropped."
+  (let ((ids (mapcar (lambda (n) (format "PR_%d" n)) (number-sequence 1 101)))
+        (calls 0) (failures 0) (answers 0))
+    (cl-letf (((symbol-function 'ghub-query)
+               (lambda (_query _variables &rest args)
+                 (if (= (cl-incf calls) 1)
+                     (funcall (plist-get args :errorback) '(error http 502) nil nil nil)
+                   (funcall (plist-get args :callback) '(data (nodes)))))))
+      (prrr-github-fetch-pr-metas "api.github.com" ids
+                                  (lambda (_answer) (cl-incf answers))
+                                  (lambda (_err) (cl-incf failures))))
+    (should (= 2 calls))
+    (should (= 1 failures))
+    (should (= 0 answers))))
+
 (ert-deftest prrr-github-test-decode-teams ()
   (let ((teams (prrr-github-decode-teams (prrr-test-fixture "teams")
                                          "2026-10-10T12:00:00Z")))
