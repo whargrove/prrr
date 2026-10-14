@@ -1968,6 +1968,16 @@ is refused and queues nothing; a proposed reply to it is fine."
   (prrr-test-with-repo
     (should (= 0 (prrr-sync-prune-pins '(1))))))
 
+(ert-deftest prrr-sync-test-prune-pins-before-prrr-diff-is-loaded ()
+  "A pull from the Review Queue may prune before prrr-diff ever loads.
+Then no Review Buffer can be live, and a closed PR's pins go."
+  (prrr-test-with-repo
+    (let ((head (car (process-lines "git" "rev-parse" "refs/pullreqs/1"))))
+      (prrr-sync-pin 2 head)
+      (cl-letf (((symbol-function 'prrr-diff-live-numbers) nil))
+        (should (= 1 (prrr-sync-prune-pins nil))))
+      (should-not (prrr-sync-test--pin-refs)))))
+
 (ert-deftest prrr-sync-test-pull-prunes-pins-of-closed-pullreqs ()
   "A pull prunes against the PRs it just stored: the fixture queue has 1, 2 and 3."
   (prrr-db-with-test-db

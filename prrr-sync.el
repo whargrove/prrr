@@ -1443,7 +1443,9 @@ and a PR that reopens then still has its since-opened start (the start
 is fetched by sha when the pin is gone).  The git work takes a few
 milliseconds (SPEC section 8), so it runs synchronously."
   (let* ((keep (append open-numbers
-                       (prrr-diff-live-numbers (magit-toplevel))))
+                       ;; Before prrr-diff loads, no Review Buffer can be live.
+                       (and (fboundp 'prrr-diff-live-numbers)
+                            (prrr-diff-live-numbers (magit-toplevel)))))
          (doomed (seq-remove
                   (lambda (ref)
                     (and (string-match "\\`refs/prrr/\\([0-9]+\\)/" ref)
