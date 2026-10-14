@@ -194,6 +194,28 @@
   (prrr-db-with-test-db
     (should-error (prrr-db-insert (list 'not 'a 'struct)))))
 
+(ert-deftest prrr-db-test-insert-strips-text-properties ()
+  "A propertized string is stored bare, however deep in a value."
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-outbox-create :id "o1" :pr-id "PR_1" :kind 'thread
+                                        :payload (list :body (propertize "hi" 'face 'bold))
+                                        :created-at "2026-10-14T22:00:00Z" :attempts 0))
+    (let ((body (plist-get (prrr-outbox-payload (prrr-db-get 'outbox "o1")) :body)))
+      (should (equal "hi" body))
+      (should-not (text-properties-at 0 body)))))
+
+(ert-deftest prrr-db-test-insert-refuses-an-unstorable-value ()
+  "A value that cannot be read back, a buffer say, is refused before it
+reaches the database: one such row would block every read of its table."
+  (prrr-db-with-test-db
+    (let ((err (should-error
+                (prrr-db-insert (prrr-outbox-create :id "o1" :pr-id "PR_1" :kind 'thread
+                                                    :payload (list :body (current-buffer))
+                                                    :created-at "2026-10-14T22:00:00Z"
+                                                    :attempts 0)))))
+      (should (string-match-p "prrr-outbox.*payload" (error-message-string err))))
+    (should-not (prrr-db-outbox-rows))))
+
 ;;;; Queue additions
 
 (ert-deftest prrr-db-test-take-preserved-outbox-returns-once ()

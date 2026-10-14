@@ -287,11 +287,32 @@ The file's directory is created when missing.  Opening it runs
                             prrr-db--tables)))
         (error "prrr-db: %S is not a prrr row struct" struct))))
 
+(defun prrr-db--storable (value type slot)
+  "Return VALUE as the database stores it, or signal when it cannot be.
+A string loses its text properties: a capture buffer's fontification
+puts the buffer itself into some of them, which prints as `#<buffer>'
+and never reads back, and one such row blocks every read of its table.
+A list or vector is checked throughout.  Anything else that is not nil,
+a number or a symbol is refused, naming TYPE's SLOT."
+  (cond ((or (null value) (numberp value) (symbolp value)) value)
+        ((stringp value) (substring-no-properties value))
+        ((consp value)
+         (let ((out nil))
+           (while (consp value)
+             (push (prrr-db--storable (pop value) type slot) out))
+           (nconc (nreverse out) (prrr-db--storable value type slot))))
+        ((vectorp value)
+         (apply #'vector
+                (mapcar (lambda (v) (prrr-db--storable v type slot)) value)))
+        ((error "prrr-db: %s.%s holds an unstorable value: %S" type slot value))))
+
 (defun prrr-db--struct-to-row (struct)
-  "Return STRUCT's slot values as a vector in column order."
+  "Return STRUCT's slot values as a vector in column order.
+Each value passes `prrr-db--storable'."
   (let ((type (type-of struct)))
     (apply #'vector
-           (mapcar (lambda (slot) (cl-struct-slot-value type slot struct))
+           (mapcar (lambda (slot)
+                     (prrr-db--storable (cl-struct-slot-value type slot struct) type slot))
                    (prrr-db--slot-names type)))))
 
 (defun prrr-db--where (plist)
