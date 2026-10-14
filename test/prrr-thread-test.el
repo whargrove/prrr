@@ -250,6 +250,17 @@ ARGS follow the label and the confirm function of `prrr-comment-capture'.
     (should (eq (current-buffer) origin))
     (should (= 10 (point)))))
 
+(ert-deftest prrr-thread-test-capture-confirm-strips-text-properties ()
+  "The confirmed text carries no text properties.
+gfm-mode's fontification of a fenced block puts the capture buffer
+itself into some of them, and a buffer cannot be stored."
+  (prrr-thread-test--with-capture ()
+    (insert (propertize "```suggestion\nx\n```" 'face 'bold 'prrr-test (current-buffer)))
+    (prrr-comment-confirm)
+    (let ((text (car (car confirmed))))
+      (should (equal "```suggestion\nx\n```" text))
+      (should-not (text-properties-at 0 text)))))
+
 (ert-deftest prrr-thread-test-capture-keys ()
   (prrr-thread-test--with-capture ()
     (should (eq 'prrr-comment-confirm (key-binding (kbd "C-c C-c"))))

@@ -383,7 +383,7 @@ signals, the capture buffer stays, so no text is lost."
 (defun prrr-comment-confirm ()
   "Send the comment of this buffer and close it."
   (interactive)
-  (let ((text (string-trim (buffer-string)))
+  (let ((text (string-trim (buffer-substring-no-properties (point-min) (point-max))))
         (on-confirm prrr-comment--on-confirm)
         (immediate prrr-comment--immediate)
         (origin prrr-comment--origin))
