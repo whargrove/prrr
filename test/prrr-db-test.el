@@ -205,8 +205,8 @@
       (should-not (text-properties-at 0 body)))))
 
 (ert-deftest prrr-db-test-insert-refuses-an-unstorable-value ()
-  "A value that cannot be read back, a buffer say, is refused before it
-reaches the database: one such row would block every read of its table."
+  "A value that cannot be read back is refused before it reaches the database.
+One such row, a buffer say, would block every read of its table."
   (prrr-db-with-test-db
     (let ((err (should-error
                 (prrr-db-insert (prrr-outbox-create :id "o1" :pr-id "PR_1" :kind 'thread
