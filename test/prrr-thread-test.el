@@ -245,6 +245,28 @@ the capture window over for Emacs's emoji skin-tone chooser."
       (should window)
       (should-not (window-parameter window 'window-side)))))
 
+(ert-deftest prrr-thread-test-capture-completes-mentions ()
+  "After @, completion offers the logins and Team slugs given to the capture (prrr-7ai)."
+  (prrr-thread-test--with-capture (:mentions '("alice" "alfred" "bob" "org/reviewers"))
+    (insert "hi @bo")
+    (completion-at-point)
+    (should (equal "hi @bob" (buffer-string)))
+    (erase-buffer)
+    (insert "no mention here")
+    (should-not (prrr-comment--complete-mention))
+    (should (eq 'prrr-comment-mention (keymap-lookup prrr-comment-mode-map "C-c @")))))
+
+(ert-deftest prrr-thread-test-capture-mention-command ()
+  "The mention command asks for a login with completion and inserts it, spaced off."
+  (prrr-thread-test--with-capture (:mentions '("alice" "bob"))
+    (insert "thanks")
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (should (equal '("alice" "bob") collection))
+                 "bob")))
+      (prrr-comment-mention))
+    (should (equal "thanks @bob " (buffer-string)))))
+
 (ert-deftest prrr-thread-test-capture-confirm ()
   (prrr-thread-test--with-capture ()
     (should (eq 'prrr-comment-mode major-mode))

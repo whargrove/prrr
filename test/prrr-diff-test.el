@@ -150,17 +150,17 @@ the user started in this buffer would be."
     (prrr-db-replace-review-data prrr-diff-test--pr data)))
 
 (defvar prrr-diff-test--posts nil
-  "The Discussion Comments `prrr-diff--posts' returns in tests.")
+  "The Discussion Comments `prrr-diff-posts' returns in tests.")
 
 (defmacro prrr-diff-test--with-buffer (setup &rest body)
   "Open the fixture PR's Review Buffer and run BODY in it.
 SETUP runs first, inside the fixture repository and a fresh database.
-`prrr-diff--posts' returns `prrr-diff-test--posts'."
+`prrr-diff-posts' returns `prrr-diff-test--posts'."
   (declare (indent 1))
   `(prrr-db-with-test-db
      (prrr-test-with-repo
        ,setup
-       (cl-letf (((symbol-function 'prrr-diff--posts)
+       (cl-letf (((symbol-function 'prrr-diff-posts)
                   (lambda (_pullreq) prrr-diff-test--posts)))
          (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
            (unwind-protect
@@ -265,7 +265,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
   "Review Focus 1: no base commit renders a note instead of files."
   (prrr-db-with-test-db
     (prrr-test-with-repo
-      (cl-letf (((symbol-function 'prrr-diff--posts) #'ignore))
+      (cl-letf (((symbol-function 'prrr-diff-posts) #'ignore))
         (let ((buffer (prrr-diff-setup-buffer
                        (forge-pullreq :id "forge-1" :number 1 :title "T" :their-id "PR_1"
                                       :base-rev nil :body nil))))
@@ -280,7 +280,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
   (prrr-db-with-test-db
     (prrr-test-with-repo
       (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")
-      (cl-letf (((symbol-function 'prrr-diff--posts) #'ignore))
+      (cl-letf (((symbol-function 'prrr-diff-posts) #'ignore))
         (let ((buffer (prrr-diff-setup-buffer (prrr-diff-test--pullreq))))
           (unwind-protect
               (with-current-buffer buffer
@@ -581,7 +581,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
 (ert-deftest prrr-diff-test-header-empty-description ()
   (prrr-db-with-test-db
     (prrr-test-with-repo
-      (cl-letf (((symbol-function 'prrr-diff--posts) #'ignore))
+      (cl-letf (((symbol-function 'prrr-diff-posts) #'ignore))
         (let ((buffer (prrr-diff-setup-buffer
                        (forge-pullreq :id "forge-1" :number 1 :title "T" :their-id "PR_1"
                                       :base-rev prrr-test-repo-base :author "example-alice"
@@ -609,7 +609,7 @@ SETUP runs first, inside the fixture repository and a fresh database.
                ((symbol-function 'forge-get-repository)
                 (lambda (&rest args)
                   (if (forge-pullreq-p (car args)) 'example-repo (apply get-repository args))))
-               ((symbol-function 'prrr-diff--posts) #'ignore))
+               ((symbol-function 'prrr-diff-posts) #'ignore))
        ,@body)))
 
 (ert-deftest prrr-diff-test-open-shows-buffer-and-refetches ()

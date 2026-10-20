@@ -272,6 +272,25 @@ TEAMS are the viewer's Team slugs.  What the Review Queue renders: see
 `prrr-state-withdrawn-meta' and `prrr-state-submitted-meta'."
   (prrr-state-submitted-meta (prrr-state-withdrawn-meta meta rows) rows teams))
 
+;;;; Mentions
+
+(defun prrr-state-mention-candidates (meta logins)
+  "Return the names an @-mention on META's PR may complete to, sorted.
+META is the PR's `prrr-pr-meta' or nil: its requested users and
+assignees, its reviewers and its requested Teams, as org/slug, are
+candidates.  LOGINS are more, such as the author, the commenters and
+the repository's collaborators; nil entries are dropped, duplicates
+too."
+  (sort (delete-dups
+         (delq nil
+               (append logins
+                       (and meta
+                            (append
+                             (mapcar #'cadr (prrr-pr-meta-review-requests meta))
+                             (prrr-pr-meta-assignees meta)
+                             (mapcar #'car (prrr-pr-meta-latest-reviews meta)))))))
+        #'string<))
+
 ;;;; Membership and partition
 
 (defun prrr-state--direct-p (pr meta me)

@@ -643,7 +643,11 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 | `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served, `-m` show muted) |
 
 **Capture buffer** (`prrr-comment-mode-map`): `C-c C-c` confirm, `C-c C-k`
-abort, `C-c C-i` toggle immediate.
+abort, `C-c C-i` toggle immediate, `C-c @` insert an @-mention chosen with
+completion. After `@`, `completion-at-point` offers the same names: the
+PR's author, the people requested, assigned or reviewing, its commenters,
+its requested Teams as `org/slug`, and the repository's collaborators from
+forge (`prrr-state-mention-candidates`).
 
 **Global commands.** `prrr-review` (prompt for a PR with forge's reader),
 `prrr-queue` (jump to the section in magit-status), `prrr-pull`,

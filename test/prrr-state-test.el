@@ -1132,6 +1132,17 @@ BODY, REPLY-TO and CREATED-AT are its fields."
   (should-error (prrr-state-anchor "a" '(h ?+ nil 12) '(g ?+ nil 30)) :type 'user-error)
   (should-error (prrr-state-anchor "a" '(h ?\\ nil nil) '(h ?\\ nil nil)) :type 'user-error))
 
+(ert-deftest prrr-state-test-mention-candidates ()
+  "Everyone around the PR, Teams as org/slug, sorted and unique, no nil (prrr-7ai)."
+  (should (equal '("alice" "bob" "carol" "dave" "erin" "example-org/reviewers")
+                 (prrr-state-mention-candidates
+                  (prrr-test-meta :review-requests '((user "bob") (team "example-org/reviewers"))
+                                  :assignees '("carol")
+                                  :latest-reviews '(("dave" "APPROVED" "2026-09-02T00:00:00Z"
+                                                     nil nil)))
+                  '("alice" "bob" nil "erin" "alice"))))
+  (should (equal '("alice") (prrr-state-mention-candidates nil '("alice")))))
+
 (ert-deftest prrr-state-test-anchor-label ()
   (should (equal "a:12 right" (prrr-state-anchor-label '(:path "a" :line 12 :side right))))
   (should (equal "a:9-12 right"

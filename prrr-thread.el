@@ -270,7 +270,8 @@ A Thread inside a hunk visits the diff line it follows, through magit's
   :doc "Keys of a buffer in which a comment is written."
   "C-c C-c" #'prrr-comment-confirm
   "C-c C-k" #'prrr-comment-abort
-  "C-c C-i" #'prrr-comment-toggle-immediate)
+  "C-c C-i" #'prrr-comment-toggle-immediate
+  "C-c @" #'prrr-comment-mention)
 
 (defalias 'prrr-comment--parent-mode
   (if (require 'markdown-mode nil t) 'gfm-mode 'text-mode)
@@ -287,7 +288,8 @@ Immediate Publish.
 \\{prrr-comment-mode-map}"
   :interactive nil
   :group 'prrr
-  (setq-local header-line-format '(:eval (prrr-comment--header))))
+  (setq-local header-line-format '(:eval (prrr-comment--header)))
+  (add-hook 'completion-at-point-functions #'prrr-comment--complete-mention nil t))
 
 (defvar-local prrr-comment--label nil
   "What the comment is about, as the header line says.")
@@ -317,6 +319,32 @@ moves every marker in it to the top.")
 (defvar-local prrr-comment--windows nil
   "The window configuration to restore when the capture ends.")
 
+(defvar-local prrr-comment--mentions nil
+  "The logins and Team slugs an @-mention completes to here.")
+
+(defun prrr-comment--complete-mention ()
+  "Complete the @-mention at point from `prrr-comment--mentions'.
+A `completion-at-point-functions' function: it applies when point
+follows @ and the characters a login or Team slug is made of."
+  (when prrr-comment--mentions
+    (let ((end (point))
+          (start (save-excursion
+                   (skip-chars-backward "[:alnum:]_/-")
+                   (and (eq (char-before) ?@) (point)))))
+      (and start
+           (list start end prrr-comment--mentions :exclusive 'no)))))
+
+(defun prrr-comment-mention ()
+  "Insert an @-mention, choosing the login or Team with completion.
+The names are those around the pull request: its author, the people
+requested or assigned, its reviewers and commenters, its requested
+Teams and the repository's collaborators."
+  (interactive)
+  (let ((name (completing-read "Mention: " prrr-comment--mentions)))
+    (unless (or (bolp) (memq (char-before) '(?\s ?\t ?\n ?\( ?\[)))
+      (insert " "))
+    (insert "@" name " ")))
+
 (defun prrr-comment--header ()
   "Return the header line of a capture buffer."
   (concat " " prrr-comment--label
@@ -324,18 +352,19 @@ moves every marker in it to the top.")
                (if prrr-comment--immediate "  ·  publish now" "  ·  Pending Review"))
           (substitute-command-keys
            (concat "  ·  \\<prrr-comment-mode-map>\\[prrr-comment-confirm] send, "
-                   "\\[prrr-comment-abort] cancel"
+                   "\\[prrr-comment-abort] cancel, \\[prrr-comment-mention] mention"
                    (and prrr-comment--immediate-allowed
                         ", \\[prrr-comment-toggle-immediate] publish now or later")))))
 
 (cl-defun prrr-comment-capture (label on-confirm &key body immediate (immediate-allowed t)
-                                      allow-empty)
+                                      allow-empty mentions)
   "Open a buffer to write a comment about LABEL, and return it.
 LABEL says what the comment is about, as `prrr-state-anchor-label' or
 `prrr-thread-label' do; the header line shows it.  BODY is the initial
 text.  IMMEDIATE is the initial choice between the Pending Review (nil)
 and Immediate Publish; IMMEDIATE-ALLOWED nil fixes it.  ALLOW-EMPTY
-non-nil lets an empty text be confirmed.
+non-nil lets an empty text be confirmed.  MENTIONS are the logins and
+Team slugs an @-mention completes to (`prrr-comment-mention').
 
 On confirm, ON-CONFIRM is called with the trimmed text and the
 immediate choice, in the buffer the capture started from; then the
@@ -359,7 +388,8 @@ signals, the capture buffer stays, so no text is lost."
             prrr-comment--allow-empty allow-empty
             prrr-comment--origin origin
             prrr-comment--section-position section-position
-            prrr-comment--windows windows)
+            prrr-comment--windows windows
+            prrr-comment--mentions mentions)
       (when body
         (insert body)))
     ;; Not a side window: transient shows its menus in the bottom side

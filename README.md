@@ -274,6 +274,10 @@ before `c`, `C`, `r` or `s`, or the `-i` switch in the `?` menu, the
 comment is published at once. `d` writes a comment on the pull request
 itself, which is always published at once.
 
+To mention someone, type `@` and complete (`C-M-i`, or your completion
+UI): the candidates are the people and teams around the pull request and
+the repository's collaborators. `C-c @` picks one with completion instead.
+
 `e` and `k` edit and delete your own comments, pending or published.
 `R` resolves or unresolves the thread at point, when GitHub lets you.
 

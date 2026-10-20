@@ -43,12 +43,32 @@ buffer the body opens is confirmed with `prrr-review-test--send'."
        (cl-letf (((symbol-function 'forge-get-repository)
                   (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
                                                              :name "example-repo"
-                                                             :apihost "api.github.com"))))
+                                                             :apihost "api.github.com")))
+                 ;; A detached repository object has no assignee table.
+                 ((symbol-function 'prrr-review--collaborators)
+                  (lambda (_repo) '("example-collab"))))
          (prrr-test-with-ghub-dispatch ,answers
            (unwind-protect (progn ,@body)
              (dolist (buffer (buffer-list))
                (when (string-prefix-p "*prrr comment*" (buffer-name buffer))
                  (kill-buffer buffer)))))))))
+
+(ert-deftest prrr-review-test-captures-offer-mentions ()
+  "A capture knows the PR's people: author, collaborators, comment authors (prrr-7ai)."
+  (prrr-review-test--with-buffer nil
+    (let ((pullreq (prrr-diff-pullreq)))
+      (prrr-discussion-comment)
+      (let ((mentions (with-current-buffer
+                          (seq-find (lambda (buffer)
+                                      (string-prefix-p "*prrr comment*" (buffer-name buffer)))
+                                    (buffer-list))
+                        prrr-comment--mentions)))
+        (should (member "example-collab" mentions))
+        (should (member (oref pullreq author) mentions))
+        (should (cl-subsetp (mapcar #'prrr-comment-author
+                                    (prrr-db-select 'review-comment
+                                                    :pr-id (oref pullreq their-id)))
+                            mentions :test #'equal))))))
 
 (defun prrr-review-test--send (text)
   "Type TEXT in the open capture buffer and confirm it."

@@ -662,7 +662,7 @@ the diff."
               (prrr-diff--wash-file file threads comments sides start end))))))
     (cdr layout)))
 
-(defun prrr-diff--posts (pullreq)
+(defun prrr-diff-posts (pullreq)
   "Return PULLREQ's Discussion Comments, oldest first."
   (oref pullreq posts))
 
@@ -739,7 +739,7 @@ unsent ones."
       (if (string-empty-p (string-trim (or (oref pullreq body) "")))
           (prrr-diff--insert-note "No description")
         (forge-insert-post pullreq nil)))
-    (let* ((posts (prrr-diff--posts pullreq))
+    (let* ((posts (prrr-diff-posts pullreq))
            (sent (prrr-sync-posted-discussion (oref pullreq their-id) posts))
            (unsent (plist-get data :discussion)))
       (magit-insert-section section (discussion nil t)

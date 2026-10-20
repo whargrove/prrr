@@ -53,6 +53,23 @@ from `prrr-menu' with the -i switch on (SPEC section 9)."
 The current buffer refreshes as the write goes out."
   (prrr-sync-write (forge-get-repository pullreq) pullreq kind payload (current-buffer)))
 
+(defun prrr-review--collaborators (repo)
+  "Return the logins of forge's assignable users of REPO."
+  (mapcar #'cadr (oref repo assignees)))
+
+(defun prrr-review--mentions (pullreq)
+  "Return the names a comment on PULLREQ may @-mention, for the capture.
+The PR's author, the people requested, assigned or reviewing, its
+commenters here and in forge's posts, its requested Teams and the
+repository's collaborators (`prrr-state-mention-candidates')."
+  (let ((pr-id (oref pullreq their-id)))
+    (prrr-state-mention-candidates
+     (prrr-db-get 'pullreq-meta pr-id)
+     (append (list (oref pullreq author))
+             (mapcar (lambda (post) (oref post author)) (prrr-diff-posts pullreq))
+             (mapcar #'prrr-comment-author (prrr-db-select 'review-comment :pr-id pr-id))
+             (prrr-review--collaborators (forge-get-repository pullreq))))))
+
 (defun prrr-review--comment-on (anchor immediate body)
   "Capture a comment on ANCHOR and send it as a new Thread.
 IMMEDIATE is the initial choice of Immediate Publish; BODY the initial
@@ -72,7 +89,7 @@ buffer kept, when that review is on another commit than the head shown
            (user-error "%s" problem)))
        (prrr-review--write pullreq (if now 'publish 'thread)
                            (list :anchor anchor :body text :commit head)))
-     :body body :immediate immediate)))
+     :body body :immediate immediate :mentions (prrr-review--mentions pullreq))))
 
 ;;;###autoload
 (defun prrr-comment (immediate)
@@ -119,7 +136,7 @@ The reply joins your Pending Review; IMMEDIATE is as for `prrr-comment'."
        (prrr-review--write pullreq (if now 'publish-reply 'reply)
                            (list :thread-id (prrr-thread-thread-id thread) :body text
                                  :commit (prrr-diff-head))))
-     :immediate immediate)))
+     :immediate immediate :mentions (prrr-review--mentions pullreq))))
 
 (defun prrr-review--own-comment ()
   "Return your comment at point, or signal a `user-error'."
@@ -143,7 +160,8 @@ On an agent's proposed comment, accept it as edited instead
        (lambda (text _now)
          (prrr-review--write pullreq 'edit (list :comment-id (prrr-comment-comment-id comment)
                                                  :body text)))
-       :body (prrr-comment-body comment) :immediate-allowed nil))))
+       :body (prrr-comment-body comment) :immediate-allowed nil
+       :mentions (prrr-review--mentions pullreq)))))
 
 ;;;###autoload
 (defun prrr-delete-comment ()
@@ -182,7 +200,8 @@ still flagged as the agent's (SPEC section 10)."
      "Accept the agent's comment"
      (lambda (text _immediate)
        (prrr-sync-accept (prrr-outbox-id row) text buffer))
-     :body (prrr-comment-body comment) :immediate-allowed nil)))
+     :body (prrr-comment-body comment) :immediate-allowed nil
+     :mentions (prrr-review--mentions (prrr-diff-pullreq)))))
 
 ;;;###autoload
 (defun prrr-discussion-comment ()
@@ -192,7 +211,7 @@ still flagged as the agent's (SPEC section 10)."
     (prrr-comment-capture
      (format "Discussion Comment on #%d" (oref pullreq number))
      (lambda (text _now) (prrr-review--write pullreq 'discussion (list :body text)))
-     :immediate t :immediate-allowed nil)))
+     :immediate t :immediate-allowed nil :mentions (prrr-review--mentions pullreq))))
 
 ;;;###autoload
 (defun prrr-toggle-resolved ()
@@ -276,7 +295,7 @@ the Bookmark (SPEC section 8)."
              (prrr-sync-record-bookmark pullreq head)
            (error (message "prrr: the Bookmark was not recorded: %s"
                            (error-message-string err))))))
-     :immediate-allowed nil :allow-empty t)))
+     :immediate-allowed nil :allow-empty t :mentions (prrr-review--mentions pullreq))))
 
 ;;;###autoload
 (defun prrr-submit-approve ()
