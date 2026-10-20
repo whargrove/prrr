@@ -58,12 +58,18 @@
       (emacsql db [:insert :into outbox :values $v1]
                (list (vector 1 "PR_1" 'comment "payload"
                                "2026-10-10T12:00:00Z" 0 nil)))
+      ;; The local-only tables survive a reset too (prrr-ei8).
+      (prrr-db-insert (prrr-bookmark-create :pr-id "PR_1" :last-opened-head-oid "1111"
+                                            :last-opened-at "2026-10-10T12:00:00Z"))
+      (prrr-db-insert (prrr-mute-create :pr-id "PR_2" :muted-at "2026-10-10T12:00:00Z"))
       (emacsql db [:delete :from schema-version])
       (emacsql db [:insert :into schema-version :values $v1]
                (list (vector 0)))
       (prrr-db--init db)
       (should (null (emacsql db [:select * :from team])))
       (should (= 1 (length (emacsql db [:select * :from outbox]))))
+      (should (prrr-db-get 'pr-bookmark "PR_1"))
+      (should (prrr-db-get 'mute "PR_2"))
       (should (equal (emacsql db [:select version :from schema-version])
                      (list (list prrr-db-schema-version))))
       (should (= 1 (length prrr-db-preserved-outbox)))
@@ -81,15 +87,19 @@
       (should (= 1 (length (emacsql db [:select * :from team])))))))
 
 (ert-deftest prrr-db-test-reset-recreates-tables ()
+  "A reset drops GitHub's tables and keeps the local ones (prrr-ei8)."
   (prrr-db-with-test-db
     (let ((db (prrr-db)))
       (emacsql db [:insert :into pr-bookmark :values $v1]
                (list (vector "PR_1" "abc" "2026-10-10T12:00:00Z")))
+      (emacsql db [:insert :into team :values $v1]
+               (list (vector "example-org/reviewers" "example-org" "reviewers" nil)))
       (emacsql db [:insert :into outbox :values $v1]
                (list (vector 1 "PR_1" 'comment "payload"
                              "2026-10-10T12:00:00Z" 0 nil)))
       (prrr-db-reset db)
-      (should (null (emacsql db [:select * :from pr-bookmark])))
+      (should (null (emacsql db [:select * :from team])))
+      (should (= 1 (length (emacsql db [:select * :from pr-bookmark]))))
       (should (= 1 (length (emacsql db [:select * :from outbox])))))))
 
 (ert-deftest prrr-db-test-row-to-struct-rejects-wrong-arity ()

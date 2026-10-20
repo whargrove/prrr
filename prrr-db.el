@@ -50,7 +50,7 @@ One database serves every repository.  Created on first use."
   :type 'file
   :group 'prrr)
 
-(defconst prrr-db-schema-version 3
+(defconst prrr-db-schema-version 4
   "Version of the table layout in `prrr-db--tables'.
 Bump it whenever a table changes.  A stored version that differs makes
 `prrr-db--init' call `prrr-db-reset'.")
@@ -65,9 +65,12 @@ ON-BEHALF-OF-SLUGS), one per reviewer, pending reviews excluded.
 VIEWER-LATEST-REVIEW is (STATE SUBMITTED-AT COMMIT-OID) or nil.
 VIEWER-LATEST-REVIEW-REQUEST is the login of whoever requested the
 viewer's review, or nil.  ASSIGNEES is a list of the assigned logins.
-STATE values are GitHub's strings."
+ADDITIONS, DELETIONS and CHANGED-FILES are GitHub's counts for the
+whole PR, nil until a pull stored them.  STATE values are GitHub's
+strings."
   pr-id forge-repo-id number head-oid review-requests latest-reviews
-  viewer-latest-review viewer-latest-review-request assignees created-at fetched-at)
+  viewer-latest-review viewer-latest-review-request assignees
+  additions deletions changed-files created-at fetched-at)
 
 (cl-defstruct (prrr-thread (:constructor prrr-thread-create) (:copier nil))
   "A Thread (table `thread').
@@ -125,7 +128,7 @@ when the write is waiting to be sent."
   '((pullreq-meta prrr-pr-meta
      ([(pr-id :primary-key) forge-repo-id number head-oid review-requests
        latest-reviews viewer-latest-review viewer-latest-review-request assignees
-       created-at fetched-at]))
+       additions deletions changed-files created-at fetched-at]))
     (thread prrr-thread
      ([(thread-id :primary-key) pr-id path line start-line side start-side
        subject-type outdated-p resolved-p resolvable-p original-line original-commit
@@ -148,8 +151,13 @@ when the write is waiting to be sent."
   "Tables as (TABLE STRUCT SCHEMA).
 SCHEMA is the emacsql `:create-table' schema: the column vector followed
 by table constraints.  The struct's slots equal the columns in order.
-The `outbox' column layout is frozen until 1.0, because `prrr-db-reset'
-never recreates that table and its old rows must stay readable.")
+The layouts of the tables in `prrr-db--local-tables' are frozen until
+1.0, because `prrr-db-reset' never recreates them and their old rows
+must stay readable.")
+
+(defconst prrr-db--local-tables '(outbox pr-bookmark mute)
+  "Tables whose rows exist only here and survive `prrr-db-reset'.
+Everything else is GitHub's and comes back with the next pull.")
 
 (defun prrr-db--table-entry (table)
   "Return the `prrr-db--tables' entry of TABLE, or signal an error."
@@ -234,13 +242,13 @@ anything else; `prrr-db--init' sets it and
     (emacsql db (vector :drop-table table))))
 
 (defun prrr-db-reset (&optional db)
-  "Drop and recreate every table except `outbox' in DB.
+  "Drop and recreate every table of DB but those of `prrr-db--local-tables'.
 DB defaults to the open connection.  The stored schema version becomes
 `prrr-db-schema-version'.  Return DB."
   (let ((db (or db (prrr-db))))
     (emacsql-with-transaction db
       (dolist (entry prrr-db--tables)
-        (unless (eq (nth 0 entry) 'outbox)
+        (unless (memq (nth 0 entry) prrr-db--local-tables)
           (prrr-db--drop-table db (nth 0 entry))))
       (prrr-db--create-tables db))
     db))

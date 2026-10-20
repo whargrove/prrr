@@ -97,7 +97,7 @@ forge objects (forge's own `id` is a composite, not the node id; its
 
 | Table            | Columns (PK first)                                                                                                                                  | Notes                                                                                                                                                                                                                                                     |
 |------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `pullreq-meta`   | pr-id, forge-repo-id, number, head-oid, review-requests, latest-reviews, viewer-latest-review, viewer-latest-review-request, created-at, fetched-at | `review-requests`: list of `(kind name)` with kind `user` or `team`. `latest-reviews`: list of `(login state submitted-at commit-oid on-behalf-of-slugs)`. `viewer-latest-review`: `(state submitted-at commit-oid)` or nil. Everything the Review Queue needs. |
+| `pullreq-meta`   | pr-id, forge-repo-id, number, head-oid, review-requests, latest-reviews, viewer-latest-review, viewer-latest-review-request, assignees, additions, deletions, changed-files, created-at, fetched-at | `review-requests`: list of `(kind name)` with kind `user` or `team`. `latest-reviews`: list of `(login state submitted-at commit-oid on-behalf-of-slugs)`. `viewer-latest-review`: `(state submitted-at commit-oid)` or nil. `additions`, `deletions`, `changed-files`: GitHub's counts for the whole PR. Everything the Review Queue needs. |
 | `thread`         | thread-id, pr-id, path, line, start-line, side, start-side, subject-type, outdated-p, resolved-p, resolvable-p, original-line, original-commit, fetched-at        | `subject-type` is `line` or `file`. `resolvable-p`: GitHub lets the viewer resolve it, or unresolve it when resolved.                                                                                                                                                                                                                       |
 | `review-comment` | comment-id, thread-id, pr-id, author, body, created-at, updated-at, reply-to, review-id, state, local-state, agent-p, database-id                                | `state`: `pending` or `submitted` (GitHub's). `local-state`: `sent`, or `proposed` (milestone 7). `database-id`: GitHub's numeric id, which REST replies need.                                                                                                                                                             |
 | `pending-review` | pr-id, review-id, commit-oid, body, created-at                                                                                                      | At most one per PR for the viewer.                                                                                                                                                                                                                        |
@@ -106,7 +106,7 @@ forge objects (forge's own `id` is a composite, not the node id; its
 | `pr-bookmark`    | pr-id, last-opened-head-oid, last-opened-at                                                                                                         | Local "since I last looked": the head shown when the Review Buffer was last left, a review submitted, or `prrr-mark-seen` run.                                                                                                                          |
 | `mute`           | pr-id, muted-at                                                                                                                                     | PRs the viewer muted (`prrr-mute`): hidden from the Review Queue for good, until unmuted. Local only; GitHub is never told.                                                                                                                           |
 | `outbox`         | id, pr-id, kind, payload, created-at, attempts, last-error                                                                                          | Writes GitHub has not accepted, in id order; `kind` and `payload` as `prrr-state-outbox-kinds` describes. The review tables above hold only what GitHub sent or accepted.                                                                                                                                                                                                                             |
-| `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first. Version 3 since the milestone 2 closeout (assignees). A table missing at open is created without a reset, so adding a table needs no bump (`mute`). |
+| `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except the local ones (`outbox`, whose rows are shown to the user first, `pr-bookmark` and `mute`), whose layouts are frozen. Version 4 since the diff stats (additions, deletions, changed-files; prrr-ei8). A table missing at open is created without a reset, so adding a table needs no bump (`mute`). |
 
 Rows are plain structs (`prrr-thread`, `prrr-comment`, and so on) and are
 the values the API returns.
@@ -127,7 +127,7 @@ requestedReviewer { ... on User { login } ... on Team { combinedSlug } } }
 latestReviews(first: 50) { author { login } state submittedAt commit { oid }
 onBehalfOf(first: 10) { nodes { combinedSlug } } } viewerLatestReview { state
 submittedAt commit { oid } } viewerLatestReviewRequest { id }
-assignees(first: 100) { login }`. Stored in `pullreq-meta`. Draft, author,
+assignees(first: 100) { login } additions deletions changedFiles`. Stored in `pullreq-meta`. Draft, author,
 base-ref, head-ref, head-rev, and cross-repo-p come from forge's
 `forge-pullreq` object (research 04, section 1); forge drops Team requests
 and forgets satisfied ones, which is why prrr fetches requests itself.
@@ -257,9 +257,10 @@ remembers the fold), each with a `⟰ k/n` marker giving its true place. A Stack
 members are dimmed. A Stack sorts by its highest-ranked member and stays
 together.
 
-**Line format.** `#number  state-badge  title  author  stack-marker
-unresolved-count  updated-ago`, one face per state, title truncated to the
-window width, styled like forge's topic lines. The section value of a row is
+**Line format.** `#number  state-badge  title  author  +added -deleted
+stack-marker  unresolved-count  updated-ago`, one face per state, the line
+counts in magit's diffstat faces (absent until a pull stored them), title
+truncated to the window width, styled like forge's topic lines. The section value of a row is
 the forge `forge-pullreq` object so `forge-pullreq-at-point` keeps working.
 
 ## 6. Review Buffer rendering (prrr-t9q.1, prrr-t9q.5)
@@ -277,6 +278,10 @@ other file is washed on first expand through the section's deferred body
 (`magit-insert-section-body`), using `magit-git-insert` plus narrowing
 (`magit-git-wash` cannot run inside a deferred body). Measured baseline:
 file list 65 ms at 417 files, 355 ms at 2,516; per-file wash 2 to 7 ms.
+
+**File headings.** magit's status word and path, then the file's
+`+added -deleted` line counts from `--numstat` in magit's diffstat faces
+(none for a binary file), its Thread count and the Viewed mark.
 
 **Sections.** `file` > (`file-comment`, `hunk`...) and inside each hunk
 `thread` children placed directly after their anchored line. A file's

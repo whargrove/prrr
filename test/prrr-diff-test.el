@@ -393,8 +393,9 @@ SETUP runs first, inside the fixture repository and a fresh database.
       (should (string-match-p "src/gone\\.el, line 2" (prrr-diff-test--text group))))))
 
 (ert-deftest prrr-diff-test-heading-counts-threads ()
+  "The file heading shows the file's +added -deleted lines, then its Thread count (prrr-ei8)."
   (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
-    (should (string-match-p "src/example\\.el  2 threads"
+    (should (string-match-p "src/example\\.el  \\+[1-9][0-9]* -[0-9]+  2 threads"
                             (prrr-diff-test--text (prrr-diff-test--file-section "src/example.el"))))))
 
 (ert-deftest prrr-diff-test-ret-after-thread ()

@@ -55,9 +55,11 @@ ID is the GitHub node id (forge's `their-id'), which joins to
 HEAD-REF are branch names, nil when the branch is gone.  CROSS-REPO-P
 is non-nil for a PR from a fork.  HEAD-OID is forge's head-rev; the
 Review State prefers the head stored in the PR's `prrr-pr-meta' (see
-`prrr-state--head-oid')."
+`prrr-state--head-oid').
+ADDITIONS and DELETIONS are GitHub's line counts for the whole PR, nil
+until a pull stored them."
   id number title author draft-p assignees created-at updated-at
-  head-oid base-ref head-ref cross-repo-p)
+  head-oid base-ref head-ref cross-repo-p additions deletions)
 
 (cl-defstruct (prrr-queue-entry (:constructor prrr-queue-entry-create)
                                 (:copier nil))

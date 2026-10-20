@@ -48,7 +48,13 @@
   (let ((meta (car (prrr-github-decode-queue (prrr-test-fixture "queue") nil))))
     (should (equal "1111111111111111111111111111111111111111" (prrr-pr-meta-head-oid meta)))
     (should (equal "2026-09-01T09:00:00Z" (prrr-pr-meta-created-at meta)))
-    (should (null (prrr-pr-meta-fetched-at meta)))))
+    (should (null (prrr-pr-meta-fetched-at meta)))
+    ;; Diff stats (prrr-ei8); a PR the fixture gives none has nil.
+    (should (equal '(12 3 2) (list (prrr-pr-meta-additions meta)
+                                   (prrr-pr-meta-deletions meta)
+                                   (prrr-pr-meta-changed-files meta))))
+    (should-not (prrr-pr-meta-additions
+                 (cadr (prrr-github-decode-queue (prrr-test-fixture "queue") nil))))))
 
 (ert-deftest prrr-github-test-decode-queue-review-requests-by-typename ()
   "Users become (user LOGIN), Teams (team COMBINED-SLUG); other kinds are dropped."

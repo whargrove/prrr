@@ -614,10 +614,18 @@ A `dismissed' file changed since it was viewed, so it does not count."
     0))
 
 (defun prrr-diff--file-heading (file threads viewed-p)
-  "Return the heading of FILE with the count of its THREADS, marked when VIEWED-P."
+  "Return the heading of FILE with the count of its THREADS, marked when VIEWED-P.
+FILE's added and deleted line counts follow its name, unless it is binary."
   (let ((count (prrr-diff--thread-count threads)))
     (concat (magit-format-file 'diff (prrr-diff-file-path file) 'magit-diff-file-heading
                                (prrr-diff-file-status file) (prrr-diff-file-orig file))
+            (unless (prrr-diff-file-binary-p file)
+              (concat "  "
+                      (propertize (format "+%d" (or (prrr-diff-file-added file) 0))
+                                  'font-lock-face 'magit-diffstat-added)
+                      " "
+                      (propertize (format "-%d" (or (prrr-diff-file-deleted file) 0))
+                                  'font-lock-face 'magit-diffstat-removed)))
             (and (> count 0) (format "  %d thread%s" count (if (= count 1) "" "s")))
             (and viewed-p (propertize "  ✓ viewed" 'font-lock-face 'prrr-diff-viewed))
             "\n")))

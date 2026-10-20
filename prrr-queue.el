@@ -158,14 +158,21 @@ there is nothing to say."
         (propertize (format " (%s)" text) 'font-lock-face 'magit-dimmed)
       "")))
 
+(defun prrr-queue--stats (added deleted)
+  "Return the counts ADDED and DELETED as +N -M in magit's diffstat faces."
+  (concat (propertize (format "+%d" added) 'font-lock-face 'magit-diffstat-added)
+          " "
+          (propertize (format "-%d" deleted) 'font-lock-face 'magit-diffstat-removed)))
+
 (defun prrr-queue--line (entry number-width depth unresolved now width)
   "Return the text of ENTRY's row, without a newline.
 NUMBER-WIDTH is the width of the PR number column, DEPTH the row's
 depth among the visible rows of its Stack, UNRESOLVED its count of
 unresolved Threads, NOW the current ISO timestamp and WIDTH the
-columns to fit.  The title is truncated so the row fits WIDTH whenever
-WIDTH leaves it at least ten columns.  The Stack marker shows the
-row's true position, which may skip hidden rows (prrr-knu.5)."
+columns to fit.  The PR's added and deleted line counts follow the
+author when prrr has them.  The title is truncated so the row fits
+WIDTH whenever WIDTH leaves it at least ten columns.  The Stack marker
+shows the row's true position, which may skip hidden rows (prrr-knu.5)."
   (let* ((pr (prrr-queue-entry-pr entry))
          (state (prrr-queue-entry-state entry))
          (muted (prrr-queue-entry-muted-p entry))
@@ -182,6 +189,9 @@ row's true position, which may skip hidden rows (prrr-knu.5)."
                          "  " (make-string (* 2 depth) ?\s) badge "  "))
          (suffix (concat "  " (propertize (or (prrr-pr-author pr) "")
                                           'font-lock-face 'magit-log-author)
+                         (and (prrr-pr-additions pr) (prrr-pr-deletions pr)
+                              (concat "  " (prrr-queue--stats (prrr-pr-additions pr)
+                                                              (prrr-pr-deletions pr))))
                          (and size (> size 1)
                               (format "  ⟰ %d/%d" (prrr-queue-entry-stack-pos entry) size))
                          (and (> unresolved 0) (format "  %d unresolved" unresolved))
@@ -292,17 +302,20 @@ empty.  Sets `prrr-queue--rows'."
 
 (defun prrr-queue-pr (pullreq &optional meta)
   "Return the `prrr-pr' the Review Queue rules see for forge's PULLREQ.
-META is the PR's `prrr-pr-meta' row, or nil.  ASSIGNEES come from META,
-which prrr's queue query fills: reading them from forge costs a join per
-PR (SPEC section 12).  HEAD-OID is forge's head-rev; the Review State
-prefers the head stored with the PR's meta row (`prrr-state--head-oid'),
-so forge's matters only for a PR prrr has not pulled yet."
+META is the PR's `prrr-pr-meta' row, or nil.  ASSIGNEES, ADDITIONS and
+DELETIONS come from META, which prrr's queue query fills: reading
+assignees from forge costs a join per PR (SPEC section 12).  HEAD-OID
+is forge's head-rev; the Review State prefers the head stored with the
+PR's meta row (`prrr-state--head-oid'), so forge's matters only for a
+PR prrr has not pulled yet."
   (prrr-pr-create :id (oref pullreq their-id)
                   :number (oref pullreq number)
                   :title (oref pullreq title)
                   :author (oref pullreq author)
                   :draft-p (and (oref pullreq draft-p) t)
                   :assignees (and meta (prrr-pr-meta-assignees meta))
+                  :additions (and meta (prrr-pr-meta-additions meta))
+                  :deletions (and meta (prrr-pr-meta-deletions meta))
                   :created-at (oref pullreq created)
                   :updated-at (oref pullreq updated)
                   :head-oid (oref pullreq head-rev)

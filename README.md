@@ -80,6 +80,10 @@ A Stack (each PR based on the branch of the one below) stays together,
 bottom first, with `⟰ k/n` marking each PR's place in it. Its other PRs
 sit one level under its first row; `TAB` on that row folds them away.
 
+Each row ends with the author, the PR's `+added -deleted` line counts once
+a pull has stored them, its place in a Stack, its unresolved threads and
+its age.
+
 A Verdict you submit or a Withdraw shows in the queue at once, before
 GitHub has it: the row moves to Served with its new state, or leaves.
 
@@ -179,7 +183,8 @@ files no longer in the diff go to a group at the end of the buffer.
 Resolved threads start folded. `RET` on a thread visits the line it is
 anchored to.
 
-Files you marked Viewed, here or on GitHub, are folded and marked `✓
+Each file heading shows the file's `+added -deleted` line counts and its
+thread count. Files you marked Viewed, here or on GitHub, are folded and marked `✓
 viewed`. `g` redraws at the pull request's current head and keeps what
 you expanded and folded.
 

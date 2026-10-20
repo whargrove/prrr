@@ -565,5 +565,21 @@ prrr's keys win where both bind a key."
       (call-interactively #'prrr-queue-toggle-muted))
     (should prrr-queue-show-muted)))
 
+(ert-deftest prrr-queue-test-row-shows-diff-stats ()
+  "A row shows +added -deleted after the author; nothing without the counts (prrr-ei8)."
+  (prrr-queue-test--with-render
+      (prrr-queue-test--inputs
+       (list (prrr-queue-test--pair :id "A" :number 1 :assignees (list prrr-test-me)
+                                    :additions 12 :deletions 3)
+             (prrr-queue-test--pair :id "B" :number 2 :assignees (list prrr-test-me)))
+       nil)
+    (should (string-match-p "  example-alice  [+]12 -3  " (prrr-queue-test--line-of 1)))
+    (should-not (string-match-p "[+-][0-9]" (prrr-queue-test--line-of 2)))))
+
+(ert-deftest prrr-queue-test-pr-takes-stats-from-meta ()
+  (let ((pr (prrr-queue-pr (prrr-queue-test--forge-pullreq 1 "A" 'open)
+                           (prrr-test-meta :pr-id "A" :additions 7 :deletions 1))))
+    (should (equal '(7 1) (list (prrr-pr-additions pr) (prrr-pr-deletions pr))))))
+
 (provide 'prrr-queue-test)
 ;;; prrr-queue-test.el ends here

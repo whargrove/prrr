@@ -72,7 +72,8 @@ the current repository, which is where forge reads it."
         (onBehalfOf [(:edges t)] combinedSlug))
       (viewerLatestReview state submittedAt (commit oid))
       (viewerLatestReviewRequest id)
-      (assignees [(:edges t)] login))
+      (assignees [(:edges t)] login)
+      additions deletions changedFiles)
     "The fields of one PR that a `prrr-pr-meta' row is decoded from."))
 
 (eval-and-compile
@@ -183,6 +184,9 @@ FETCHED-AT are stored in the row."
      :viewer-latest-review (prrr-github--viewer-review .viewerLatestReview)
      :viewer-latest-review-request .viewerLatestReviewRequest.id
      :assignees (mapcar (lambda (user) (alist-get 'login user)) .assignees)
+     :additions .additions
+     :deletions .deletions
+     :changed-files .changedFiles
      :created-at .createdAt
      :fetched-at fetched-at)))
 

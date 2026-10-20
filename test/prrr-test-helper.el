@@ -102,29 +102,34 @@ the test, because ghub would signal."
                                     (updated-at "2026-09-05T00:00:00Z")
                                     (head-oid prrr-test-head)
                                     (base-ref "main") (head-ref "feature-1")
-                                    cross-repo-p)
+                                    cross-repo-p additions deletions)
   "Build a `prrr-pr' with sensible defaults.
 Keyword arguments: ID, NUMBER, TITLE, AUTHOR, DRAFT-P, ASSIGNEES,
-CREATED-AT, UPDATED-AT, HEAD-OID, BASE-REF, HEAD-REF and CROSS-REPO-P."
+CREATED-AT, UPDATED-AT, HEAD-OID, BASE-REF, HEAD-REF, CROSS-REPO-P,
+ADDITIONS and DELETIONS."
   (prrr-pr-create :id id :number number :title title :author author
                   :draft-p draft-p :assignees assignees :created-at created-at
                   :updated-at updated-at :head-oid head-oid :base-ref base-ref
-                  :head-ref head-ref :cross-repo-p cross-repo-p))
+                  :head-ref head-ref :cross-repo-p cross-repo-p
+                  :additions additions :deletions deletions))
 
 (cl-defun prrr-test-meta (&key (pr-id "PR_1") (number 1) (head-oid prrr-test-head)
                                       review-requests latest-reviews
                                       viewer-latest-review viewer-latest-review-request
-                                      assignees (created-at "2026-09-01T00:00:00Z"))
+                                      assignees additions deletions changed-files
+                                      (created-at "2026-09-01T00:00:00Z"))
   "Build a `prrr-pr-meta' with sensible defaults.
 Keyword arguments: PR-ID, NUMBER, HEAD-OID, REVIEW-REQUESTS, LATEST-REVIEWS,
-VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST, ASSIGNEES and
-CREATED-AT."
+VIEWER-LATEST-REVIEW, VIEWER-LATEST-REVIEW-REQUEST, ASSIGNEES, ADDITIONS,
+DELETIONS, CHANGED-FILES and CREATED-AT."
   (prrr-pr-meta-create :pr-id pr-id :forge-repo-id "example-repo-id" :number number
                        :head-oid head-oid :review-requests review-requests
                        :latest-reviews latest-reviews
                        :viewer-latest-review viewer-latest-review
                        :viewer-latest-review-request viewer-latest-review-request
-                       :assignees assignees :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
+                       :assignees assignees :additions additions :deletions deletions
+                       :changed-files changed-files
+                       :created-at created-at :fetched-at "2026-10-10T12:00:00Z"))
 
 (cl-defun prrr-test-thread (&key (id "T_1") (path "src/example.el") (line 12) start-line
                                  (side 'right) (subject-type 'line) outdated-p resolved-p)
