@@ -318,10 +318,12 @@ navigation in the Review Buffer uses it too."
 
 (defun prrr-queue--inputs (repo)
   "Gather the `prrr-queue-insert' INPUTS of REPO from forge and the database.
-The meta rows show queued Withdraws already (`prrr-state-withdrawn-meta')."
+The meta rows show queued Withdraws and Submits already
+\(`prrr-state-queued-meta')."
   (let* ((id (oref repo id))
          (outbox (prrr-db-outbox-rows))
-         (metas (mapcar (lambda (meta) (prrr-state-withdrawn-meta meta outbox))
+         (teams (mapcar #'prrr-team-combined-slug (prrr-db-select 'team)))
+         (metas (mapcar (lambda (meta) (prrr-state-queued-meta meta outbox teams))
                         (prrr-db-select 'pullreq-meta :forge-repo-id id)))
          (by-number (make-hash-table))
          (pairs (progn
@@ -333,7 +335,7 @@ The meta rows show queued Withdraws already (`prrr-state-withdrawn-meta')."
                           (prrr-queue-open-pullreqs repo metas)))))
     (list :pairs pairs
           :metas metas
-          :teams (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))
+          :teams teams
           :me (prrr-github-viewer)
           :default-branch (oref repo default-branch)
           :unresolved (prrr-db-unresolved-thread-counts
@@ -389,16 +391,34 @@ inserted before the error is removed first."
          (setq prrr-queue--rows nil)
          (prrr-queue--insert-error err))))))
 
+(defun prrr-queue--refresh-for-write (pr-id kind)
+  "Refresh every buffer whose Review Queue lists PR-ID after a write of KIND.
+A `prrr-sync-outbox-changed-functions' function.  Only a Submit or a
+Withdraw changes a row's Review State, so only those refresh, from a
+timer, so a write confirmed in a Review Buffer never redraws the
+status buffer while the command runs."
+  (when (memq kind '(submit withdraw))
+    (dolist (buffer (buffer-list))
+      (when (and (local-variable-p 'prrr-queue--rows buffer)
+                 (seq-some (lambda (row)
+                             (equal (prrr-pr-id (prrr-queue-entry-pr (cdr row))) pr-id))
+                           (buffer-local-value 'prrr-queue--rows buffer)))
+        (run-at-time 0 nil #'prrr-sync--refresh buffer)))))
+
 ;;;###autoload
 (define-minor-mode prrr-queue-mode
   "Show the Review Queue in the `magit-status' buffer of GitHub repositories.
-The section goes right before forge's list of pull requests."
+The section goes right before forge's list of pull requests.  A Submit
+or Withdraw redraws the queue as soon as it is queued."
   :global t
   :group 'prrr
-  (if prrr-queue-mode
-      (magit-add-section-hook 'magit-status-sections-hook #'prrr-queue-insert-section
-                              #'forge-insert-pullreqs)
-    (remove-hook 'magit-status-sections-hook #'prrr-queue-insert-section)))
+  (cond (prrr-queue-mode
+         (magit-add-section-hook 'magit-status-sections-hook #'prrr-queue-insert-section
+                                 #'forge-insert-pullreqs)
+         (add-hook 'prrr-sync-outbox-changed-functions #'prrr-queue--refresh-for-write))
+        (t
+         (remove-hook 'magit-status-sections-hook #'prrr-queue-insert-section)
+         (remove-hook 'prrr-sync-outbox-changed-functions #'prrr-queue--refresh-for-write))))
 
 ;;;###autoload
 (defun prrr-queue ()

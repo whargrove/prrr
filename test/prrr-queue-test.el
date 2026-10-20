@@ -506,5 +506,21 @@ prrr's keys win where both bind a key."
       (call-interactively #'prrr-queue-toggle-served))
     (should-not prrr-queue-show-served)))
 
+(ert-deftest prrr-queue-test-refresh-for-write ()
+  "A queued or landed Submit or Withdraw refreshes the buffers listing the PR (prrr-45r)."
+  (prrr-test-with-outbox
+    (prrr-queue-test--with-render (prrr-queue-test--inputs
+                                   (list (prrr-queue-test--pair :id "A" :number 1
+                                                                :assignees (list prrr-test-me)))
+                                   nil)
+      (let ((listing (current-buffer)))
+        (with-temp-buffer
+          (prrr-queue--refresh-for-write "A" 'submit)
+          (prrr-queue--refresh-for-write "A" 'withdraw)
+          (prrr-queue--refresh-for-write "B" 'submit)
+          (prrr-queue--refresh-for-write "A" 'thread)
+          (should (equal (list (list listing) (list listing))
+                         (mapcar #'cl-third prrr-test-timers))))))))
+
 (provide 'prrr-queue-test)
 ;;; prrr-queue-test.el ends here

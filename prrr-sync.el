@@ -472,12 +472,22 @@ restart without forge's objects."
   (when (and pr-id (buffer-live-p buffer))
     (puthash pr-id buffer prrr-sync--outbox-buffers)))
 
-(defun prrr-sync--outbox-changed (pr-id)
-  "Refresh the buffer remembered for PR-ID, or every one when PR-ID is nil."
+(defvar prrr-sync-outbox-changed-functions nil
+  "Functions called when a write is queued, dropped or has landed.
+Each is called with the PR's id and the write's kind
+\(`prrr-state-outbox-kinds').  The Review Queue listens for the kinds
+that change a Review State (SPEC section 5).")
+
+(defun prrr-sync--outbox-changed (pr-id &optional kind)
+  "Refresh the buffer remembered for PR-ID, or every one when PR-ID is nil.
+KIND, when given, is the kind of the write of PR-ID that was queued,
+dropped or has landed; `prrr-sync-outbox-changed-functions' hear of it."
   (if pr-id
       (prrr-sync--schedule-refresh (gethash pr-id prrr-sync--outbox-buffers))
     (maphash (lambda (_pr-id buffer) (prrr-sync--schedule-refresh buffer))
-             prrr-sync--outbox-buffers)))
+             prrr-sync--outbox-buffers))
+  (when kind
+    (run-hook-with-args 'prrr-sync-outbox-changed-functions pr-id kind)))
 
 (defun prrr-sync--sending-id ()
   "Return the id of the write being sent, or nil."
@@ -545,7 +555,8 @@ proposed Thread (`prrr-state-outbox-needs-proposal-p')."
                     (prrr-sync--outbox-drop-pending pr-id))
                   (prrr-sync--outbox-add pr-id kind
                                          (prrr-sync--outbox-payload kind payload target))))
-      (prrr-sync-retry pr-id))))
+      (prrr-sync-retry pr-id)
+      (run-hook-with-args 'prrr-sync-outbox-changed-functions pr-id kind))))
 
 (defun prrr-sync--refuse-if-needs-proposal (row)
   "Signal a `user-error' when the write ROW would wait on a proposal.
@@ -656,7 +667,7 @@ GitHub all the same, so its PR is refetched to show what GitHub has."
             (prrr-db-delete 'outbox :id (prrr-outbox-id dropped)))
           (when (prrr-state-outbox-unconfirmed-p row)
             (prrr-sync--outbox-mark-dirty row))
-          (prrr-sync--outbox-changed (prrr-outbox-pr-id row))
+          (prrr-sync--outbox-changed (prrr-outbox-pr-id row) (prrr-outbox-kind row))
           (prrr-sync--outbox-pump)
           (length drop)))
     0))
@@ -995,14 +1006,9 @@ RESULT is GitHub's answer.  A plist of `prrr-db-outbox-done''s keys."
                                 comment)
                               (prrr-db-select 'review-comment :pr-id pr-id :state 'pending))
                       (when-let* ((meta (prrr-db-get 'pullreq-meta pr-id)))
-                        (setf (prrr-pr-meta-viewer-latest-review meta)
-                              (list (pcase (plist-get payload :verdict)
-                                      ('approve "APPROVED")
-                                      ('request-changes "CHANGES_REQUESTED")
-                                      (_ "COMMENTED"))
-                                    (prrr-sync--timestamp)
-                                    (plist-get payload :commit)))
-                        (list meta)))))
+                        (list (prrr-state-submitted-meta
+                               meta (list row)
+                               (mapcar #'prrr-team-combined-slug (prrr-db-select 'team))))))))
       ('withdraw
        (when-let* ((meta (prrr-db-get 'pullreq-meta pr-id)))
          (list :insert (list (prrr-state-withdrawn-meta meta (list row))))))
@@ -1170,7 +1176,7 @@ refetched in any case, so it shows what GitHub has."
              (prrr-sync--outbox-record-post row result)))
     ;; Even a write discarded meanwhile changed GitHub: refetch to show it.
     (prrr-sync--outbox-mark-dirty row)
-    (prrr-sync--outbox-changed pr-id)
+    (prrr-sync--outbox-changed pr-id (prrr-outbox-kind row))
     (prrr-sync--outbox-pump)))
 
 (defun prrr-sync--pull-topic (pr-id)

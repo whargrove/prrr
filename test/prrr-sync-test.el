@@ -1778,6 +1778,31 @@ the comment records it once."
                                     (prrr-db-get 'pullreq-meta prrr-sync-test--pr))))
                        (list (nth 0 review) (nth 2 review))))))))
 
+(ert-deftest prrr-sync-test-outbox-submit-answers-my-request-and-tells-the-queue ()
+  "A landed Submit answers my review request; the queue hears of it when queued and when landed (prrr-45r)."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-sync-test--store-pending-review)
+      (prrr-db-insert (prrr-pr-meta-create :pr-id prrr-sync-test--pr
+                                           :forge-repo-id "example-repo-id" :number 1
+                                           :review-requests '((user "example-me") (user "example-bob")
+                                                              (team "example-org/reviewers"))
+                                           :viewer-latest-review-request "RR_1"))
+      (prrr-db-insert (prrr-team-create :combined-slug "example-org/reviewers" :org "example-org"
+                                        :slug "reviewers" :fetched-at "2026-10-10T12:00:00Z"))
+      (let* ((seen nil)
+             (prrr-sync-outbox-changed-functions
+              (list (lambda (pr-id kind) (push (list pr-id kind) seen)))))
+        (prrr-test-with-ghub-dispatch '((submitPullRequestReview
+                                         . ((data (submitPullRequestReview (clientMutationId))))))
+          (prrr-sync-test--write 'submit '(:verdict approve :body "LGTM" :commit "1111")))
+        (should (equal (list (list prrr-sync-test--pr 'submit) (list prrr-sync-test--pr 'submit))
+                       seen)))
+      (let ((meta (prrr-db-get 'pullreq-meta prrr-sync-test--pr)))
+        (should (equal '((user "example-bob")) (prrr-pr-meta-review-requests meta)))
+        (should-not (prrr-pr-meta-viewer-latest-review-request meta))
+        (should (equal "APPROVED" (nth 0 (prrr-pr-meta-viewer-latest-review meta))))))))
+
 (ert-deftest prrr-sync-test-outbox-submit-without-a-pending-review ()
   (prrr-db-with-test-db
     (prrr-test-with-outbox

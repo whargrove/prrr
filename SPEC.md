@@ -464,6 +464,14 @@ transient (approve, request changes, comment); it shows the counts of
 pending and agent-authored comments and asks for confirmation when any
 agent comments exist. `prrr-discard-pending` deletes the Pending Review after
 confirmation. Submitting touches the PR (moves it to Served); discarding does not, since GitHub then records no review.
+A queued Submit shows in the Review Queue at once, like a Withdraw: the
+queue applies it to the PR's `pullreq-meta` (`prrr-state-queued-meta`), so
+the row carries the Verdict's state at the commit it was made against, and
+my direct review request and the requests to my Teams count as answered,
+as GitHub does once it has a member's review; success stores the same
+changed row. The status buffers listing the PR redraw from a timer when a
+Submit or Withdraw is queued, dropped or lands
+(`prrr-sync-outbox-changed-functions`).
 
 GitHub anchors every Thread of a Pending Review at the review's commit,
 so a new Thread joins the Pending Review only when the review is on the

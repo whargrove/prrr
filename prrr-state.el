@@ -226,6 +226,49 @@ applies, else a copy; nil stays nil."
           (setq meta (prrr-state--copy meta
                                        :assignees (remove me (prrr-pr-meta-assignees meta)))))))))
 
+(defun prrr-state-verdict-state (verdict)
+  "Return GitHub's review state for the Submit VERDICT.
+VERDICT is `approve', `request-changes' or `comment'."
+  (pcase verdict
+    ('approve "APPROVED")
+    ('request-changes "CHANGES_REQUESTED")
+    (_ "COMMENTED")))
+
+(defun prrr-state-submitted-meta (meta rows teams)
+  "Return META as the user sees it with the queued Submits among ROWS applied.
+ROWS are `prrr-outbox' rows of any PRs; only META's PR's Submits
+count.  Each makes the viewer's latest review its Verdict's state
+\(`prrr-state-verdict-state'), submitted when the write was queued, at
+the commit it was made against, and answers the viewer's direct review
+request and the requests to TEAMS, the viewer's Team slugs, as GitHub
+does once it has a member's review.  META is returned unchanged when
+no Submit applies, else a copy; nil stays nil."
+  (let ((submits (and meta
+                      (seq-filter (lambda (row)
+                                    (and (eq (prrr-outbox-kind row) 'submit)
+                                         (equal (prrr-outbox-pr-id row) (prrr-pr-meta-pr-id meta))))
+                                  rows))))
+    (dolist (row submits meta)
+      (let* ((payload (prrr-outbox-payload row))
+             (me (plist-get (plist-get payload :target) :me)))
+        (setq meta (prrr-state--copy
+                    meta
+                    :viewer-latest-review (list (prrr-state-verdict-state (plist-get payload :verdict))
+                                                (prrr-outbox-created-at row)
+                                                (plist-get payload :commit))
+                    :review-requests (seq-remove (lambda (request)
+                                                   (or (equal request (list 'user me))
+                                                       (and (eq (car request) 'team)
+                                                            (member (cadr request) teams))))
+                                                 (prrr-pr-meta-review-requests meta))
+                    :viewer-latest-review-request nil))))))
+
+(defun prrr-state-queued-meta (meta rows teams)
+  "Return META with the queued Withdraws and Submits among ROWS applied.
+TEAMS are the viewer's Team slugs.  What the Review Queue renders: see
+`prrr-state-withdrawn-meta' and `prrr-state-submitted-meta'."
+  (prrr-state-submitted-meta (prrr-state-withdrawn-meta meta rows) rows teams))
+
 ;;;; Membership and partition
 
 (defun prrr-state--direct-p (pr meta me)

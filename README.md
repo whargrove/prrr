@@ -80,6 +80,9 @@ A Stack (each PR based on the branch of the one below) stays together,
 bottom first, with `⟰ k/n` marking each PR's place in it. Its other PRs
 sit one level under its first row; `TAB` on that row folds them away.
 
+A Verdict you submit or a Withdraw shows in the queue at once, before
+GitHub has it: the row moves to Served with its new state, or leaves.
+
 The queue renders from a local database. It pulls in the background when
 its data is older than `prrr-queue-stale-after` seconds (default 300). A
 pull first refreshes the PRs already in the queue in one request, so their

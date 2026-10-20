@@ -1432,6 +1432,57 @@ One line rewritten at 12, two lines added after 20, three removed at 30."
                                  (prrr-state-test--write "2" "PR_1" 'viewed '(:path "a")))))))
   (should-not (prrr-state-withdrawn-meta nil nil)))
 
+(ert-deftest prrr-state-test-submitted-meta ()
+  "A queued Submit shows at once: my verdict at its commit, my request answered (prrr-45r)."
+  (let* ((meta (prrr-test-meta :review-requests '((user "example-me") (team "example-org/reviewers")
+                                                  (user "example-bob") (team "example-org/other"))
+                               :viewer-latest-review-request "RR_1"))
+         (row (prrr-state-test--write "1" "PR_1" 'submit
+                                      (list :verdict 'approve :body "LGTM" :commit prrr-test-head)))
+         (shown (prrr-state-submitted-meta meta (list row) prrr-test-teams)))
+    (should (equal (list "APPROVED" "2026-10-10T12:00:00Z" prrr-test-head)
+                   (prrr-pr-meta-viewer-latest-review shown)))
+    ;; My request and my Team's are answered; the others stay.
+    (should (equal '((user "example-bob") (team "example-org/other"))
+                   (prrr-pr-meta-review-requests shown)))
+    (should-not (prrr-pr-meta-viewer-latest-review-request shown))
+    (should (eq 'approved (prrr-state-test--state (prrr-test-pr) shown)))
+    ;; META itself is not changed.
+    (should-not (prrr-pr-meta-viewer-latest-review meta))))
+
+(ert-deftest prrr-state-test-submitted-meta-verdicts-and-other-prs ()
+  "Each Verdict maps to GitHub's state; another PR's Submit leaves META alone."
+  (let ((meta (prrr-test-meta)))
+    (dolist (case '((request-changes . "CHANGES_REQUESTED") (comment . "COMMENTED")))
+      (should (equal (cdr case)
+                     (nth 0 (prrr-pr-meta-viewer-latest-review
+                             (prrr-state-submitted-meta
+                              meta (list (prrr-state-test--write
+                                          "1" "PR_1" 'submit
+                                          (list :verdict (car case) :body "" :commit "1111")))
+                              prrr-test-teams))))))
+    (should (eq meta (prrr-state-submitted-meta
+                      meta (list (prrr-state-test--write "1" "PR_2" 'submit
+                                                         '(:verdict approve :body "" :commit "1111"))
+                                 (prrr-state-test--write "2" "PR_1" 'viewed '(:path "a")))
+                      prrr-test-teams))))
+  (should-not (prrr-state-submitted-meta nil nil prrr-test-teams)))
+
+(ert-deftest prrr-state-test-queued-meta-applies-withdraw-and-submit ()
+  "The Review Queue sees both kinds of queued write."
+  (let* ((meta (prrr-test-meta :review-requests '((user "example-me")) :assignees '("example-me")))
+         (shown (prrr-state-queued-meta
+                 meta (list (prrr-state-test--write "1" "PR_1" 'withdraw
+                                                    '(:review-request nil :assignee t))
+                            (prrr-state-test--write "2" "PR_1" 'submit
+                                                    (list :verdict 'comment :body ""
+                                                          :commit prrr-test-head)))
+                 prrr-test-teams)))
+    (should-not (prrr-pr-meta-assignees shown))
+    (should-not (prrr-pr-meta-review-requests shown))
+    (should (equal "COMMENTED" (nth 0 (prrr-pr-meta-viewer-latest-review shown))))
+    (should (eq 'commented (prrr-state-test--state (prrr-test-pr) shown)))))
+
 (ert-deftest prrr-state-test-outbox-landed-withdraw ()
   "Review data cannot tell whether a Withdraw landed, and sending it again is harmless."
   (should (eq 'missing (prrr-state-outbox-landed
