@@ -335,8 +335,11 @@ viewer.", schema `45587-45590`) with forge's `(oref pr head-rev)`; or
 `PULL_REQUEST_COMMIT` / `HEAD_REF_FORCE_PUSHED_EVENT` timeline items
 (`47924`, `47814`) after `viewerLatestReview.submittedAt`.
 `viewerLatestReviewRequest` ("The person who has requested the viewer for
-review", `45592-45595`) is the API's own answer to "am I directly requested"
-and avoids the login comparison entirely.
+review", `45592-45595`) looked like the API's own answer to "am I directly
+requested", but live (2026-10-20, seeq12/crab#20848) it resolves to a
+`ReviewRequest` for one of the viewer's Teams when only the Team was
+requested, and it survives the viewer's review (threads-viewed-api.md). A
+direct request is `(user me)` in `reviewRequests`, nothing else (prrr-ah1).
 
 Repository-level `reviewDecision` (`APPROVED | CHANGES_REQUESTED |
 REVIEW_REQUIRED`, schema `46852-46867`; field `45210-45213`) is about the PR

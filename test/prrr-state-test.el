@@ -78,11 +78,20 @@
                 :viewer-latest-review (list "APPROVED" "2026-09-02T00:00:00Z"
                                             prrr-test-head))))))
 
-(ert-deftest prrr-state-test-review-state-requested-from-viewer-request-without-review ()
-  (should (eq 'requested
+(ert-deftest prrr-state-test-review-state-viewer-request-alone-is-not-requested ()
+  "GitHub sets viewerLatestReviewRequest for a Team request too (prrr-ah1).
+Only a request to me in the current reviewRequests is a direct one."
+  (should-not (prrr-state-test--state
+               (prrr-test-pr)
+               (prrr-test-meta :viewer-latest-review-request "RR_1"))))
+
+(ert-deftest prrr-state-test-review-state-team-request-with-viewer-request ()
+  "A Team request to one of my Teams sets viewerLatestReviewRequest; it stays team-requested."
+  (should (eq 'team-requested
               (prrr-state-test--state
                (prrr-test-pr)
-               (prrr-test-meta :viewer-latest-review-request "example-alice")))))
+               (prrr-test-meta :review-requests '((team "example-org/reviewers"))
+                               :viewer-latest-review-request "RR_1")))))
 
 (ert-deftest prrr-state-test-review-state-old-viewer-request-does-not-outrank-my-review ()
   "The viewerLatestReviewRequest is history once I reviewed and left reviewRequests."

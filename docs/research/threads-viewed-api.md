@@ -505,8 +505,13 @@ store it.
 - `viewerLatestReview (PullRequestReview)`: "The latest review given from the
   viewer."
 - `viewerLatestReviewRequest (ReviewRequest)`: "The person who has requested
-  the viewer for review on this pull request." (non-null means a review is
-  currently requested from the viewer; ticket 04 covers queue filters).
+  the viewer for review on this pull request." Live, 2026-10-20: non-null
+  does **not** mean the viewer is directly requested. On seeq12/crab#20848
+  the node resolved to a `ReviewRequest` whose `requestedReviewer` was the
+  Team `seeq12/falcon` (`asCodeOwner: true`) and the viewer never appeared in
+  the PR's `REVIEW_REQUESTED_EVENT` items; the field is also kept after the
+  viewer reviews. Direct requests are read from `reviewRequests` instead
+  (ticket 04 covers queue filters; prrr-ah1).
 - `reviewDecision (PullRequestReviewDecision)`: "The current status of this
   pull request with respect to code review." Values
   (`pulls#enum-pullrequestreviewdecision`): `APPROVED` "The pull request has

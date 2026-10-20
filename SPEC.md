@@ -211,9 +211,10 @@ at most `prrr-queue-stale-after` later.
 viewer's latest submitted review commit differs from the head oid stored
 with it in `pullreq-meta`; forge's head is used only for a PR prrr has
 not pulled yet, prrr-knu.3), `requested`
-(a review request to me is in the current `reviewRequests`, or
-`viewerLatestReviewRequest` is set and I have no submitted review yet;
-GitHub keeps the latter after I review), `team-requested` (a Team in
+(a review request to me is in the current `reviewRequests`;
+`viewerLatestReviewRequest` is not a direct-request signal: GitHub sets
+it for a request to one of my Teams too, and keeps it after I review),
+`team-requested` (a Team in
 `review-requests` is one of mine and no member has reviewed),
 `teammate-reviewed` (a review by someone else whose `on-behalf-of` contains
 one of my Teams, or a Team request to one of my Teams that disappeared after

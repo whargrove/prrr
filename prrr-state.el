@@ -82,13 +82,13 @@ A Pending Review is not a touch, so it is ignored everywhere."
 
 (defun prrr-state--requested-p (meta me)
   "Return non-nil when META holds a current review request for ME.
-Either ME is in the current review requests (GitHub removes a request
-once it is answered, so this means an unanswered or renewed request),
-or someone requested ME and ME has not reviewed yet."
+That is ME among the current review requests: GitHub removes a
+request once it is answered, so this means an unanswered or renewed
+request.  META's viewer-latest-review-request does not count: GitHub
+sets it for a request to one of ME's Teams as well, and keeps it after
+ME has reviewed (prrr-ah1)."
   (and meta
-       (or (member (list 'user me) (prrr-pr-meta-review-requests meta))
-           (and (prrr-pr-meta-viewer-latest-review-request meta)
-                (null (prrr-state--viewer-review meta))))
+       (member (list 'user me) (prrr-pr-meta-review-requests meta))
        t))
 
 (defun prrr-state--team-requests (meta teams)
