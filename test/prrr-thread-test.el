@@ -236,6 +236,15 @@ ARGS follow the label and the confirm function of `prrr-comment-capture'.
            (kill-buffer buffer)))
        (kill-buffer origin))))
 
+(ert-deftest prrr-thread-test-capture-window-is-not-a-side-window ()
+  "The capture buffer never sits in a side window (prrr-lrc).
+Transient shows its menus in the bottom side window, slot 0, and took
+the capture window over for Emacs's emoji skin-tone chooser."
+  (prrr-thread-test--with-capture ()
+    (let ((window (get-buffer-window (current-buffer))))
+      (should window)
+      (should-not (window-parameter window 'window-side)))))
+
 (ert-deftest prrr-thread-test-capture-confirm ()
   (prrr-thread-test--with-capture ()
     (should (eq 'prrr-comment-mode major-mode))

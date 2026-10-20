@@ -362,8 +362,10 @@ signals, the capture buffer stays, so no text is lost."
             prrr-comment--windows windows)
       (when body
         (insert body)))
-    (pop-to-buffer buffer '((display-buffer-in-side-window) (side . bottom)
-                            (window-height . 0.3)))
+    ;; Not a side window: transient shows its menus in the bottom side
+    ;; window, slot 0, and would take this one over, as Emacs's emoji
+    ;; skin-tone chooser did (prrr-lrc).
+    (pop-to-buffer buffer '((display-buffer-below-selected) (window-height . 0.3)))
     buffer))
 
 (defun prrr-comment--close ()
