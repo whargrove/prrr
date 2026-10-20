@@ -522,5 +522,48 @@ prrr's keys win where both bind a key."
           (should (equal (list (list listing) (list listing))
                          (mapcar #'cl-third prrr-test-timers))))))))
 
+(ert-deftest prrr-queue-test-muted-rows ()
+  "A muted PR leaves the queue and its count; `-m' shows it dimmed as muted (prrr-6cl)."
+  (let ((inputs (prrr-queue-test--inputs
+                 (list (prrr-queue-test--pair :id "A" :number 1 :assignees (list prrr-test-me))
+                       (prrr-queue-test--pair :id "B" :number 2 :assignees (list prrr-test-me)))
+                 nil)))
+    (let ((prrr-queue-show-muted nil))
+      (prrr-queue-test--with-render (append (list :muted '("B")) inputs)
+        (should (string-match-p "For me (1)" (buffer-string)))
+        (should-not (string-match-p "^#2 " (buffer-string)))))
+    (let ((prrr-queue-show-muted t))
+      (prrr-queue-test--with-render (append (list :muted '("B")) inputs)
+        (should (string-match-p "For me (1)" (buffer-string)))
+        (should (string-match-p "^#2  muted " (prrr-queue-test--line-of 2)))
+        (should (eq 'prrr-queue-dimmed
+                    (get-text-property (line-beginning-position) 'font-lock-face)))))))
+
+(ert-deftest prrr-queue-test-mute-toggles-the-row ()
+  "M mutes the PR at point, M again unmutes it; the listing buffers redraw (prrr-6cl)."
+  (prrr-db-with-test-db
+    (prrr-test-with-outbox
+      (prrr-queue-test--with-render (prrr-queue-test--inputs
+                                     (list (prrr-queue-test--pair :id "A" :number 1
+                                                                  :assignees (list prrr-test-me)))
+                                     nil)
+        (prrr-queue-test--line-of 1)
+        (call-interactively #'prrr-mute)
+        (should (prrr-db-get 'mute "A"))
+        (should (equal (list (list (current-buffer))) (mapcar #'cl-third prrr-test-timers)))
+        (call-interactively #'prrr-mute)
+        (should-not (prrr-db-get 'mute "A"))))))
+
+(ert-deftest prrr-queue-test-mute-keys ()
+  "M on a row and in both menus; `-m' toggles showing muted rows."
+  (should (eq 'prrr-mute (keymap-lookup prrr-queue-section-map "M")))
+  (should (eq 'prrr-mute (prrr-queue-test--menu-command "M")))
+  (should (eq 'prrr-queue-toggle-muted (prrr-queue-test--menu-command "-m")))
+  (should (eq 'prrr-mute (alist-get "M" prrr-diff--review-keys nil nil #'equal)))
+  (let ((prrr-queue-show-muted nil))
+    (cl-letf (((symbol-function 'magit-refresh) #'ignore))
+      (call-interactively #'prrr-queue-toggle-muted))
+    (should prrr-queue-show-muted)))
+
 (provide 'prrr-queue-test)
 ;;; prrr-queue-test.el ends here

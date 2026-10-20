@@ -678,6 +678,19 @@ Only a request to me in the current reviewRequests is a direct one."
                                     :dimmed-p t :stack-id "D")))
     (should (equal (list a) (prrr-state-filter-queue (list a d) :show-drafts nil)))))
 
+(ert-deftest prrr-state-test-filter-hides-muted ()
+  "A muted PR is hidden for good; shown only on request, marked muted (prrr-6cl)."
+  (let* ((a (prrr-state-test--entry "A" :state 'requested :partition 'awaiting :stack-id "A"))
+         (b (prrr-state-test--entry "B" :state 'approved :partition 'served :stack-id "B")))
+    (should (equal (list a) (prrr-state-filter-queue (list a b) :muted '("B"))))
+    (let ((shown (prrr-state-filter-queue (list a b) :muted '("B") :show-muted t)))
+      (should (equal (list a) (list (car shown))))
+      (should (equal "B" (prrr-pr-id (prrr-queue-entry-pr (cadr shown)))))
+      (should (prrr-queue-entry-muted-p (cadr shown)))
+      (should (eq 'approved (prrr-queue-entry-state (cadr shown)))))
+    ;; B itself is not changed.
+    (should-not (prrr-queue-entry-muted-p b))))
+
 (ert-deftest prrr-state-test-filter-drops-stack-left-with-only-context-rows ()
   "Hiding the only qualifying member leaves no reason to show its Stack."
   (let* ((context (prrr-state-test--entry "BOTTOM" :stack-id "BOTTOM" :stack-pos 1 :stack-size 2

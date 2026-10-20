@@ -69,3 +69,5 @@ the package deals with. No implementation details live here.
 - **Viewed**: the per-file flag marking that the user has finished looking at a
   file in the current Range. A Viewed file is folded away. GitHub stores this
   flag and clears it when the file changes.
+- **Muted**: a PR the user chose to keep out of the Review Queue for good,
+  whatever happens to it on GitHub, until they unmute it. Local to prrr.

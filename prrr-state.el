@@ -69,8 +69,9 @@ is `awaiting' or `served' in For Me, nil in Mine.  STACK-POS is the
 Stack's length (1 for a lone PR).  STACK-ID is the `id' of the Stack's
 bottom PR, shared by every row of one Stack.  DIMMED-P marks a row
 shown only for context: a non-qualifying Stack member or a draft
-requested from me."
-  pr state group partition stack-pos stack-size stack-id dimmed-p)
+requested from me.  MUTED-P marks a muted PR shown on request
+\(`prrr-state-filter-queue')."
+  pr state group partition stack-pos stack-size stack-id dimmed-p muted-p)
 
 ;;;; Helpers over meta rows
 
@@ -458,21 +459,31 @@ describes."
 
 ;;;; Display
 
-(cl-defun prrr-state-filter-queue (entries &key (show-drafts t) (show-served t))
+(cl-defun prrr-state-filter-queue (entries &key (show-drafts t) (show-served t)
+                                            muted show-muted)
   "Return ENTRIES without the rows the viewer chose to hide.
 ENTRIES is one Queue Group from `prrr-state-queue'.  Unless
 SHOW-DRAFTS, rows of draft PRs are dropped; unless SHOW-SERVED, rows in
-the Served partition are dropped.  A Stack left with only context rows
-\(rows without a state) is dropped entirely, so no row is shown without
-a reason.  Kept rows keep their order, STACK-POS and STACK-SIZE: a
-Stack's visible rows need not be contiguous positions."
+the Served partition are dropped.  Rows of the PRs whose ids are in
+MUTED are dropped too, unless SHOW-MUTED, when they are kept as copies
+with MUTED-P set.  A Stack left with only context rows \(rows without
+a state) is dropped entirely, so no row is shown without a reason.
+Kept rows keep their order, STACK-POS and STACK-SIZE: a Stack's
+visible rows need not be contiguous positions."
   (let* ((kept (seq-remove
                 (lambda (entry)
                   (or (and (not show-drafts)
                            (prrr-pr-draft-p (prrr-queue-entry-pr entry)))
                       (and (not show-served)
-                           (eq (prrr-queue-entry-partition entry) 'served))))
+                           (eq (prrr-queue-entry-partition entry) 'served))
+                      (and (not show-muted)
+                           (member (prrr-pr-id (prrr-queue-entry-pr entry)) muted))))
                 entries))
+         (kept (mapcar (lambda (entry)
+                         (if (member (prrr-pr-id (prrr-queue-entry-pr entry)) muted)
+                             (prrr-state--copy entry :muted-p t)
+                           entry))
+                       kept))
          (live (mapcar #'prrr-queue-entry-stack-id
                        (seq-filter #'prrr-queue-entry-state kept))))
     (seq-filter (lambda (entry) (member (prrr-queue-entry-stack-id entry) live))

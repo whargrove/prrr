@@ -60,18 +60,28 @@
   (setq prrr-queue-show-served (not prrr-queue-show-served))
   (magit-refresh))
 
+(transient-define-suffix prrr-queue-toggle-muted ()
+  "Show or hide the muted pull requests in the Review Queue."
+  :transient t
+  :description (lambda () (prrr-transient--shown "muted" prrr-queue-show-muted))
+  (interactive)
+  (setq prrr-queue-show-muted (not prrr-queue-show-muted))
+  (magit-refresh))
+
 ;;;###autoload (autoload 'prrr-queue-menu "prrr-transient" nil t)
 (transient-define-prefix prrr-queue-menu ()
   "Act on the Review Queue (SPEC section 9)."
   ["Show"
    ("-d" prrr-queue-toggle-drafts)
-   ("-s" prrr-queue-toggle-served)]
+   ("-s" prrr-queue-toggle-served)
+   ("-m" prrr-queue-toggle-muted)]
   [["Pull request"
     ("RET" "review" prrr-review)
     ("o" "open topic" prrr-open-topic)
     ("b" "browse on GitHub" prrr-browse)
     ("B" "checkout" prrr-checkout)
-    ("x" "withdraw" prrr-withdraw)]
+    ("x" "withdraw" prrr-withdraw)
+    ("M" "mute or unmute" prrr-mute)]
    ["Stack"
     (">" "up" prrr-stack-up)
     ("<" "down" prrr-stack-down)]
@@ -121,7 +131,8 @@
    ["Review"
     ("S" "submit or discard…" prrr-submit)
     ("O" "outbox…" prrr-outbox)
-    ("x" "withdraw" prrr-withdraw)]
+    ("x" "withdraw" prrr-withdraw)
+    ("M" "mute or unmute" prrr-mute)]
    ["Agent"
     ("@" "send to agent" prrr-send-to-agent)
     ("a" "accept proposed comment" prrr-accept-comment)]]

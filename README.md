@@ -83,6 +83,10 @@ sit one level under its first row; `TAB` on that row folds them away.
 A Verdict you submit or a Withdraw shows in the queue at once, before
 GitHub has it: the row moves to Served with its new state, or leaves.
 
+`M` on a row mutes the PR: it leaves the queue for good, whatever happens
+to it on GitHub. `C-o -m` shows muted rows, dimmed; `M` on one unmutes it.
+GitHub is never told.
+
 The queue renders from a local database. It pulls in the background when
 its data is older than `prrr-queue-stale-after` seconds (default 300). A
 pull first refreshes the PRs already in the queue in one request, so their
@@ -117,8 +121,9 @@ offline or rate-limited, otherwise the next day, or when you run
 | `>`   | `prrr-stack-up`   | Move to the PR above in the Stack                   |
 | `<`   | `prrr-stack-down` | Move to the PR below in the Stack                   |
 | `x`   | `prrr-withdraw`   | Withdraw: drop your review request and assignment   |
+| `M`   | `prrr-mute`       | Mute or unmute: keep the PR out of the queue        |
 | `G`   | `prrr-pull`       | Pull PRs (`forge-pull`) and the queue's data now    |
-| `C-o` | `prrr-queue-menu` | Menu with the same keys, plus `-d` drafts, `-s` Served |
+| `C-o` | `prrr-queue-menu` | Menu with the same keys, plus `-d` drafts, `-s` Served, `-m` muted |
 
 forge's own pull request keys, such as `C-c C-c`, also work on a row.
 
@@ -218,6 +223,7 @@ rules, so a changed `treesit-font-lock-level` applies.
 | `S`       | `prrr-submit`                                       | Submit your review, or discard it          |
 | `O`       | `prrr-outbox`                                       | Retry or drop what has not reached GitHub  |
 | `x`       | `prrr-withdraw`                                     | Drop your review request and assignment    |
+| `M`       | `prrr-mute`                                         | Mute or unmute: keep the PR out of the queue |
 | `D`       | `prrr-range`                                        | Choose the Range: what the diff shows      |
 | `.`       | `prrr-goto-default-range`                           | Back to the default Range, same line       |
 | `m`       | `prrr-mark-seen`                                    | Remember this head as seen                 |

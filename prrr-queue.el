@@ -57,6 +57,11 @@
   :type 'boolean
   :group 'prrr)
 
+(defcustom prrr-queue-show-muted nil
+  "Whether the Review Queue shows the pull requests you muted, dimmed."
+  :type 'boolean
+  :group 'prrr)
+
 ;;;; Faces
 
 (defface prrr-queue-state-new-commits '((t :inherit warning))
@@ -112,7 +117,8 @@
   "B" #'prrr-checkout
   ">" #'prrr-stack-up
   "<" #'prrr-stack-down
-  "x" #'prrr-withdraw)
+  "x" #'prrr-withdraw
+  "M" #'prrr-mute)
 
 (defvar prrr-queue-row-map
   (make-composed-keymap (list prrr-queue-section-map) forge-pullreq-section-map)
@@ -162,14 +168,16 @@ WIDTH leaves it at least ten columns.  The Stack marker shows the
 row's true position, which may skip hidden rows (prrr-knu.5)."
   (let* ((pr (prrr-queue-entry-pr entry))
          (state (prrr-queue-entry-state entry))
-         (dimmed (prrr-queue-entry-dimmed-p entry))
+         (muted (prrr-queue-entry-muted-p entry))
+         (dimmed (or (prrr-queue-entry-dimmed-p entry) muted))
          (size (prrr-queue-entry-stack-size entry))
          (ago (prrr-queue--ago (prrr-pr-updated-at pr) now))
          (number (string-pad (format "#%d" (prrr-pr-number pr)) number-width))
-         (badge (propertize (string-pad (if state (symbol-name state) "")
+         (badge (propertize (string-pad (cond (muted "muted") (state (symbol-name state)) (t ""))
                                         prrr-queue--badge-width)
                             'font-lock-face
-                            (and state (intern (format "prrr-queue-state-%s" state)))))
+                            (and state (not muted)
+                                 (intern (format "prrr-queue-state-%s" state)))))
          (prefix (concat (propertize number 'font-lock-face 'forge-topic-slug-open)
                          "  " (make-string (* 2 depth) ?\s) badge "  "))
          (suffix (concat "  " (propertize (or (prrr-pr-author pr) "")
@@ -192,8 +200,10 @@ row's true position, which may skip hidden rows (prrr-knu.5)."
   "The Review Queue rows of this buffer as (SECTION . ENTRY), in display order.")
 
 (defun prrr-queue--count (entries)
-  "Return how many ENTRIES qualify (have a state)."
-  (seq-count #'prrr-queue-entry-state entries))
+  "Return how many ENTRIES qualify: have a state and are not muted."
+  (seq-count (lambda (entry)
+               (and (prrr-queue-entry-state entry) (not (prrr-queue-entry-muted-p entry))))
+             entries))
 
 (defun prrr-queue--stack-runs (entries)
   "Split ENTRIES into runs of consecutive entries of the same Stack."
@@ -235,8 +245,9 @@ INPUTS is a plist: :pairs, a list of (FORGE-PULLREQ . PRRR-PR) for the
 repository's open PRs; :metas, their `prrr-pr-meta' rows; :teams, the
 viewer's Team slugs; :me, the viewer's login or nil; :default-branch;
 :unresolved, a hash table from PR id to unresolved Thread count, or
-nil; :status, a `prrr-sync-status' plist or nil; :now, an ISO
-timestamp; :width, the columns rows should fit.  Without a login only
+nil; :muted, the ids of the PRs the viewer muted; :status, a
+`prrr-sync-status' plist or nil; :now, an ISO timestamp; :width, the
+columns rows should fit.  Without a login only
 the heading is inserted.  The groups are collapsed when both are
 empty.  Sets `prrr-queue--rows'."
   (let* ((me (plist-get inputs :me))
@@ -250,7 +261,9 @@ empty.  Sets `prrr-queue--rows'."
                                  (prrr-state-filter-queue
                                   (plist-get queue (if (eq (car group) 'for-me) :for-me :mine))
                                   :show-drafts prrr-queue-show-drafts
-                                  :show-served prrr-queue-show-served)))
+                                  :show-served prrr-queue-show-served
+                                  :muted (plist-get inputs :muted)
+                                  :show-muted prrr-queue-show-muted)))
                          '((for-me . "For me") (mine . "Mine"))))
          (empty (seq-every-p (lambda (group) (null (nth 2 group))) groups))
          (number-width (apply #'max 2 (mapcar (lambda (pair)
@@ -340,6 +353,7 @@ The meta rows show queued Withdraws and Submits already
           :default-branch (oref repo default-branch)
           :unresolved (prrr-db-unresolved-thread-counts
                        (mapcar (lambda (pair) (prrr-pr-id (cdr pair))) pairs))
+          :muted (mapcar #'prrr-mute-pr-id (prrr-db-select 'mute))
           :status (prrr-sync-status id)
           :now (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t)
           :width (prrr-queue--width))))
@@ -391,19 +405,45 @@ inserted before the error is removed first."
          (setq prrr-queue--rows nil)
          (prrr-queue--insert-error err))))))
 
+(defun prrr-queue--refresh-listing (pr-id)
+  "Refresh, from a timer, every buffer whose Review Queue lists PR-ID.
+A timer, so a command run in a Review Buffer never redraws the status
+buffer while it runs."
+  (dolist (buffer (buffer-list))
+    (when (and (local-variable-p 'prrr-queue--rows buffer)
+               (seq-some (lambda (row)
+                           (equal (prrr-pr-id (prrr-queue-entry-pr (cdr row))) pr-id))
+                         (buffer-local-value 'prrr-queue--rows buffer)))
+      (run-at-time 0 nil #'prrr-sync--refresh buffer))))
+
 (defun prrr-queue--refresh-for-write (pr-id kind)
   "Refresh every buffer whose Review Queue lists PR-ID after a write of KIND.
 A `prrr-sync-outbox-changed-functions' function.  Only a Submit or a
-Withdraw changes a row's Review State, so only those refresh, from a
-timer, so a write confirmed in a Review Buffer never redraws the
-status buffer while the command runs."
+Withdraw changes a row's Review State, so only those refresh."
   (when (memq kind '(submit withdraw))
-    (dolist (buffer (buffer-list))
-      (when (and (local-variable-p 'prrr-queue--rows buffer)
-                 (seq-some (lambda (row)
-                             (equal (prrr-pr-id (prrr-queue-entry-pr (cdr row))) pr-id))
-                           (buffer-local-value 'prrr-queue--rows buffer)))
-        (run-at-time 0 nil #'prrr-sync--refresh buffer)))))
+    (prrr-queue--refresh-listing pr-id)))
+
+;;;###autoload
+(defun prrr-mute ()
+  "Mute the current pull request, or unmute it when it is muted.
+A muted pull request stays out of the Review Queue for good, whatever
+happens to it on GitHub, until you unmute it: turn on showing muted
+rows in the queue's menu (`C-o -m'), then press `M' on the row.  Muting
+is local to prrr; GitHub is not told."
+  (interactive)
+  (let* ((pullreq (prrr-current-pullreq))
+         (pr-id (oref pullreq their-id))
+         (number (oref pullreq number)))
+    (cond ((prrr-db-get 'mute pr-id)
+           (prrr-db-delete 'mute :pr-id pr-id)
+           (message "Unmuted #%d" number))
+          (t
+           (prrr-db-insert (prrr-mute-create
+                            :pr-id pr-id
+                            :muted-at (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t)))
+           (message "Muted #%d: out of the Review Queue until you unmute it (C-o -m shows muted rows)"
+                    number)))
+    (prrr-queue--refresh-listing pr-id)))
 
 ;;;###autoload
 (define-minor-mode prrr-queue-mode

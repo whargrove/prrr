@@ -104,8 +104,9 @@ forge objects (forge's own `id` is a composite, not the node id; its
 | `viewed`         | (pr-id, path), state, fetched-at                                                                                                                    | `state`: `viewed`, `unviewed`, `dismissed`. Shown and toggled in every Range.                                                                                                                                                                             |
 | `team`           | combined-slug, org, slug, fetched-at                                                                                                                | The viewer's Teams.                                                                                                                                                                                                                                       |
 | `pr-bookmark`    | pr-id, last-opened-head-oid, last-opened-at                                                                                                         | Local "since I last looked": the head shown when the Review Buffer was last left, a review submitted, or `prrr-mark-seen` run.                                                                                                                          |
+| `mute`           | pr-id, muted-at                                                                                                                                     | PRs the viewer muted (`prrr-mute`): hidden from the Review Queue for good, until unmuted. Local only; GitHub is never told.                                                                                                                           |
 | `outbox`         | id, pr-id, kind, payload, created-at, attempts, last-error                                                                                          | Writes GitHub has not accepted, in id order; `kind` and `payload` as `prrr-state-outbox-kinds` describes. The review tables above hold only what GitHub sent or accepted.                                                                                                                                                                                                                             |
-| `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first. Version 3 since the milestone 2 closeout (assignees).                                                                                                                                           |
+| `schema-version` | version                                                                                                                                             | Before 1.0, a mismatch drops and recreates every table except `outbox`, whose rows are shown to the user first. Version 3 since the milestone 2 closeout (assignees). A table missing at open is created without a reset, so adding a table needs no bump (`mute`). |
 
 Rows are plain structs (`prrr-thread`, `prrr-comment`, and so on) and are
 the values the API returns.
@@ -226,6 +227,13 @@ a review by another member), `changes-requested`, `approved`, `commented`
 
 Mine group: `draft`, `awaiting-review`, `changes-requested`, `approved`,
 `reviewed`, plus the count of unresolved Threads.
+
+**Muted.** `prrr-mute` (`M` on a queue row or in the Review Buffer) hides a
+PR from both groups for good: it stays out whatever GitHub does to it (new
+commits, a renewed request) until `M` on its row again unmutes it. The
+queue menu's `-m` shows muted rows, dimmed with the badge `muted`, in their
+usual place; they are never counted in the group headings. The flag is the
+local `mute` table; nothing is written to GitHub.
 
 **Membership.** For Me: open, not authored by me, and requested,
 team-requested, teammate-reviewed, assigned, or ever reviewed by me. Drafts
@@ -581,6 +589,7 @@ menu key inside the magit-status section, where `?` belongs to magit.
 | `d`         | `prrr-discussion-comment`                           | always immediate                                                                      |
 | `R`         | `prrr-toggle-resolved`                              | Thread at point                                                                       |
 | `x`         | `prrr-withdraw`                                     | Withdraw: remove my review request and assignment, after asking                      |
+| `M`         | `prrr-mute`                                         | mute or unmute: hide the PR from the Review Queue for good                           |
 | `s`         | `prrr-comment-suggest`                              | suggestion block from region                                                          |
 | `]` / `[`   | `prrr-next-thread` / `prrr-previous-thread`         |                                                                                       |
 | `}` / `{`   | `prrr-next-unresolved` / `prrr-previous-unresolved` |                                                                                       |
@@ -605,13 +614,13 @@ menu key inside the magit-status section, where `?` belongs to magit.
 
 Preserved from magit: `TAB`, `S-TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`,
 `q`, `1`-`4`, `E` ediff, `h`. Overridden magit keys (`a`, `c`, `d`, `e`,
-`k`, `s`, `z`, `D`, `b`, `B`, `o`, `v`, `L`, `S`, `O`, `G`) are apply, commit,
+`k`, `s`, `z`, `D`, `b`, `B`, `o`, `v`, `L`, `S`, `O`, `G`, `M`) are apply, commit,
 diff, ediff, delete, stage, stash, diff args, branch, bisect, submodule,
-revert, log, and refresh-all, none of which belong in a review buffer.
+revert, log, refresh-all and remote, none of which belong in a review buffer.
 
 **Main transient** `prrr-menu`, groups: Comment (`c C r e k d R s`),
 Navigate (`] [ } { J K j`), View (`v z Z L`), Range (`D . m`), Stack
-(`> <`), Review (`S O x`), Open (`o b B`), Sync (`g G`), Agent (`@ a`). The
+(`> <`), Review (`S O x M`), Open (`o b B`), Sync (`g G`), Agent (`@ a`). The
 transient has one switch, `-i` immediate, equivalent to `C-u`.
 
 **Review Queue section** (`prrr-queue-section-map`, active on a queue row):
@@ -624,8 +633,9 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 | `B`       | `prrr-checkout`                                                     |
 | `>` / `<` | `prrr-stack-up` / `prrr-stack-down`                                 |
 | `x`       | `prrr-withdraw`                                                     |
+| `M`       | `prrr-mute`                                                         |
 | `G`       | `prrr-pull`                                                         |
-| `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served) |
+| `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served, `-m` show muted) |
 
 **Capture buffer** (`prrr-comment-mode-map`): `C-c C-c` confirm, `C-c C-k`
 abort, `C-c C-i` toggle immediate.

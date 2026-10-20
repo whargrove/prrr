@@ -107,6 +107,10 @@ STATE is `viewed', `unviewed' or `dismissed'."
   "The last PR head the viewer opened (table `pr-bookmark')."
   pr-id last-opened-head-oid last-opened-at)
 
+(cl-defstruct (prrr-mute (:constructor prrr-mute-create) (:copier nil))
+  "A PR the viewer muted: hidden from the Review Queue for good (table `mute')."
+  pr-id muted-at)
+
 (cl-defstruct (prrr-outbox (:constructor prrr-outbox-create) (:copier nil))
   "A write GitHub has not accepted yet (table `outbox').
 ID increases with time, so the Outbox sends in id order.  KIND and
@@ -137,6 +141,8 @@ when the write is waiting to be sent."
      ([(combined-slug :primary-key) org slug fetched-at]))
     (pr-bookmark prrr-bookmark
      ([(pr-id :primary-key) last-opened-head-oid last-opened-at]))
+    (mute prrr-mute
+     ([(pr-id :primary-key) muted-at]))
     (outbox prrr-outbox
      ([(id :primary-key) pr-id kind payload created-at attempts last-error])))
   "Tables as (TABLE STRUCT SCHEMA).
@@ -242,12 +248,14 @@ DB defaults to the open connection.  The stored schema version becomes
 (defun prrr-db--init (db)
   "Create the tables in DB or reset them on a schema version mismatch.
 On a mismatch the `outbox' rows are collected into
-`prrr-db-preserved-outbox' before `prrr-db-reset' runs.  Return DB."
+`prrr-db-preserved-outbox' before `prrr-db-reset' runs.  With the
+stored version current, a table added since (a new table needs no
+version bump) is created and the others are left alone.  Return DB."
   (let ((version (prrr-db--stored-version db)))
     (cond
-     ((null version)
+     ((or (null version) (= version prrr-db-schema-version))
       (prrr-db--create-tables db))
-     ((/= version prrr-db-schema-version)
+     (t
       (setq prrr-db-preserved-outbox
             (and (prrr-db--table-exists-p db 'outbox)
                  (mapcar (lambda (row) (prrr-db--row-to-struct 'outbox row))

@@ -415,6 +415,19 @@ One such row, a buffer say, would block every read of its table."
     (should (prrr-thread-resolvable-p (prrr-db-get 'thread "T")))
     (should (equal "1001" (prrr-comment-database-id (prrr-db-get 'review-comment "C"))))))
 
+(ert-deftest prrr-db-test-missing-table-is-created-on-open ()
+  "A table added later is created on open without a reset, so stored rows stay (prrr-6cl)."
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-bookmark-create :pr-id "PR_1" :last-opened-head-oid "1111"
+                                          :last-opened-at "2026-10-10T12:00:00Z"))
+    (prrr-db--drop-table (prrr-db) 'mute)
+    (should-not (prrr-db--table-exists-p (prrr-db) 'mute))
+    (prrr-db--init (prrr-db))
+    (should (prrr-db--table-exists-p (prrr-db) 'mute))
+    (should (prrr-db-get 'pr-bookmark "PR_1"))
+    (prrr-db-insert (prrr-mute-create :pr-id "PR_1" :muted-at "2026-10-10T12:00:00Z"))
+    (should (equal "PR_1" (prrr-mute-pr-id (prrr-db-get 'mute "PR_1"))))))
+
 (provide 'prrr-db-test)
 ;;; prrr-db-test.el ends here
 

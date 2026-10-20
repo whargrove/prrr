@@ -500,7 +500,8 @@ point on the same screen row of every window that shows it."
     ("S" . prrr-submit) ("O" . prrr-outbox)
     ("D" . prrr-range) ("." . prrr-goto-default-range) ("m" . prrr-mark-seen)
     (">" . prrr-stack-up) ("<" . prrr-stack-down)
-    ("L" . prrr-toggle-highlight) ("@" . prrr-send-to-agent) ("x" . prrr-withdraw))
+    ("L" . prrr-toggle-highlight) ("@" . prrr-send-to-agent) ("x" . prrr-withdraw)
+    ("M" . prrr-mute))
   "The commenting and reviewing keys of a Review Buffer (SPEC section 9).
 They are bound in the section keymaps too, which win over the mode's
 and in which magit binds several of them.")
