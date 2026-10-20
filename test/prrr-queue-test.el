@@ -581,5 +581,20 @@ prrr's keys win where both bind a key."
                            (prrr-test-meta :pr-id "A" :additions 7 :deletions 1))))
     (should (equal '(7 1) (list (prrr-pr-additions pr) (prrr-pr-deletions pr))))))
 
+(ert-deftest prrr-queue-test-width-survives-a-hidden-refresh ()
+  "A refresh while the buffer is hidden keeps the width it was last shown at.
+Before, it fell back to 80 columns and the rows came back squished."
+  (with-temp-buffer
+    (let ((buffer (current-buffer)))
+      (should (= (frame-width) (prrr-queue--width)))
+      (pop-to-buffer buffer)
+      (let* ((window (get-buffer-window buffer))
+             (shown (window-body-width window)))
+        (should (= shown (prrr-queue--width)))
+        (set-window-buffer window (get-buffer-create "*prrr-queue-test-other*"))
+        (with-current-buffer buffer
+          (should-not (get-buffer-window buffer))
+          (should (= shown (prrr-queue--width))))))))
+
 (provide 'prrr-queue-test)
 ;;; prrr-queue-test.el ends here

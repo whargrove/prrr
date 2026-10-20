@@ -336,11 +336,18 @@ navigation in the Review Buffer uses it too."
                       (seq-filter (lambda (meta) (numberp (prrr-pr-meta-number meta)))
                                   metas))))
 
+(defvar-local prrr-queue--last-width nil
+  "The width of this buffer's window when the queue last rendered in one.")
+
 (defun prrr-queue--width ()
-  "Return the columns rows should fit: the buffer's window, else 80."
+  "Return the columns rows should fit.
+The buffer's window when it has one, remembered in
+`prrr-queue--last-width'.  Hidden, as during a refresh behind a Review
+Buffer, the width it was last shown at, else the frame's: rows must
+not come back squished to a guess once the buffer is shown again."
   (if-let* ((window (get-buffer-window (current-buffer))))
-      (window-body-width window)
-    80))
+      (setq prrr-queue--last-width (window-body-width window))
+    (or prrr-queue--last-width (frame-width))))
 
 (defun prrr-queue--inputs (repo)
   "Gather the `prrr-queue-insert' INPUTS of REPO from forge and the database.
