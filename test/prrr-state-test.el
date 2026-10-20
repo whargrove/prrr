@@ -205,10 +205,38 @@ Only a request to me in the current reviewRequests is a direct one."
   (should (null (prrr-state-test--state (prrr-test-pr) nil))))
 
 (ert-deftest prrr-state-test-review-state-order-is-first-match ()
-  "The states are tried in SPEC order."
-  (should (equal '(new-commits requested team-requested teammate-reviewed
-                   changes-requested approved commented assigned)
+  "The states are tried in SPEC order: assigned beats the request states."
+  (should (equal '(new-commits assigned requested team-requested teammate-reviewed
+                   changes-requested approved commented)
                  prrr-state-for-me-order)))
+
+(ert-deftest prrr-state-test-review-state-assigned-beats-requested ()
+  "The assignee is the primary reviewer; a request to me or my Team is a broadcast."
+  (should (eq 'assigned
+              (prrr-state-test--state
+               (prrr-test-pr :assignees '("example-me"))
+               (prrr-test-meta :review-requests '((user "example-me"))))))
+  (should (eq 'assigned
+              (prrr-state-test--state
+               (prrr-test-pr :assignees '("example-me"))
+               (prrr-test-meta :review-requests '((team "example-org/reviewers")))))))
+
+(ert-deftest prrr-state-test-review-state-assigned-needs-no-review-of-mine ()
+  "Once I reviewed, my verdict, new commits or a renewed request show, not assigned."
+  (let ((pr (prrr-test-pr :assignees '("example-me"))))
+    (should (eq 'approved
+                (prrr-state-test--state
+                 pr (prrr-test-meta :viewer-latest-review
+                                    (list "APPROVED" "2026-09-02T00:00:00Z" prrr-test-head)))))
+    (should (eq 'new-commits
+                (prrr-state-test--state
+                 pr (prrr-test-meta :viewer-latest-review
+                                    (list "APPROVED" "2026-09-02T00:00:00Z" prrr-test-old)))))
+    (should (eq 'requested
+                (prrr-state-test--state
+                 pr (prrr-test-meta :review-requests '((user "example-me"))
+                                    :viewer-latest-review
+                                    (list "APPROVED" "2026-09-02T00:00:00Z" prrr-test-head)))))))
 
 (ert-deftest prrr-state-test-review-state-uses-meta-head-over-forge-head ()
   "Forge's head moved but prrr's snapshot still shows my reviewed commit (prrr-knu.3)."

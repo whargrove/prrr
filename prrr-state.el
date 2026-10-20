@@ -108,9 +108,14 @@ ME has reviewed (prrr-ah1)."
 ;;;; Review State
 
 (defconst prrr-state-for-me-order
-  '(new-commits requested team-requested teammate-reviewed
-    changes-requested approved commented assigned)
-  "Review States of the For Me group in the order they are tried.")
+  '(new-commits assigned requested team-requested teammate-reviewed
+    changes-requested approved commented)
+  "Review States of the For Me group in the order they are tried.
+The assignee is the pull request's primary reviewer, while a request
+to me or one of my Teams is often a broadcast, so `assigned' comes
+before the request states; it applies only while I have no submitted
+review, so my verdict, new commits after it or a renewed request show
+once I have reviewed.")
 
 (defun prrr-state--head-oid (pr meta)
   "Return the head commit PR's Review State is judged against.
@@ -130,6 +135,8 @@ First match wins, in the order of `prrr-state-for-me-order'."
      ((and review (nth 2 review)
            (not (equal (nth 2 review) (prrr-state--head-oid pr meta))))
       'new-commits)
+     ((and (null review) (member me (prrr-pr-assignees pr)))
+      'assigned)
      ((prrr-state--requested-p meta me)
       'requested)
      ((and (prrr-state--team-requests meta teams)
@@ -142,9 +149,7 @@ First match wins, in the order of `prrr-state-for-me-order'."
      ((and review (equal (nth 0 review) "APPROVED"))
       'approved)
      (review                            ; COMMENTED or DISMISSED
-      'commented)
-     ((member me (prrr-pr-assignees pr))
-      'assigned))))
+      'commented))))
 
 ;;;; Mine state
 
@@ -240,9 +245,8 @@ is in only when requested directly from ME or assigned to ME."
 
 (defun prrr-state-partition (pr state)
   "Return `awaiting' or `served' for PR in Review State STATE.
-Awaiting me holds new-commits, requested, team-requested and assigned
-\(assigned implies no review of mine, since any review matches an
-earlier state).  Drafts are always Served."
+Awaiting me holds new-commits, assigned, requested and team-requested
+\(assigned implies no review of mine).  Drafts are always Served."
   (if (and (memq state '(new-commits requested team-requested assigned))
            (not (prrr-pr-draft-p pr)))
       'awaiting

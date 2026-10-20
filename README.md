@@ -66,9 +66,10 @@ without package.el.
 The Review Queue sits above forge's pull request list in magit-status. It
 has two groups:
 
-- **For me**: PRs by others that want your review, because it was
-  requested from you or one of your teams, they are assigned to you, or
-  you reviewed them before. **Awaiting me** comes first, oldest PR first.
+- **For me**: PRs by others that want your review, because they are
+  assigned to you, it was requested from you or one of your teams, or
+  you reviewed them before. Being the assignee (the primary reviewer)
+  shows as `assigned` even when your team was requested too. **Awaiting me** comes first, oldest PR first.
   **Served** follows: PRs you already handled, by when you last touched
   them.
 - **Mine**: your own open PRs, those needing your action first: changes

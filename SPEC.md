@@ -210,7 +210,10 @@ at most `prrr-queue-stale-after` later.
 **Review State** (first match wins), For Me group: `new-commits` (the
 viewer's latest submitted review commit differs from the head oid stored
 with it in `pullreq-meta`; forge's head is used only for a PR prrr has
-not pulled yet, prrr-knu.3), `requested`
+not pulled yet, prrr-knu.3), `assigned` (assigned to me and no submitted
+review of mine: the assignee is the primary reviewer, a request is often
+a broadcast to a whole Team, so assignment outranks the request states),
+`requested`
 (a review request to me is in the current `reviewRequests`;
 `viewerLatestReviewRequest` is not a direct-request signal: GitHub sets
 it for a request to one of my Teams too, and keeps it after I review),
@@ -219,7 +222,7 @@ it for a request to one of my Teams too, and keeps it after I review),
 `teammate-reviewed` (a review by someone else whose `on-behalf-of` contains
 one of my Teams, or a Team request to one of my Teams that disappeared after
 a review by another member), `changes-requested`, `approved`, `commented`
-(the viewer's latest review state), `assigned`.
+(the viewer's latest review state).
 
 Mine group: `draft`, `awaiting-review`, `changes-requested`, `approved`,
 `reviewed`, plus the count of unresolved Threads.
