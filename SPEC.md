@@ -581,6 +581,11 @@ Every command has one key in the buffer and the same key in the transient.
 `?` opens the main prrr transient in prrr buffers; `h` stays
 `magit-dispatch`. `C-o` is an alias for `?` in prrr buffers and the only
 menu key inside the magit-status section, where `?` belongs to magit.
+There, `magit-dispatch` gains a "Review Queue" group on the queue's
+headings and rows (`prrr-queue--extend-dispatch`, run once when
+`prrr-queue-mode` turns on); on a row it hides magit's `b`, `B`, `o` and
+`M`, which the row's keymap shadows. The group tests `prrr-queue-mode`, so
+turning the mode off restores magit's menu.
 
 **Review Buffer** (`prrr-diff-mode-map`, parent `magit-diff-mode-map`):
 
@@ -641,6 +646,7 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 | `M`       | `prrr-mute`                                                         |
 | `G`       | `prrr-pull`                                                         |
 | `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served, `-m` show muted) |
+| `?`       | `magit-dispatch`, with a "Review Queue" group listing these keys    |
 
 **Capture buffer** (`prrr-comment-mode-map`): `C-c C-c` confirm, `C-c C-k`
 abort, `C-c C-i` toggle immediate, `C-c @` insert an @-mention chosen with

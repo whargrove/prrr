@@ -128,6 +128,7 @@ offline or rate-limited, otherwise the next day, or when you run
 | `M`   | `prrr-mute`       | Mute or unmute: keep the PR out of the queue        |
 | `G`   | `prrr-pull`       | Pull PRs (`forge-pull`) and the queue's data now    |
 | `C-o` | `prrr-queue-menu` | Menu with the same keys, plus `-d` drafts, `-s` Served, `-m` muted |
+| `?`   | `magit-dispatch`  | magit's menu, with a Review Queue group listing these keys |
 
 forge's own pull request keys, such as `C-c C-c`, also work on a row.
 

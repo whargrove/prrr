@@ -465,6 +465,55 @@ is local to prrr; GitHub is not told."
                     number)))
     (prrr-queue--refresh-listing pr-id)))
 
+;;;; magit-dispatch
+
+(defun prrr-queue--dispatch-p ()
+  "Non-nil when `magit-dispatch' should list the Review Queue's keys.
+That is on the queue's heading, a Queue Group heading or a row, while
+`prrr-queue-mode' is on."
+  (and prrr-queue-mode
+       (when-let* ((section (magit-current-section)))
+         (or (memq (oref section type) '(prrr-queue prrr-queue-group))
+             (prrr-queue-entry-at-point)))
+       t))
+
+(defun prrr-queue--dispatch-row-p ()
+  "Non-nil when `magit-dispatch' should list the keys of a Review Queue row."
+  (and prrr-queue-mode (prrr-queue-entry-at-point) t))
+
+(defconst prrr-queue--dispatch-group
+  ["Review Queue" :if prrr-queue--dispatch-p
+   ["Pull request" :if prrr-queue--dispatch-row-p
+    ("RET" "review" prrr-review)
+    ("o" "open topic" prrr-open-topic)
+    ("b" "browse on GitHub" prrr-browse)
+    ("B" "checkout" prrr-checkout)
+    ("x" "withdraw" prrr-withdraw)
+    ("M" "mute or unmute" prrr-mute)]
+   ["Stack" :if prrr-queue--dispatch-row-p
+    (">" "up" prrr-stack-up)
+    ("<" "down" prrr-stack-down)]
+   ["Queue"
+    ("G" "pull" prrr-pull)
+    ("C-o" "menu" prrr-queue-menu)]]
+  "The group `prrr-queue--extend-dispatch' adds to `magit-dispatch'.
+The keys of `prrr-queue-section-map' and `prrr-queue-heading-map'.")
+
+(defvar prrr-queue--dispatch-extended nil
+  "Non-nil once `prrr-queue--extend-dispatch' has run.")
+
+(defun prrr-queue--extend-dispatch ()
+  "Add `prrr-queue--dispatch-group' to `magit-dispatch', once.
+On a row, magit's `b', `B', `o' and `M' give way to the row's keys,
+which shadow them in the buffer too (SPEC section 9).  The group and
+the four suffixes test `prrr-queue-mode', so turning the mode off
+restores magit's menu without editing it again."
+  (unless prrr-queue--dispatch-extended
+    (dolist (key '("b" "B" "o" "M"))
+      (transient-suffix-put 'magit-dispatch key :if-not #'prrr-queue--dispatch-row-p))
+    (transient-append-suffix 'magit-dispatch '(-1) prrr-queue--dispatch-group)
+    (setq prrr-queue--dispatch-extended t)))
+
 ;;;###autoload
 (define-minor-mode prrr-queue-mode
   "Show the Review Queue in the `magit-status' buffer of GitHub repositories.
@@ -475,7 +524,8 @@ or Withdraw redraws the queue as soon as it is queued."
   (cond (prrr-queue-mode
          (magit-add-section-hook 'magit-status-sections-hook #'prrr-queue-insert-section
                                  #'forge-insert-pullreqs)
-         (add-hook 'prrr-sync-outbox-changed-functions #'prrr-queue--refresh-for-write))
+         (add-hook 'prrr-sync-outbox-changed-functions #'prrr-queue--refresh-for-write)
+         (prrr-queue--extend-dispatch))
         (t
          (remove-hook 'magit-status-sections-hook #'prrr-queue-insert-section)
          (remove-hook 'prrr-sync-outbox-changed-functions #'prrr-queue--refresh-for-write))))

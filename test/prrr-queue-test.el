@@ -596,5 +596,34 @@ Before, it fell back to 80 columns and the rows came back squished."
           (should-not (get-buffer-window buffer))
           (should (= shown (prrr-queue--width))))))))
 
+;;;; magit-dispatch (prrr-i2l)
+
+(ert-deftest prrr-queue-test-dispatch-shows-the-queue-keys ()
+  "`?' lists the queue's keys on the queue while the mode is on; magit's b, B, o and M give way on a row."
+  (prrr-queue--extend-dispatch)
+  (prrr-queue--extend-dispatch)
+  (should (equal "Review Queue"
+                 (plist-get (aref (transient-get-suffix 'magit-dispatch '(-1)) 1) :description)))
+  (should-not (equal "Review Queue"
+                     (plist-get (aref (transient-get-suffix 'magit-dispatch '(-2)) 1) :description)))
+  (should (eq 'prrr-review (plist-get (cdr (transient-get-suffix 'magit-dispatch 'prrr-review)) :command)))
+  (dolist (key '("b" "B" "o" "M"))
+    (should (eq 'prrr-queue--dispatch-row-p
+                (plist-get (cdr (transient-get-suffix 'magit-dispatch key)) :if-not))))
+  (let ((prrr-queue-mode t))
+    (prrr-queue-test--with-render
+        (prrr-queue-test--inputs (list (prrr-queue-test--pair :id "A" :number 1))
+                                 (list (prrr-test-meta :pr-id "A" :review-requests '((user "example-me")))))
+      (should (prrr-queue--dispatch-p))
+      (should-not (prrr-queue--dispatch-row-p))
+      (prrr-queue-test--line-of 1)
+      (should (prrr-queue--dispatch-p))
+      (should (prrr-queue--dispatch-row-p))
+      (let ((prrr-queue-mode nil))
+        (should-not (prrr-queue--dispatch-p))
+        (should-not (prrr-queue--dispatch-row-p))))
+    (with-temp-buffer
+      (should-not (prrr-queue--dispatch-p)))))
+
 (provide 'prrr-queue-test)
 ;;; prrr-queue-test.el ends here
