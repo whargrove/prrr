@@ -62,6 +62,13 @@
   :type 'boolean
   :group 'prrr)
 
+(defcustom prrr-queue-only-pending nil
+  "Whether the Review Queue shows only the pull requests with a Pending Review.
+That is a review in progress: a Pending Review on GitHub, pending
+comments, or unsent comments in the Outbox."
+  :type 'boolean
+  :group 'prrr)
+
 ;;;; Faces
 
 (defface prrr-queue-state-new-commits '((t :inherit warning))
@@ -164,12 +171,13 @@ there is nothing to say."
           " "
           (propertize (format "-%d" deleted) 'font-lock-face 'magit-diffstat-removed)))
 
-(defun prrr-queue--line (entry number-width depth unresolved now width)
+(defun prrr-queue--line (entry number-width depth unresolved pending now width)
   "Return the text of ENTRY's row, without a newline.
 NUMBER-WIDTH is the width of the PR number column, DEPTH the row's
 depth among the visible rows of its Stack, UNRESOLVED its count of
-unresolved Threads, NOW the current ISO timestamp and WIDTH the
-columns to fit.  The PR's added and deleted line counts follow the
+unresolved Threads, PENDING its count of Pending Review comments or
+nil without a Pending Review, NOW the current ISO timestamp and WIDTH
+the columns to fit.  The PR's added and deleted line counts follow the
 author when prrr has them.  The title is truncated so the row fits
 WIDTH whenever WIDTH leaves it at least ten columns.  The Stack marker
 shows the row's true position, which may skip hidden rows (prrr-knu.5)."
@@ -195,6 +203,7 @@ shows the row's true position, which may skip hidden rows (prrr-knu.5)."
                          (and size (> size 1)
                               (format "  ⟰ %d/%d" (prrr-queue-entry-stack-pos entry) size))
                          (and (> unresolved 0) (format "  %d unresolved" unresolved))
+                         (and pending (if (> pending 0) (format "  %d pending" pending) "  pending"))
                          (and (not (string-empty-p ago))
                               (concat "  " (propertize ago 'font-lock-face 'magit-log-date)))))
          (title-width (max 10 (- width (string-width prefix) (string-width suffix))))
@@ -231,11 +240,13 @@ The visible rows of a Stack after its first are child sections of the
 first, one level in, so TAB on the first row folds them away.
 PULLREQS maps PR ids to forge objects; INPUTS and NUMBER-WIDTH are as
 in `prrr-queue-insert'."
-  (let ((unresolved (plist-get inputs :unresolved)))
+  (let ((unresolved (plist-get inputs :unresolved))
+        (pending (plist-get inputs :pending)))
     (cl-labels ((insert-row (entry depth members)
                   (let* ((id (prrr-pr-id (prrr-queue-entry-pr entry)))
                          (line (prrr-queue--line entry number-width depth
                                                  (or (and unresolved (gethash id unresolved)) 0)
+                                                 (and pending (gethash id pending))
                                                  (plist-get inputs :now)
                                                  (plist-get inputs :width))))
                     (magit-insert-section row (pullreq (gethash id pullreqs))
@@ -255,7 +266,9 @@ INPUTS is a plist: :pairs, a list of (FORGE-PULLREQ . PRRR-PR) for the
 repository's open PRs; :metas, their `prrr-pr-meta' rows; :teams, the
 viewer's Team slugs; :me, the viewer's login or nil; :default-branch;
 :unresolved, a hash table from PR id to unresolved Thread count, or
-nil; :muted, the ids of the PRs the viewer muted; :status, a
+nil; :pending, a hash table from the id of each PR with a Pending
+Review to its pending comment count, or nil; :muted, the ids of the
+PRs the viewer muted; :status, a
 `prrr-sync-status' plist or nil; :now, an ISO timestamp; :width, the
 columns rows should fit.  Without a login only
 the heading is inserted.  The groups are collapsed when both are
@@ -273,7 +286,10 @@ empty.  Sets `prrr-queue--rows'."
                                   :show-drafts prrr-queue-show-drafts
                                   :show-served prrr-queue-show-served
                                   :muted (plist-get inputs :muted)
-                                  :show-muted prrr-queue-show-muted)))
+                                  :show-muted prrr-queue-show-muted
+                                  :pending (and (plist-get inputs :pending)
+                                                (hash-table-keys (plist-get inputs :pending)))
+                                  :only-pending prrr-queue-only-pending)))
                          '((for-me . "For me") (mine . "Mine"))))
          (empty (seq-every-p (lambda (group) (null (nth 2 group))) groups))
          (number-width (apply #'max 2 (mapcar (lambda (pair)
@@ -373,6 +389,10 @@ The meta rows show queued Withdraws and Submits already
           :default-branch (oref repo default-branch)
           :unresolved (prrr-db-unresolved-thread-counts
                        (mapcar (lambda (pair) (prrr-pr-id (cdr pair))) pairs))
+          :pending (prrr-state-add-outbox-pending
+                    (prrr-db-pending-review-counts
+                     (mapcar (lambda (pair) (prrr-pr-id (cdr pair))) pairs))
+                    outbox)
           :muted (mapcar #'prrr-mute-pr-id (prrr-db-select 'mute))
           :status (prrr-sync-status id)
           :now (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t)

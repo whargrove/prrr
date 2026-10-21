@@ -480,17 +480,29 @@ describes."
 
 ;;;; Display
 
+(defun prrr-state-add-outbox-pending (counts rows)
+  "Add the unsent Pending Review comments among the Outbox ROWS to COUNTS.
+COUNTS maps PR ids to their pending comment counts, as
+`prrr-db-pending-review-counts' returns; every `thread' or `reply'
+write counts one for its PR.  Return COUNTS."
+  (dolist (row rows)
+    (when (memq (prrr-outbox-kind row) '(thread reply))
+      (cl-incf (gethash (prrr-outbox-pr-id row) counts 0))))
+  counts)
+
 (cl-defun prrr-state-filter-queue (entries &key (show-drafts t) (show-served t)
-                                            muted show-muted)
+                                            muted show-muted pending only-pending)
   "Return ENTRIES without the rows the viewer chose to hide.
 ENTRIES is one Queue Group from `prrr-state-queue'.  Unless
 SHOW-DRAFTS, rows of draft PRs are dropped; unless SHOW-SERVED, rows in
 the Served partition are dropped.  Rows of the PRs whose ids are in
 MUTED are dropped too, unless SHOW-MUTED, when they are kept as copies
-with MUTED-P set.  A Stack left with only context rows \(rows without
-a state) is dropped entirely, so no row is shown without a reason.
-Kept rows keep their order, STACK-POS and STACK-SIZE: a Stack's
-visible rows need not be contiguous positions."
+with MUTED-P set.  When ONLY-PENDING, only the rows of the PRs whose
+ids are in PENDING, those with a Pending Review, are kept.  A Stack
+left with only context rows \(rows without a state) is dropped
+entirely, so no row is shown without a reason.  Kept rows keep their
+order, STACK-POS and STACK-SIZE: a Stack's visible rows need not be
+contiguous positions."
   (let* ((kept (seq-remove
                 (lambda (entry)
                   (or (and (not show-drafts)
@@ -498,7 +510,9 @@ visible rows need not be contiguous positions."
                       (and (not show-served)
                            (eq (prrr-queue-entry-partition entry) 'served))
                       (and (not show-muted)
-                           (member (prrr-pr-id (prrr-queue-entry-pr entry)) muted))))
+                           (member (prrr-pr-id (prrr-queue-entry-pr entry)) muted))
+                      (and only-pending
+                           (not (member (prrr-pr-id (prrr-queue-entry-pr entry)) pending)))))
                 entries))
          (kept (mapcar (lambda (entry)
                          (if (member (prrr-pr-id (prrr-queue-entry-pr entry)) muted)

@@ -290,6 +290,22 @@ One such row, a buffer say, would block every read of its table."
       (should (null (gethash "P3" counts))))
     (should (zerop (hash-table-count (prrr-db-unresolved-thread-counts nil))))))
 
+(ert-deftest prrr-db-test-pending-review-counts ()
+  "A PR with a Pending Review row or pending comments is in the table (prrr-801)."
+  (prrr-db-with-test-db
+    (prrr-db-insert (prrr-comment-create :comment-id "c1" :thread-id "t1" :pr-id "P1" :state 'pending))
+    (prrr-db-insert (prrr-comment-create :comment-id "c2" :thread-id "t1" :pr-id "P1" :state 'pending))
+    (prrr-db-insert (prrr-comment-create :comment-id "c3" :thread-id "t2" :pr-id "P1" :state 'submitted))
+    (prrr-db-insert (prrr-comment-create :comment-id "c4" :thread-id "t3" :pr-id "P2" :state 'submitted))
+    (prrr-db-insert (prrr-pending-review-create :pr-id "P3" :review-id "r3"))
+    (prrr-db-insert (prrr-comment-create :comment-id "c5" :thread-id "t4" :pr-id "P4" :state 'pending))
+    (let ((counts (prrr-db-pending-review-counts '("P1" "P2" "P3"))))
+      (should (= 2 (gethash "P1" counts)))
+      (should (null (gethash "P2" counts)))
+      (should (= 0 (gethash "P3" counts)))
+      (should (null (gethash "P4" counts))))
+    (should (zerop (hash-table-count (prrr-db-pending-review-counts nil))))))
+
 ;;;; Review data
 
 (defconst prrr-db-test--pr "PR_kwDOexample0000001"

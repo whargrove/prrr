@@ -60,6 +60,14 @@
   (setq prrr-queue-show-served (not prrr-queue-show-served))
   (magit-refresh))
 
+(transient-define-suffix prrr-queue-toggle-only-pending ()
+  "Show only the pull requests with a Pending Review in the Review Queue, or all."
+  :transient t
+  :description (lambda () (prrr-transient--shown "only pending" prrr-queue-only-pending))
+  (interactive)
+  (setq prrr-queue-only-pending (not prrr-queue-only-pending))
+  (magit-refresh))
+
 (transient-define-suffix prrr-queue-toggle-muted ()
   "Show or hide the muted pull requests in the Review Queue."
   :transient t
@@ -74,7 +82,8 @@
   ["Show"
    ("-d" prrr-queue-toggle-drafts)
    ("-s" prrr-queue-toggle-served)
-   ("-m" prrr-queue-toggle-muted)]
+   ("-m" prrr-queue-toggle-muted)
+   ("-p" prrr-queue-toggle-only-pending)]
   [["Pull request"
     ("RET" "review" prrr-review)
     ("o" "open topic" prrr-open-topic)

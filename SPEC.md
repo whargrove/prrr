@@ -228,6 +228,14 @@ a review by another member), `changes-requested`, `approved`, `commented`
 Mine group: `draft`, `awaiting-review`, `changes-requested`, `approved`,
 `reviewed`, plus the count of unresolved Threads.
 
+**Pending.** A row of a PR with a Pending Review shows its pending comment
+count (`3 pending`, or `pending` for a review without comments yet):
+the `pending-review` and pending `review-comment` rows of the local
+database plus the unsent `thread` and `reply` writes in the Outbox
+(`prrr-db-pending-review-counts`, `prrr-state-add-outbox-pending`). The
+queue menu's `-p` (`prrr-queue-only-pending`) keeps only those rows in
+both groups: the reviews in progress.
+
 **Muted.** `prrr-mute` (`M` on a queue row or in the Review Buffer) hides a
 PR from both groups for good: it stays out whatever GitHub does to it (new
 commits, a renewed request) until `M` on its row again unmutes it. The
@@ -651,7 +659,7 @@ transient has one switch, `-i` immediate, equivalent to `C-u`.
 | `x`       | `prrr-withdraw`                                                     |
 | `M`       | `prrr-mute`                                                         |
 | `G`       | `prrr-pull`                                                         |
-| `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served, `-m` show muted) |
+| `C-o`     | `prrr-queue-menu` (adds toggles `-d` show drafts, `-s` show Served, `-m` show muted, `-p` only pending) |
 | `?`       | `magit-dispatch`, with a "Review Queue" group listing these keys    |
 
 **Capture buffer** (`prrr-comment-mode-map`): `C-c C-c` confirm, `C-c C-k`

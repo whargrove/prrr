@@ -87,6 +87,10 @@ its age.
 A Verdict you submit or a Withdraw shows in the queue at once, before
 GitHub has it: the row moves to Served with its new state, or leaves.
 
+A row of a PR where you have a review in progress says `3 pending`: the
+comments in your pending review, unsent ones included. `C-o -p` keeps
+only those rows, to get back to what you started.
+
 `M` on a row mutes the PR: it leaves the queue for good, whatever happens
 to it on GitHub. `C-o -m` shows muted rows, dimmed; `M` on one unmutes it.
 GitHub is never told.
@@ -127,7 +131,7 @@ offline or rate-limited, otherwise the next day, or when you run
 | `x`   | `prrr-withdraw`   | Withdraw: drop your review request and assignment   |
 | `M`   | `prrr-mute`       | Mute or unmute: keep the PR out of the queue        |
 | `G`   | `prrr-pull`       | Pull PRs (`forge-pull`) and the queue's data now    |
-| `C-o` | `prrr-queue-menu` | Menu with the same keys, plus `-d` drafts, `-s` Served, `-m` muted |
+| `C-o` | `prrr-queue-menu` | Menu with the same keys, plus `-d` drafts, `-s` Served, `-m` muted, `-p` only pending |
 | `?`   | `magit-dispatch`  | magit's menu, with a Review Queue group listing these keys |
 
 forge's own pull request keys, such as `C-c C-c`, also work on a row.
@@ -148,6 +152,7 @@ forge's own pull request keys, such as `C-c C-c`, also work on a row.
 | `prrr-sync-timeout`      | `60`    | Seconds a pull, refetch or change waits for GitHub before `offline` |
 | `prrr-queue-show-drafts` | `t`     | Show draft PRs                                  |
 | `prrr-queue-show-served` | `t`     | Show the Served partition                       |
+| `prrr-queue-only-pending` | `nil`  | Show only the PRs with a review in progress     |
 | `prrr-eager-files`       | `30`    | Files expanded when a Review Buffer opens       |
 | `prrr-eager-lines`       | `2000`  | Changed lines expanded when it opens            |
 | `prrr-database-file`     | `prrr-database.sqlite` in `user-emacs-directory` | prrr's own database |

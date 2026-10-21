@@ -691,6 +691,27 @@ Only a request to me in the current reviewRequests is a direct one."
     ;; B itself is not changed.
     (should-not (prrr-queue-entry-muted-p b))))
 
+(ert-deftest prrr-state-test-filter-only-pending ()
+  "Only the PRs with a Pending Review stay when asked; the ids alone do nothing (prrr-801)."
+  (let* ((a (prrr-state-test--entry "A" :state 'requested :partition 'awaiting :stack-id "A"))
+         (b (prrr-state-test--entry "B" :state 'approved :partition 'served :stack-id "B")))
+    (should (equal (list a b) (prrr-state-filter-queue (list a b) :pending '("B"))))
+    (should (equal (list b) (prrr-state-filter-queue (list a b) :pending '("B") :only-pending t)))
+    (should (null (prrr-state-filter-queue (list a b) :only-pending t)))))
+
+(ert-deftest prrr-state-test-pending-counts-with-outbox ()
+  "Unsent Thread and reply writes count as pending comments of their PR (prrr-801)."
+  (let ((counts (make-hash-table :test #'equal)))
+    (puthash "A" 2 counts)
+    (prrr-state-add-outbox-pending
+     counts (list (prrr-outbox-create :id "1" :pr-id "A" :kind 'thread)
+                  (prrr-outbox-create :id "2" :pr-id "B" :kind 'reply)
+                  (prrr-outbox-create :id "3" :pr-id "C" :kind 'viewed)
+                  (prrr-outbox-create :id "4" :pr-id "C" :kind 'publish)))
+    (should (= 3 (gethash "A" counts)))
+    (should (= 1 (gethash "B" counts)))
+    (should (null (gethash "C" counts)))))
+
 (ert-deftest prrr-state-test-filter-drops-stack-left-with-only-context-rows ()
   "Hiding the only qualifying member leaves no reason to show its Stack."
   (let* ((context (prrr-state-test--entry "BOTTOM" :stack-id "BOTTOM" :stack-pos 1 :stack-size 2

@@ -38,11 +38,12 @@
                          :their-id (prrr-pr-id pr))
           pr)))
 
-(cl-defun prrr-queue-test--inputs (pairs metas &key (me prrr-test-me) status unresolved (width 100))
+(cl-defun prrr-queue-test--inputs (pairs metas &key (me prrr-test-me) status unresolved pending
+                                         (width 100))
   "INPUTS for `prrr-queue-insert' over PAIRS and METAS.
-Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
+Keys ME, STATUS, UNRESOLVED, PENDING and WIDTH set the matching input."
   (list :pairs pairs :metas metas :teams prrr-test-teams :me me
-        :default-branch "main" :unresolved unresolved :status status
+        :default-branch "main" :unresolved unresolved :pending pending :status status
         :now "2026-10-10T12:00:00Z" :width width))
 
 (defmacro prrr-queue-test--with-render (inputs &rest body)
@@ -220,7 +221,7 @@ Keys ME, STATUS, UNRESOLVED and WIDTH set the matching input."
 (ert-deftest prrr-queue-test-line-dimmed-row-uses-dimmed-face ()
   (let* ((entry (prrr-queue-entry-create :pr (prrr-test-pr :number 4) :state nil
                                          :stack-pos 1 :stack-size 2 :dimmed-p t))
-         (line (prrr-queue--line entry 3 0 0 "2026-10-10T12:00:00Z" 80)))
+         (line (prrr-queue--line entry 3 0 0 nil "2026-10-10T12:00:00Z" 80)))
     (should (eq 'prrr-queue-dimmed (get-text-property 0 'font-lock-face line)))))
 
 (ert-deftest prrr-queue-test-ago ()
@@ -553,6 +554,30 @@ prrr's keys win where both bind a key."
         (should (equal (list (list (current-buffer))) (mapcar #'cl-third prrr-test-timers)))
         (call-interactively #'prrr-mute)
         (should-not (prrr-db-get 'mute "A"))))))
+
+(ert-deftest prrr-queue-test-row-shows-pending-and-only-pending-filters ()
+  "A row counts its pending comments; `-p' keeps only the PRs with a Pending Review (prrr-801)."
+  (let ((pending (make-hash-table :test #'equal))
+        (pairs (list (prrr-queue-test--pair :id "A" :number 1 :assignees (list prrr-test-me))
+                     (prrr-queue-test--pair :id "B" :number 2 :assignees (list prrr-test-me))
+                     (prrr-queue-test--pair :id "C" :number 3 :assignees (list prrr-test-me)))))
+    (puthash "A" 3 pending)
+    (puthash "C" 0 pending)
+    (prrr-queue-test--with-render (prrr-queue-test--inputs pairs nil :pending pending)
+      (should (string-match-p "  3 pending" (prrr-queue-test--line-of 1)))
+      (should-not (string-match-p "pending" (prrr-queue-test--line-of 2)))
+      (should (string-match-p "  pending" (prrr-queue-test--line-of 3))))
+    (let ((prrr-queue-only-pending t))
+      (prrr-queue-test--with-render (prrr-queue-test--inputs pairs nil :pending pending)
+        (should (equal '("A" "C")
+                       (mapcar (lambda (row) (prrr-pr-id (prrr-queue-entry-pr (cdr row))))
+                               prrr-queue--rows)))
+        (should (search-forward "For me (2)" nil t)))))
+  (should (eq 'prrr-queue-toggle-only-pending (prrr-queue-test--menu-command "-p")))
+  (let ((prrr-queue-only-pending nil))
+    (cl-letf (((symbol-function 'magit-refresh) #'ignore))
+      (call-interactively #'prrr-queue-toggle-only-pending))
+    (should prrr-queue-only-pending)))
 
 (ert-deftest prrr-queue-test-mute-keys ()
   "M on a row and in both menus; `-m' toggles showing muted rows."
