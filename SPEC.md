@@ -542,6 +542,11 @@ forge's base commit is stale in a way that changes the merge base, a
 limit prrr accepts.
 
 **Viewed** is GitHub's flag only, shown and toggled on every Range.
+`V` (`prrr-toggle-hide-viewed`) leaves the Viewed files, with their
+Threads, out of the buffer: a review in progress then shows only what
+is left to read. Per buffer, off unless `prrr-hide-viewed`; the status
+line says "hiding N viewed files" while it is on, and `v` on a file then
+removes it and moves to the next file shown.
 
 **Bookmark** updates when the Review Buffer is killed or its window
 quit (`q`), when `>` or `<` steps to another PR of its Stack, when
@@ -620,16 +625,17 @@ turning the mode off restores magit's menu.
 | `@`         | `prrr-send-to-agent`                                | instructions in a capture buffer, then `prrr-agent-invoke-function`                   |
 | `a`         | `prrr-accept-comment`                               | agent's proposed comment at point, as edited                                          |
 | `L`         | `prrr-toggle-highlight`                             |                                                                                       |
+| `V`         | `prrr-toggle-hide-viewed`                           | leave Viewed files out of the buffer; per buffer, starts as `prrr-hide-viewed` (nil) |
 | `?` / `C-o` | `prrr-menu`                                         | main transient                                                                        |
 
 Preserved from magit: `TAB`, `S-TAB`, `n`, `p`, `M-n`, `M-p`, `^`, `RET`,
 `q`, `1`-`4`, `E` ediff, `h`. Overridden magit keys (`a`, `c`, `d`, `e`,
-`k`, `s`, `z`, `D`, `b`, `B`, `o`, `v`, `L`, `S`, `O`, `G`, `M`) are apply, commit,
+`k`, `s`, `z`, `D`, `b`, `B`, `o`, `v`, `V`, `L`, `S`, `O`, `G`, `M`) are apply, commit,
 diff, ediff, delete, stage, stash, diff args, branch, bisect, submodule,
-revert, log, refresh-all and remote, none of which belong in a review buffer.
+revert (both), log, refresh-all and remote, none of which belong in a review buffer.
 
 **Main transient** `prrr-menu`, groups: Comment (`c C r e k d R s`),
-Navigate (`] [ } { J K j`), View (`v z Z L`), Range (`D . m`), Stack
+Navigate (`] [ } { J K j`), View (`v z Z L V`), Range (`D . m`), Stack
 (`> <`), Review (`S O x M`), Open (`o b B`), Sync (`g G`), Agent (`@ a`). The
 transient has one switch, `-i` immediate, equivalent to `C-u`.
 

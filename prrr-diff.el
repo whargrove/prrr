@@ -63,6 +63,12 @@ every file after it, are washed when first expanded."
   :type 'natnum
   :group 'prrr)
 
+(defcustom prrr-hide-viewed nil
+  "Whether a Review Buffer starts with the files marked Viewed left out.
+`V' (`prrr-toggle-hide-viewed') toggles it per buffer."
+  :type 'boolean
+  :group 'prrr)
+
 (defcustom prrr-hunk-highlight nil
   "How Review Buffers mark the hunk at point.
 nil marks nothing: every line keeps its usual face wherever point is,
@@ -184,6 +190,10 @@ nil when forge recorded no base commit or it is not in the repository."
 
 (defvar-local prrr-diff--file-threads nil
   "Hash table from path to its `prrr-file-threads'; set by each refresh.")
+
+(defvar-local prrr-diff--hide-viewed nil
+  "Whether this Review Buffer leaves the files marked Viewed out.
+Starts as `prrr-hide-viewed'; `prrr-toggle-hide-viewed' flips it.")
 
 (defvar-local prrr-diff--data nil
   "The review data shown, from `prrr-sync-review-data'; set by each refresh.")
@@ -500,7 +510,8 @@ point on the same screen row of every window that shows it."
     ("S" . prrr-submit) ("O" . prrr-outbox)
     ("D" . prrr-range) ("." . prrr-goto-default-range) ("m" . prrr-mark-seen)
     (">" . prrr-stack-up) ("<" . prrr-stack-down)
-    ("L" . prrr-toggle-highlight) ("@" . prrr-send-to-agent) ("x" . prrr-withdraw)
+    ("L" . prrr-toggle-highlight) ("V" . prrr-toggle-hide-viewed)
+    ("@" . prrr-send-to-agent) ("x" . prrr-withdraw)
     ("M" . prrr-mute))
   "The commenting and reviewing keys of a Review Buffer (SPEC section 9).
 They are bound in the section keymaps too, which win over the mode's
@@ -566,6 +577,7 @@ section keymaps.")
   ;; magit's hunk fontifier walks every line of a hunk, Threads included.
   (setq-local magit-diff-fontify-hunk nil)
   (setq-local magit-diff-highlight-hunk-body (eq prrr-hunk-highlight 'body))
+  (setq prrr-diff--hide-viewed prrr-hide-viewed)
   ;; Leaving the buffer, by killing it or quitting its window, ends a
   ;; visit: since-opened starts from what the visit showed.
   (add-hook 'kill-buffer-hook #'prrr-diff-record-bookmark nil t)
@@ -630,20 +642,23 @@ FILE's added and deleted line counts follow its name, unless it is binary."
             (and viewed-p (propertize "  ✓ viewed" 'font-lock-face 'prrr-diff-viewed))
             "\n")))
 
-(defun prrr-diff--insert-files (sides start end data comments)
-  "Insert one `file' section per file changed from START to END.
+(defun prrr-diff--insert-files (files sides start end data comments)
+  "Insert one `file' section per file of FILES, changed from START to END.
 SIDES are the sides whose line Threads show inline
 \(`prrr-state-inline-sides').  DATA is the PR's stored
 review data (`prrr-db-review-data'); COMMENTS maps its Thread ids to
-their Review Comments.  Viewed files start hidden; the eager budget
-decides for the others.  Sets `prrr-diff--threads' and
+their Review Comments.  Viewed files start hidden, or are left out
+along with their Threads when `prrr-diff--hide-viewed'; the eager
+budget decides for the others.  Sets `prrr-diff--threads' and
 `prrr-diff--file-threads'.  Return the Threads whose file is not in
 the diff."
-  (let* ((files (prrr-diff--changes start end))
-         (layout (prrr-state-thread-layout (plist-get data :threads)
+  (let* ((layout (prrr-state-thread-layout (plist-get data :threads)
                                            (mapcar #'prrr-diff-file-path files)))
          (viewed (prrr-diff--viewed-paths (plist-get data :viewed)))
-         (eager (prrr-diff--eager-paths files viewed)))
+         (eager (prrr-diff--eager-paths files viewed))
+         (files (if prrr-diff--hide-viewed
+                    (seq-remove (lambda (file) (member (prrr-diff-file-path file) viewed)) files)
+                  files)))
     (setq prrr-diff--file-threads (car layout)
           prrr-diff--threads (make-hash-table :test #'equal))
     (dolist (thread (plist-get data :threads))
@@ -697,17 +712,21 @@ VIEW describes what the buffer diffs, a plist: :range, the
 `prrr-range'; :start and :end, the commits diffed, either may be nil;
 :head, the PR head shown; :local, the head forge fetched, or nil;
 :rewritten, non-nil when the Range's start is not an ancestor of its
-end.  DATA is the review data shown.  Names the Range and whether
-history was rewritten, the Pending Review's comments, the Outbox, a
+end; :hidden-viewed, how many Viewed files are left out, or nil when
+they are shown.  DATA is the review data shown.  Names the Range and
+whether history was rewritten, how many Viewed files are hidden, the
+Pending Review's comments, the Outbox, a
 queued Submit, what the last refetch said, and whether the head moved
 away from the one shown (`prrr-state-head-notice')."
   (let* ((status (prrr-sync-review-status (oref pullreq their-id)))
          (submit (plist-get data :submit))
-         (pending (seq-count #'prrr-state-comment-pending-p (plist-get data :comments))))
+         (pending (seq-count #'prrr-state-comment-pending-p (plist-get data :comments)))
+         (hidden (plist-get view :hidden-viewed)))
     (string-join
      (delq nil
            (list (prrr-diff--range-status view)
                  (and (plist-get view :rewritten) "history rewritten")
+                 (and hidden (format "hiding %d viewed file%s" hidden (if (= hidden 1) "" "s")))
                  (and (or (plist-get data :pending-review) (> pending 0))
                       (format "Pending Review: %d comment%s" pending (if (= pending 1) "" "s")))
                  (prrr-diff--outbox-status data)
@@ -782,11 +801,17 @@ Outbox's writes applied."
          (start (and head (car ends)))
          (end (and head (cdr ends)))
          (missing (and start (prrr-diff--missing-commit range start end)))
+         (data (prrr-sync-review-data (oref pullreq their-id)))
+         (files (and start (not missing) (prrr-diff--changes start end)))
          (view (list :range range :start start :end end :head head :local local
                      :rewritten (and start (not missing)
                                      (not (eq (prrr-range-kind range) 'default))
-                                     (not (magit-rev-ancestor-p start end)))))
-         (data (prrr-sync-review-data (oref pullreq their-id))))
+                                     (not (magit-rev-ancestor-p start end)))
+                     :hidden-viewed
+                     (and prrr-diff--hide-viewed
+                          (let ((viewed (prrr-diff--viewed-paths (plist-get data :viewed))))
+                            (seq-count (lambda (file) (member (prrr-diff-file-path file) viewed))
+                                       files))))))
     (setq prrr-diff--start start
           prrr-diff--end end
           prrr-diff--head head
@@ -817,7 +842,7 @@ Outbox's writes applied."
                                   range head (plist-get (prrr-sync-review-status
                                                          (oref pullreq their-id))
                                                         :head-oid)))
-                          (elsewhere (prrr-diff--insert-files sides start end data comments)))
+                          (elsewhere (prrr-diff--insert-files files sides start end data comments)))
                      (prrr-diff--insert-group 'outdated-files "Threads on files not in this diff"
                                               elsewhere comments)))))
       (setq magit-section-inhibit-markers nil))
@@ -1322,12 +1347,16 @@ Asks first when that means washing more than
 (defun prrr-toggle-viewed ()
   "Mark the file at point Viewed on GitHub and fold it, or unmark it.
 Marking moves to the next file, as GitHub does.  The change shows at
-once and reaches GitHub through the Outbox."
+once and reaches GitHub through the Outbox.  While Viewed files are
+hidden (`prrr-toggle-hide-viewed'), the file leaves the buffer."
   (interactive)
   (let* ((pullreq (prrr-diff-pullreq))
          (file (or (prrr-diff--file-at-point) (user-error "No file here")))
          (path (oref file value))
-         (viewed (not (prrr-diff--viewed-p path))))
+         (viewed (not (prrr-diff--viewed-p path)))
+         ;; Found before the refresh, which may remove FILE.
+         (next (and viewed (prrr-diff--file-near-point 1)))
+         (next-path (and next (oref next value))))
     ;; Folding first records the fold in the visibility cache, so the
     ;; refresh below agrees with the Viewed flag.
     (if viewed (magit-section-hide file) (magit-section-show file))
@@ -1335,8 +1364,19 @@ once and reaches GitHub through the Outbox."
     (prrr-sync-write (forge-get-repository pullreq) pullreq 'viewed
                      (list :path path :viewed viewed) (current-buffer))
     (magit-refresh-buffer)
-    (when-let* ((next (and viewed (prrr-diff--file-near-point 1))))
+    (when-let* ((next (and next-path (prrr-diff--file next-path))))
       (magit-section-goto next))))
+
+(defun prrr-toggle-hide-viewed ()
+  "Leave the files marked Viewed out of this Review Buffer, or show them again.
+Per buffer; a new buffer starts as `prrr-hide-viewed' says.  The
+status line counts the hidden files.  Their Threads are hidden with
+them."
+  (interactive)
+  (prrr-diff-pullreq)
+  (setq prrr-diff--hide-viewed (not prrr-diff--hide-viewed))
+  (magit-refresh-buffer)
+  (message "Viewed files %s" (if prrr-diff--hide-viewed "hidden (V shows them)" "shown")))
 
 (provide 'prrr-diff)
 ;;; prrr-diff.el ends here

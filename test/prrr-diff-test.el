@@ -242,6 +242,35 @@ SETUP runs first, inside the fixture repository and a fresh database.
         (should-not (oref readme hidden))
         (should-not (string-match-p "viewed" (prrr-diff-test--text readme)))))))
 
+(ert-deftest prrr-diff-test-hide-viewed-leaves-viewed-files-out ()
+  "V leaves the files marked Viewed out of the buffer and says so (prrr-kos).
+Off by default; `prrr-hide-viewed' starts a buffer with it on."
+  (let ((prrr-eager-files 100))
+    (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+      (should-not prrr-diff--hide-viewed)
+      (should (member "src/example.el" (prrr-diff-test--files)))
+      (prrr-toggle-hide-viewed)
+      (should prrr-diff--hide-viewed)
+      (should-not (member "src/example.el" (prrr-diff-test--files)))
+      (should (member "README.md" (prrr-diff-test--files)))
+      (should (string-match-p "hiding 1 viewed file" (prrr-diff-test--text (car (oref magit-root-section children)))))
+      (prrr-toggle-hide-viewed)
+      (should (member "src/example.el" (prrr-diff-test--files)))
+      (should-not (string-match-p "hiding" (prrr-diff-test--text (car (oref magit-root-section children))))))
+    (let ((prrr-hide-viewed t))
+      (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+        (should prrr-diff--hide-viewed)
+        (should-not (member "src/example.el" (prrr-diff-test--files)))))))
+
+(ert-deftest prrr-diff-test-hide-viewed-keeps-threads-of-hidden-files-out ()
+  "A hidden file's Threads are not listed among the files not in this diff."
+  (let ((prrr-eager-files 100))
+    (prrr-diff-test--with-buffer (prrr-diff-test--store-fixture)
+      (prrr-toggle-hide-viewed)
+      (let ((elsewhere (magit-get-section '((outdated-files) (diffbuf)))))
+        (should-not (and elsewhere
+                         (string-match-p "src/example.el" (prrr-diff-test--text elsewhere))))))))
+
 (ert-deftest prrr-diff-test-positions-after-lazy-wash ()
   "Review Focus 3: expanding a file keeps every later section's positions right."
   (let ((prrr-eager-files 0))
@@ -828,6 +857,21 @@ magit's own method would overlay the body up to the first Thread."
           (should-not (oref (prrr-diff-test--file-section "README.md") hidden))
           (should (equal '(file . "README.md") (prrr-diff-test--at))))))))
 
+(ert-deftest prrr-diff-test-toggle-viewed-while-hiding-moves-to-next-shown-file ()
+  "With V on, marking a file Viewed removes it and lands on the next file (prrr-kos)."
+  (prrr-diff-test--with-buffer nil
+    (prrr-test-with-outbox
+      (cl-letf (((symbol-function 'forge-get-repository)
+                 (lambda (&rest _) (forge-github-repository :id "r" :owner "example-org"
+                                                            :name "example-repo"
+                                                            :apihost "api.github.com"))))
+        (prrr-test-with-ghub-stub '((data (markFileAsViewed (clientMutationId)))) captured
+          (prrr-toggle-hide-viewed)
+          (prrr-jump-to-file "README.md")
+          (prrr-toggle-viewed)
+          (should-not (member "README.md" (prrr-diff-test--files)))
+          (should (equal '(file . "data.bin") (prrr-diff-test--at))))))))
+
 (ert-deftest prrr-diff-test-toggle-viewed-offline-shows-at-once ()
   "Review Focus 1: offline, the flag shows and folds, and stays in the Outbox."
   (prrr-diff-test--with-buffer nil
@@ -855,6 +899,7 @@ magit's own method would overlay the body up to the first Thread."
                    ("z" . prrr-collapse-all) ("Z" . prrr-expand-all)
                    ("o" . prrr-open-topic) ("b" . prrr-browse) ("B" . prrr-checkout)
                    ("g" . prrr-refresh) ("G" . prrr-refetch) ("L" . prrr-toggle-highlight)
+                   ("V" . prrr-toggle-hide-viewed)
                    ("a" . prrr-accept-comment) ("@" . prrr-send-to-agent)))
     (should (eq command (keymap-lookup prrr-diff-mode-map key)))
     (let ((suffix (transient-get-suffix 'prrr-menu key)))

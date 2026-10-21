@@ -186,7 +186,11 @@ anchored to.
 
 Each file heading shows the file's `+added -deleted` line counts and its
 thread count. Files you marked Viewed, here or on GitHub, are folded and marked `✓
-viewed`. `g` redraws at the pull request's current head and keeps what
+viewed`. `V` leaves them out of the buffer altogether, threads included,
+so a review in progress shows only what is left to read; the header then
+says `hiding 3 viewed files`, and `v` on a file removes it and moves to
+the next. `V` again shows them; set `prrr-hide-viewed` to start every
+buffer that way. `g` redraws at the pull request's current head and keeps what
 you expanded and folded.
 
 ### Syntax highlighting
@@ -219,6 +223,7 @@ rules, so a changed `treesit-font-lock-level` applies.
 | `J` / `K` | `prrr-next-file` / `prrr-previous-file`             | Next or previous file                      |
 | `j`       | `prrr-jump-to-file`                                 | Jump to a file, with completion            |
 | `v`       | `prrr-toggle-viewed`                                | Mark the file Viewed on GitHub and fold it |
+| `V`       | `prrr-toggle-hide-viewed`                           | Hide the files marked Viewed, or show them |
 | `c`       | `prrr-comment`                                      | Comment on the line or the region's lines  |
 | `C`       | `prrr-comment-file`                                 | Comment on the whole file                  |
 | `r`       | `prrr-reply`                                        | Reply to the thread at point               |
@@ -256,6 +261,7 @@ and `q` work as in any magit diff.
 | `prrr-highlight-max-lines` | `3000`   | Larger files are highlighted when Emacs is idle, ten times larger never  |
 | `prrr-highlight-modes`     | built-in | ts-mode by file-name regexp or major mode, where `foo-ts-mode` misses    |
 | `prrr-hunk-highlight`      | `nil`    | Mark the hunk at point: `nil` not at all, `heading`, or `body` as magit  |
+| `prrr-hide-viewed`         | `nil`    | Start every Review Buffer with the Viewed files left out (`V` toggles)   |
 
 ## Commenting and reviewing
 

@@ -148,7 +148,8 @@
     ("v" "toggle Viewed" prrr-toggle-viewed)
     ("z" "collapse all" prrr-collapse-all)
     ("Z" "expand all" prrr-expand-all)
-    ("L" "toggle highlighting" prrr-toggle-highlight)]
+    ("L" "toggle highlighting" prrr-toggle-highlight)
+    ("V" "hide or show Viewed files" prrr-toggle-hide-viewed)]
    ["Range"
     ("D" "choose…" prrr-range)
     ("." "default Range here" prrr-goto-default-range)
