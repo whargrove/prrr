@@ -301,7 +301,7 @@ Off by default; `prrr-hide-viewed' starts a buffer with it on."
           (unwind-protect
               (with-current-buffer buffer
                 (should-not (prrr-diff-test--files))
-                (should (string-match-p "base commit .* not available locally"
+                (should (string-match-p "forge knows no base commit"
                                         (buffer-string))))
             (kill-buffer buffer)))))))
 
@@ -736,22 +736,110 @@ magit's own method would overlay the body up to the first Thread."
       (should (eq 'prrr-thread-heading
                   (get-text-property (+ (oref thread start) 4) 'font-lock-face))))))
 
-(ert-deftest prrr-diff-test-review-missing-ref-offers-pull ()
-  "Review Focus 1: no Review Buffer without the PR's head."
+;; GitHub serves each PR's head as refs/pull/N/head.
+(defun prrr-diff-test--make-remote ()
+  "Make origin, a bare remote serving the fixture PR's head and main.
+It lives inside the fixture's .git, so it goes when the fixture goes.
+Return its directory."
+  (let ((remote (expand-file-name ".git/prrr-remote")))
+    (call-process "git" nil nil nil "init" "-q" "--bare" "-b" "main" remote)
+    (call-process "git" nil nil nil "push" "-q" remote
+                  "refs/pullreqs/1:refs/pull/1/head" "main:refs/heads/main")
+    (call-process "git" nil nil nil "remote" "add" "origin" remote)
+    remote))
+
+(defun prrr-diff-test--remote-base (remote)
+  "Commit on main in REMOTE only, and return the commit's oid."
+  (let ((clone (expand-file-name ".git/prrr-clone")))
+    (call-process "git" nil nil nil "clone" "-q" remote clone)
+    (let ((default-directory (file-name-as-directory clone)))
+      (with-temp-file "later"
+        (insert "later\n"))
+      (call-process "git" nil nil nil "add" "later")
+      (call-process "git" nil nil nil "-c" "user.name=example" "-c" "user.email=example@example.com"
+                    "commit" "-q" "-m" "later")
+      (call-process "git" nil nil nil "push" "-q" "origin" "main")
+      (car (process-lines "git" "rev-parse" "HEAD")))))
+
+(defmacro prrr-diff-test--with-remote-open-stubs (&rest body)
+  "Run BODY as `prrr-diff-test--with-open-stubs' does, the PR's remote origin.
+The fetch's progress messages are not echoed."
+  (declare (indent 0))
+  `(prrr-diff-test--with-open-stubs
+     (let ((get-repository (symbol-function 'forge-get-repository))
+           (inhibit-message t))
+       (cl-letf (((symbol-function 'forge-get-repository)
+                  (lambda (&rest args)
+                    (if (forge-pullreq-p (car args))
+                        (forge-github-repository :id "r" :owner "example-org"
+                                                 :name "example-repo" :remote "origin")
+                      (apply get-repository args)))))
+         ,@body))))
+
+(defun prrr-diff-test--wait-for-fetch ()
+  "Wait until the current Review Buffer's fetch ended, at most ten seconds."
+  (with-timeout (10 (ert-fail "the fetch did not end"))
+    (while prrr-diff--fetching
+      (accept-process-output nil 0.05))))
+
+(ert-deftest prrr-diff-test-open-fetches-a-missing-head ()
+  "A missing refs/pullreqs/N opens the buffer and fetches the head from the remote."
   (prrr-db-with-test-db
     (prrr-test-with-repo
+      (let ((head (prrr-diff-test--rev "refs/pullreqs/1")))
+        (prrr-diff-test--make-remote)
+        (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")
+        (prrr-diff-test--with-remote-open-stubs
+          (let ((buffer (prrr-diff-open (prrr-diff-test--pullreq))))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (should (= 1 (length refetches)))
+                  (should (string-match-p "Fetching the pull request's head from origin…"
+                                          (buffer-string)))
+                  (prrr-diff-test--wait-for-fetch)
+                  (should (equal head (magit-rev-verify "refs/pullreqs/1")))
+                  (should (equal head (prrr-diff-head)))
+                  (should (member "src/example.el" (prrr-diff-test--files))))
+              (kill-buffer buffer))))))))
+
+(ert-deftest prrr-diff-test-open-fetches-a-missing-base ()
+  "A base commit missing locally is fetched by sha from the remote."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (let* ((base (prrr-diff-test--remote-base (prrr-diff-test--make-remote)))
+             (pullreq (prrr-diff-test--pullreq)))
+        (oset pullreq base-rev base)
+        (should-not (magit-commit-p base))
+        (prrr-diff-test--with-remote-open-stubs
+          (let ((buffer (prrr-diff-open pullreq)))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (should (string-match-p "Fetching the pull request's base commit from origin…"
+                                          (buffer-string)))
+                  (prrr-diff-test--wait-for-fetch)
+                  (should (magit-commit-p base))
+                  (should (member "src/example.el" (prrr-diff-test--files)))
+                  (should-not (member "later" (prrr-diff-test--files))))
+              (kill-buffer buffer))))))))
+
+(ert-deftest prrr-diff-test-failed-fetch-says-how-to-retry ()
+  "A head that cannot be fetched leaves a note naming G, and G fetches again."
+  (prrr-db-with-test-db
+    (prrr-test-with-repo
+      (call-process "git" nil nil nil "remote" "add" "origin"
+                    (expand-file-name ".git/no-such-remote"))
       (call-process "git" nil nil nil "update-ref" "-d" "refs/pullreqs/1")
-      (prrr-diff-test--with-open-stubs
-        (let ((pulled nil))
-          (cl-letf (((symbol-function 'forge-pull) (lambda (&rest _) (interactive) (setq pulled t))))
-            (cl-letf (((symbol-function 'y-or-n-p) #'ignore))
-              (should-error (prrr-diff-open (prrr-diff-test--pullreq)) :type 'user-error)
-              (should-not pulled))
-            (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
-              (should-error (prrr-diff-open (prrr-diff-test--pullreq)) :type 'user-error)
-              (should pulled))
-            (should-not refetches)
-            (should-not (get-buffer (prrr-diff--buffer-name (prrr-diff-test--pullreq))))))))))
+      (prrr-diff-test--with-remote-open-stubs
+        (let ((buffer (prrr-diff-open (prrr-diff-test--pullreq))))
+          (unwind-protect
+              (with-current-buffer buffer
+                (prrr-diff-test--wait-for-fetch)
+                (should (string-match-p "refs/pullreqs/1 is missing: G fetches it"
+                                        (buffer-string)))
+                (prrr-refetch)
+                (should (equal "origin" prrr-diff--fetching))
+                (prrr-diff-test--wait-for-fetch))
+            (kill-buffer buffer)))))))
 
 (ert-deftest prrr-diff-test-refetch-command ()
   (prrr-db-with-test-db

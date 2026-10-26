@@ -340,7 +340,7 @@ process sentinel kills Emacs."
       (accept-process-output process 0.05))
     (cl-letf (((symbol-function 'magit-process-sentinel)
                (lambda (&rest _) (error "Example failure"))))
-      (should-error (funcall (prrr-range--fetch-sentinel (lambda (ok) (setq fetched ok)))
+      (should-error (funcall (prrr-diff--fetch-sentinel (lambda (ok) (setq fetched ok)))
                              process "finished\n")))
     (should (eq t fetched))))
 

@@ -165,9 +165,11 @@ unsent comments are always kept.
 
 `M-x prrr-review` (or `RET` on a queue row) opens a pull request's Review
 Buffer. It diffs the PR's head, which forge fetches to `refs/pullreqs/N`,
-against its merge base with the base branch. If that ref is missing, prrr
-offers to run `forge-pull`. When it stays missing, run
-`forge-add-pullreq-refspec` and pull again.
+against its merge base with the base branch. If that ref or the base
+commit is missing, the buffer opens anyway and fetches them from the
+pull request's remote in the background (the head from GitHub's
+`refs/pull/N/head`, the base by sha), then redraws. If the fetch fails,
+the buffer says so; `G` tries again.
 
 The buffer opens at once from prrr's database and refetches the threads,
 your pending review and the Viewed flags in the background. The header

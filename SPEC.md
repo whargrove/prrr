@@ -810,7 +810,10 @@ bodies; nothing else is added.
   any other waits for the daily cadence.
 - Network failures on refetch keep the database copy and show "offline" in
   the header; writes go to the Outbox.
-- A missing PR ref (`refs/pullreqs/N` absent) prompts to run `forge-pull`.
+- A missing PR ref (`refs/pullreqs/N` absent) or base commit is fetched from
+  the PR's remote in the background when the Review Buffer opens: the head
+  by `+refs/pull/N/head:refs/pullreqs/N`, the base by sha. The buffer says
+  "Fetching…" meanwhile; a failure leaves a note, and `G` fetches again.
 - Every background job is cancellable by killing the buffer; callbacks check
   that the buffer is live and the PR and head oid unchanged before touching
   it.

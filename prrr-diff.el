@@ -201,6 +201,9 @@ Starts as `prrr-hide-viewed'; `prrr-toggle-hide-viewed' flips it.")
 (defvar-local prrr-diff--comments nil
   "Hash table from comment id to the `prrr-comment' shown; set by each refresh.")
 
+(defvar-local prrr-diff--fetching nil
+  "The remote this buffer fetches its PR's missing head or base from, or nil.")
+
 ;;;; Washing
 
 (defun prrr-diff--anchored-lines (thread right-lines)
@@ -826,13 +829,19 @@ Outbox's writes applied."
     (unwind-protect
         (magit-insert-section (diffbuf)
           (prrr-diff--insert-header pullreq view data)
-          (cond ((not head)
+          (cond ((and (not start) prrr-diff--fetching)
                  (prrr-diff--insert-note
-                  (format "%s is missing: run `forge-pull', then g" ref)))
+                  (format "Fetching the pull request's %s from %s…"
+                          (if head "base commit" "head") prrr-diff--fetching)))
+                ((not head)
+                 (prrr-diff--insert-note (format "%s is missing: G fetches it" ref)))
+                ((and (not start) (oref pullreq base-rev))
+                 (prrr-diff--insert-note
+                  (format "The base commit %s is not available locally: G fetches it"
+                          (prrr-state-short-oid (oref pullreq base-rev)))))
                 ((not start)
                  (prrr-diff--insert-note
-                  (format "The base commit %s is not available locally: run `forge-pull', then g"
-                          (or (oref pullreq base-rev) "(unknown)"))))
+                  "forge knows no base commit for this pull request: run `forge-pull', then g"))
                 (missing
                  (prrr-diff--insert-note
                   (format "The commit %s of this Range is not available locally: D picks another"
@@ -871,6 +880,57 @@ so forge's commands, and `prrr-current-pullreq', act on PULLREQ."
 
 ;;;; Opening
 
+(defun prrr-diff--fetch-sentinel (callback)
+  "Return the sentinel of a fetch: magit's, then CALLBACK once git ended.
+CALLBACK receives non-nil when git succeeded.  It runs even when
+magit's sentinel signals, so the fetch never stays pending."
+  (lambda (process event)
+    (unwind-protect
+        (magit-process-sentinel process event)
+      (when (memq (process-status process) '(exit signal))
+        (funcall callback (zerop (process-exit-status process)))))))
+
+(defun prrr-diff-fetch (remote refspecs callback)
+  "Fetch REFSPECS from REMOTE in the background.
+CALLBACK receives non-nil when the fetch succeeded.  The buffers are
+not refreshed when git ends: CALLBACK decides what to redraw."
+  (let ((process (apply #'magit-run-git-async "fetch" "--no-tags" remote refspecs)))
+    (process-put process 'inhibit-refresh t)
+    (set-process-sentinel process (prrr-diff--fetch-sentinel callback))))
+
+(defun prrr-diff--missing-refspecs (pullreq)
+  "Return the refspecs that fetch what PULLREQ's default Range lacks, or nil.
+The head is GitHub's refs/pull/N/head, fetched to the ref forge would
+fetch it to; the base commit, when forge knows it, is fetched by sha."
+  (let ((ref (prrr-diff--head-ref pullreq))
+        (base-rev (oref pullreq base-rev)))
+    (delq nil
+          (list (and (not (magit-rev-verify ref))
+                     (format "+refs/pull/%d/head:%s" (oref pullreq number) ref))
+                (and base-rev (not (magit-commit-p base-rev)) base-rev)))))
+
+(defun prrr-diff-fetch-missing ()
+  "Fetch the current Review Buffer's missing PR head or base, then redraw.
+Return non-nil when a fetch started: something was missing and no
+fetch was running.  A failure is reported once git ended; the
+buffer's note then says how to try again."
+  (let* ((pullreq (prrr-diff-pullreq))
+         (refspecs (and (not prrr-diff--fetching) (prrr-diff--missing-refspecs pullreq))))
+    (when refspecs
+      (let ((buffer (current-buffer))
+            (remote (oref (forge-get-repository pullreq) remote)))
+        (setq prrr-diff--fetching remote)
+        (prrr-diff-fetch
+         remote refspecs
+         (lambda (fetched)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (setq prrr-diff--fetching nil)
+               (unless fetched
+                 (message "Could not fetch #%d's commits from %s" (oref pullreq number) remote))
+               (magit-refresh-buffer)))))
+        t))))
+
 (defun prrr-diff--end-visit-before-reopen (pullreq)
   "Record the Bookmark of PULLREQ's open Review Buffer if opening moves its head.
 Opening always shows the head forge fetched, so a buffer showing an
@@ -894,16 +954,9 @@ The buffer renders at once from the database and refreshes when the
 refetch ends.  The commit of the viewer's latest review is pinned
 \(`prrr-sync-pin').  The buffer shows the head forge fetched; when it
 was open at an older head, that head is recorded as the Bookmark
-first.  When forge has not fetched the PR's head ref, offer to run
-`forge-pull' and signal a `user-error' instead of opening.  Return the
-buffer."
-  (let ((ref (prrr-diff--head-ref pullreq)))
-    (unless (magit-rev-verify ref)
-      (when (y-or-n-p (format "%s is missing; run `forge-pull' now? " ref))
-        (call-interactively #'forge-pull))
-      (user-error (concat "%s is missing: open the pull request again once forge has fetched it"
-                          " (if it stays missing, run `forge-add-pullreq-refspec')")
-                  ref)))
+first.  When the PR's head ref or base commit is missing, the buffer
+opens anyway and fetches them from the PR's remote in the background
+\(`prrr-diff-fetch-missing').  Return the buffer."
   ;; prrr learns the viewer's review commit when it pulls the Review
   ;; Queue; pinning it here keeps since-review working after a force-push.
   (prrr-sync-pin (oref pullreq number)
@@ -917,6 +970,9 @@ buffer."
     (prrr-sync-refetch (forge-get-repository pullreq) pullreq buffer)
     (let ((shown (prrr-diff-setup-buffer pullreq)))
       (with-current-buffer shown
+        ;; The one render showed what is missing; it now says "Fetching…".
+        (when (prrr-diff-fetch-missing)
+          (magit-refresh-buffer))
         (prrr-sync-run-hook 'prrr-review-buffer-opened-hook pullreq))
       shown)))
 
@@ -950,11 +1006,16 @@ live from its creation until it is killed."
 (defun prrr-refetch ()
   "Refetch this pull request's Threads, Pending Review and Viewed flags now.
 The buffer shows \"refreshing…\" until the answer arrives, then redraws.
-`g' redraws from the database without fetching."
+A missing PR head or base commit is fetched again too
+\(`prrr-diff-fetch-missing').  `g' redraws from the database without
+fetching."
   (interactive)
-  (let ((pullreq (prrr-diff-pullreq)))
+  (let ((pullreq (prrr-diff-pullreq))
+        (fetching (prrr-diff-fetch-missing)))
     (if (prrr-sync-refetch (forge-get-repository pullreq) pullreq (current-buffer))
         (magit-refresh-buffer)
+      (when fetching
+        (magit-refresh-buffer))
       (message "Not refetching: %s"
                (or (prrr-sync-describe (prrr-sync-review-status (oref pullreq their-id))
                                        "a refetch is running")

@@ -96,24 +96,11 @@ section 8)."
 
 ;;;; Choosing a Range
 
-(defun prrr-range--fetch-sentinel (callback)
-  "Return the sentinel of a fetch: magit's, then CALLBACK once git ended.
-CALLBACK receives non-nil when git succeeded.  It runs even when
-magit's sentinel signals, so the fetch never stays pending."
-  (lambda (process event)
-    (unwind-protect
-        (magit-process-sentinel process event)
-      (when (memq (process-status process) '(exit signal))
-        (funcall callback (zerop (process-exit-status process)))))))
-
 (defun prrr-range--fetch (oid remote callback)
   "Fetch the commit OID from REMOTE, the current pull request's remote.
 The fetch runs in the background, by sha (SPEC section 8); CALLBACK
 receives non-nil when it succeeded."
-  (let ((process (magit-run-git-async "fetch" "--no-tags" remote oid)))
-    ;; The Range shown changes once the callback ran, not before.
-    (process-put process 'inhibit-refresh t)
-    (set-process-sentinel process (prrr-range--fetch-sentinel callback))))
+  (prrr-diff-fetch remote (list oid) callback))
 
 (defun prrr-range--show-from (kind start)
   "Show the Range KIND from the commit START to the head.
