@@ -487,6 +487,8 @@ is local to prrr; GitHub is not told."
 
 ;;;; magit-dispatch
 
+(defvar prrr-queue-mode)
+
 (defun prrr-queue--dispatch-p ()
   "Non-nil when `magit-dispatch' should list the Review Queue's keys.
 That is on the queue's heading, a Queue Group heading or a row, while

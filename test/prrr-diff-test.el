@@ -869,6 +869,7 @@ magit's own method would overlay the body up to the first Thread."
           (prrr-toggle-hide-viewed)
           (prrr-jump-to-file "README.md")
           (prrr-toggle-viewed)
+          (should (eq 'markFileAsViewed (car (cadr (car captured)))))
           (should-not (member "README.md" (prrr-diff-test--files)))
           (should (equal '(file . "data.bin") (prrr-diff-test--at))))))))
 

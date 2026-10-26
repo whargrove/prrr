@@ -455,7 +455,7 @@ absent from the table."
     counts))
 
 (defun prrr-db-pending-review-counts (pr-ids)
-  "Return a hash table from each of PR-IDS with a Pending Review to its comment count.
+  "Return a hash table from PR-IDS with a Pending Review to its comment count.
 A PR is in the table when it has a `pending-review' row or `pending'
 Review Comments; the count is of the comments, so it may be 0."
   (let ((counts (make-hash-table :test #'equal)))
