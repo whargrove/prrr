@@ -571,6 +571,34 @@ accepts.  ERRORBACK receives a failure classified by
   "Return GitHub's DiffSide for SIDE, `left' or `right', or nil."
   (pcase side ('left "LEFT") ('right "RIGHT")))
 
+(defun prrr-github--anchor-input (anchor)
+  "Return the fields of ANCHOR, a plist as `prrr-state-anchor' returns.
+The alist names them as GraphQL does.  A line anchor leaves subjectType
+out, LINE being GitHub's default and REST refusing \"line\" beside a
+line; a File Comment has neither line nor side.  The Pending Review and
+Immediate Publish both send these fields, so the two cannot drift."
+  (let ((file (eq (plist-get anchor :subject-type) 'file)))
+    (prrr-github--input
+     'path (plist-get anchor :path)
+     'line (and (not file) (plist-get anchor :line))
+     'side (and (not file) (prrr-github--side-name (plist-get anchor :side)))
+     'startLine (and (not file) (plist-get anchor :start-line))
+     'startSide (and (not file) (prrr-github--side-name (plist-get anchor :start-side)))
+     'subjectType (and file "FILE"))))
+
+(defconst prrr-github--rest-anchor-names
+  '((path . path) (line . line) (side . side) (startLine . start_line)
+    (startSide . start_side) (subjectType . subject_type))
+  "REST's name of each field `prrr-github--anchor-input' returns.")
+
+(defun prrr-github--rest-anchor-params (anchor)
+  "Return the fields of ANCHOR as REST names them.
+REST spells the File Comment's subject_type in lower case."
+  (mapcar (pcase-lambda (`(,name . ,value))
+            (cons (alist-get name prrr-github--rest-anchor-names)
+                  (if (eq name 'subjectType) (downcase value) value)))
+          (prrr-github--anchor-input anchor)))
+
 (eval-and-compile
   (defconst prrr-github-pending-review-query
     '(repository [(owner $owner String!) (name $name String!)]
@@ -679,14 +707,8 @@ ANCHOR is a plist as `prrr-state-anchor' returns.  CALLBACK receives
 ERRORBACK a failure classified by `prrr-github-error'."
   (prrr-github--mutate
    host prrr-github-add-thread-mutation
-   (prrr-github--input 'pullRequestReviewId review-id
-                       'path (plist-get anchor :path)
-                       'body body
-                       'line (plist-get anchor :line)
-                       'side (prrr-github--side-name (plist-get anchor :side))
-                       'startLine (plist-get anchor :start-line)
-                       'startSide (prrr-github--side-name (plist-get anchor :start-side))
-                       'subjectType (and (eq (plist-get anchor :subject-type) 'file) "FILE"))
+   (append (prrr-github--input 'pullRequestReviewId review-id 'body body)
+           (prrr-github--anchor-input anchor))
    (lambda (data)
      (let* ((thread (alist-get 'thread (alist-get 'addPullRequestReviewThread data)))
             (comment (car (alist-get 'nodes (alist-get 'comments thread)))))
@@ -732,23 +754,13 @@ one review comment, on COMMIT, the head the user commented on.  ANCHOR
 is a plist as `prrr-state-anchor' returns.  CALLBACK receives
 \(:comment-id :database-id :created-at); GitHub's answer does not name
 the new Thread.  ERRORBACK receives a failure classified by
-`prrr-github-error'."
-  (let ((file (eq (plist-get anchor :subject-type) 'file))
-        (line (plist-get anchor :line))
-        (side (prrr-github--side-name (plist-get anchor :side)))
-        (start (plist-get anchor :start-line))
-        (start-side (prrr-github--side-name (plist-get anchor :start-side)))
-        (path (plist-get anchor :path)))
-    (forge-rest host "POST" (format "/repos/%s/%s/pulls/%s/comments" owner name number)
-      ((body body) (commit_id commit) (path path)
-       (and (not file) (line line))
-       (and (not file) (side side))
-       (and start (start_line start))
-       (and start (start_side start-side))
-       ;; GitHub's schema refuses subject_type "line" beside line.
-       (and file (subject_type "file")))
-      :callback (prrr-github--callback #'prrr-github--rest-comment callback errorback)
-      :errorback (prrr-github--errorback errorback))))
+`prrr-github-error'.
+`forge-rest' takes its parameters as literal bindings, and the anchor's
+are computed, so this goes through `forge--rest'."
+  (forge--rest host "POST" (format "/repos/%s/%s/pulls/%s/comments" owner name number)
+    `((body . ,body) (commit_id . ,commit) ,@(prrr-github--rest-anchor-params anchor))
+    :callback (prrr-github--callback #'prrr-github--rest-comment callback errorback)
+    :errorback (prrr-github--errorback errorback)))
 
 (defun prrr-github-publish-reply (host owner name number database-id body
                                        callback errorback)

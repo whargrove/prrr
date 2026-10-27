@@ -159,6 +159,24 @@ plus `files(first: 100) { path viewerViewedState }`, plus `headRefOid`.
 Costs 1 point per page (research 03, section 1). Threads with more than 100
 comments page through `node(id:)`.
 
+**GraphQL by default; REST only where GraphQL cannot do it.** Reads and
+writes both go through GraphQL. A write goes through REST only when
+GraphQL has no mutation that does the same thing, and the table below
+says why for each one. "Reads GraphQL, writes REST" is not possible: the
+Pending Review, Viewed and Resolve have no REST endpoints.
+
+| REST call                | Why not GraphQL                                                                                                                                                                                                                                         |
+|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Immediate Publish        | The only GraphQL path is `addPullRequestReview(event: COMMENT, threads)`. Its `DraftPullRequestReviewThread` has no `subjectType`, so it cannot publish a File Comment, and GitHub allows one pending review per user, so it may clash with the viewer's own |
+| Immediate reply          | `addPullRequestReviewThreadReply` without `pullRequestReviewId` is undocumented and may join the viewer's Pending Review                                                                                                                                |
+| Withdraw: review request | `requestReviews` replaces the whole set of reviewers; removing one would rewrite everyone else's requests                                                                                                                                              |
+| Withdraw: assignee       | GraphQL can do it (`removeAssigneesFromAssignable`); it stays REST beside the review request, as one Withdraw                                                                                                                                          |
+
+A Thread's anchor is one set of fields whichever path sends it:
+`prrr-github--anchor-input` builds them, and REST only renames them. A
+line anchor never sends `subjectType`: GitHub's default is LINE, and
+REST refuses `subject_type: line` beside `line`.
+
 **Mutations** (GraphQL unless noted):
 
 | Action                                  | Call                                                                                                                                               |
@@ -166,7 +184,7 @@ comments page through `node(id:)`.
 | Create Pending Review                   | `addPullRequestReview(pullRequestId, commitOID)` with no event, `commitOID` being the head the user commented on; first query for an existing PENDING review and reuse it                                       |
 | Add Thread (line, range, file)          | `addPullRequestReviewThread(pullRequestReviewId, path, body, line, side[, startLine, startSide][, subjectType: FILE])`                             |
 | Reply inside Pending Review             | `addPullRequestReviewThreadReply(pullRequestReviewThreadId, pullRequestReviewId, body)`                                                            |
-| Immediate Publish of one Review Comment | REST `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` = head, `path`, `line`, `side`, optional `start_line`, `start_side`, `subject_type` |
+| Immediate Publish of one Review Comment | REST `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` = head and the anchor (`path`, `line`, `side`, optional `start_line`, `start_side`; a File Comment `path` and `subject_type: file` only) |
 | Immediate reply                         | REST `POST /repos/{o}/{r}/pulls/{n}/comments/{id}/replies`                                                                                         |
 | Discussion Comment                      | `addComment(subjectId: <PR node id>, body)`, selecting `commentEdge.node { id databaseId createdAt }`                                              |
 | Edit / delete a comment                 | `updatePullRequestReviewComment` / `deletePullRequestReviewComment`                                                                                |

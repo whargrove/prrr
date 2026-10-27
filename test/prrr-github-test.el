@@ -574,7 +574,7 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
     (let ((result nil))
       (prrr-github-add-thread "api.github.com" "PRR_1" prrr-github-test--anchor "Nit."
                               (lambda (r) (setq result r)) #'ert-fail)
-      (should (equal '((input (pullRequestReviewId . "PRR_1") (path . "src/example.el") (body . "Nit.")
+      (should (equal '((input (pullRequestReviewId . "PRR_1") (body . "Nit.") (path . "src/example.el")
                               (line . 12) (side . "RIGHT") (startLine . 10) (startSide . "RIGHT")))
                      (cadr captured)))
       (should (equal '(:thread-id "PRRT_kwDOexampleNew01" :comment-id "PRRC_kwDOexampleNew01"
@@ -585,9 +585,37 @@ x-ratelimit-reset belongs to the primary limit and must not set the wait."
   (prrr-test-with-ghub-stub (prrr-test-fixture "add-thread") captured
     (prrr-github-add-thread "api.github.com" "PRR_1" '(:path "a.el" :subject-type file) "Split."
                             #'ignore #'ert-fail)
-    (should (equal '((input (pullRequestReviewId . "PRR_1") (path . "a.el") (body . "Split.")
+    (should (equal '((input (pullRequestReviewId . "PRR_1") (body . "Split.") (path . "a.el")
                             (subjectType . "FILE")))
                    (cadr captured)))))
+
+(defconst prrr-github-test--rest-names
+  '((path . path) (line . line) (side . side) (start_line . startLine)
+    (start_side . startSide) (subject_type . subjectType))
+  "GraphQL's name of each anchor field REST sends, written out apart from prrr's.")
+
+(defun prrr-github-test--rest-as-graphql (params)
+  "Return the anchor fields of the REST PARAMS under GraphQL's names."
+  (delq nil (mapcar (pcase-lambda (`(,name . ,value))
+                      (when-let* ((graphql (alist-get name prrr-github-test--rest-names)))
+                        (cons graphql (if (eq name 'subject_type) (upcase value) value))))
+                    params)))
+
+(ert-deftest prrr-github-test-pending-and-immediate-send-one-anchor ()
+  "A Thread sends the same anchor whether it joins the Pending Review or not."
+  (dolist (anchor (list '(:path "a.el" :line 3 :side left :subject-type line)
+                        prrr-github-test--anchor
+                        '(:path "a.el" :subject-type file)))
+    (let ((graphql (prrr-test-with-ghub-stub (prrr-test-fixture "add-thread") captured
+                     (prrr-github-add-thread "api.github.com" "PRR_1" anchor "B." #'ignore #'ert-fail)
+                     (alist-get 'input (cadr captured))))
+          (rest (prrr-test-with-rest-stub (prrr-test-fixture "publish-comment") captured
+                  (prrr-github-publish-comment "api.github.com" "o" "n" 1 "1111" anchor "B."
+                                               #'ignore #'ert-fail)
+                  (nth 2 captured))))
+      (should (equal (cl-remove-if (lambda (field) (memq (car field) '(pullRequestReviewId body)))
+                                   graphql)
+                     (prrr-github-test--rest-as-graphql rest))))))
 
 (ert-deftest prrr-github-test-add-reply ()
   (prrr-test-with-ghub-stub (prrr-test-fixture "add-reply") captured

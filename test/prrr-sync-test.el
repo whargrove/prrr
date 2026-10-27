@@ -662,7 +662,7 @@ of `forge-pull' and `prrr-sync-pull'; MESSAGES the formatted messages."
           (prrr-sync-test--write 'thread (list :anchor prrr-sync-test--anchor :body "Nit."
                                                :commit "1111")))
         (should (equal '((input (pullRequestReviewId . "PRR_kwDOexamplePending1")
-                                (path . "src/example.el") (body . "Nit.") (line . 12)
+                                (body . "Nit.") (path . "src/example.el") (line . 12)
                                 (side . "RIGHT")))
                        sent))
         (let ((comment (car (last (plist-get (prrr-sync-review-data prrr-sync-test--pr)
