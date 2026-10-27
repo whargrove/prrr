@@ -675,7 +675,7 @@ instead of sending it again."
                                    prrr-github-test--anchor "Now." (lambda (r) (setq result r)) #'ert-fail)
       (should (equal '("POST" "/repos/example-org/example-repo/pulls/1/comments"
                        ((body . "Now.") (commit_id . "1111") (path . "src/example.el") (line . 12)
-                        (side . "RIGHT") (start_line . 10) (start_side . "RIGHT") (subject_type . "line")))
+                        (side . "RIGHT") (start_line . 10) (start_side . "RIGHT")))
                      captured))
       (should (equal '(:comment-id "PRRC_kwDOexampleNew03" :database-id "3001" :created-at "2026-10-10T12:02:00Z")
                      result)))))

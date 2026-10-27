@@ -745,7 +745,8 @@ the new Thread.  ERRORBACK receives a failure classified by
        (and (not file) (side side))
        (and start (start_line start))
        (and start (start_side start-side))
-       (subject_type (if file "file" "line")))
+       ;; GitHub's schema refuses subject_type "line" beside line.
+       (and file (subject_type "file")))
       :callback (prrr-github--callback #'prrr-github--rest-comment callback errorback)
       :errorback (prrr-github--errorback errorback))))
 
